@@ -28,7 +28,21 @@ pip install -r requirements.txt
 
 ## Setup
 1. **Clone this repository**
-2. **Create a `.env` file** in the project root (or copy `.env.example`):
+2. **Create and activate a virtual environment**
+
+On Linux/macOS:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+On Windows:
+```cmd
+python -m venv venv
+venv\Scripts\activate
+```
+
+3. **Create a `.env` file** in the project root (or copy `.env.example`):
 
 ```
 USER_DATA_DIR=/path/to/your/chrome/user/data
@@ -50,7 +64,7 @@ CHECK_AFTERNOON=false
 - `VEHICLE_OPTION` should match the value attribute for your vehicle in the dropdown.
 - Set `SCHEDULE` to `true` to enable scheduled runs.
 
-3. **Ensure your Chrome profile is set up and logged in** (if the site requires authentication).
+4. **Ensure your Chrome profile is set up and logged in** (if the site requires authentication).
 
 ## Usage
 Run the bot with:
