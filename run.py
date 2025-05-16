@@ -9,6 +9,7 @@ from fake_useragent import UserAgent
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
+import ntplib
 
 # Load environment variables from .env file
 load_dotenv()
@@ -27,16 +28,26 @@ CHECK_ALL_DAY = os.getenv("CHECK_ALL_DAY", "false").lower() == "true"
 CHECK_MORNING = os.getenv("CHECK_MORNING", "false").lower() == "true"
 CHECK_AFTERNOON = os.getenv("CHECK_AFTERNOON", "false").lower() == "true"
 
+# Function to get current time from NTP server
+def get_ntp_time():
+    try:
+        client = ntplib.NTPClient()
+        response = client.request('pool.ntp.org', version=3, timeout=5)
+        return datetime.fromtimestamp(response.tx_time)
+    except Exception as e:
+        print(f"Warning: Could not get NTP time, falling back to system time. Reason: {e}")
+        return datetime.now()
+
 # Function to calculate sleep time until a specified time tomorrow
 def get_seconds_until(target_time):
-    now = datetime.now()
-    target_time = datetime.strptime(target_time, "%H:%M").time()
-    target_datetime = datetime.combine(now.date() + timedelta(days=1), target_time)
+    now = get_ntp_time()
+    target_time_obj = datetime.strptime(target_time, "%H:%M").time()
+    target_datetime = datetime.combine(now.date() + timedelta(days=1), target_time_obj)
     return (target_datetime - now).total_seconds()
 
 # Function to calculate days until the next occurrence of a specific day of the week
 def get_days_until(day_name):
-    now = datetime.now()
+    now = get_ntp_time()
     today_weekday = now.weekday()  # Monday is 0 and Sunday is 6
     target_weekday = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].index(day_name)
     days_until = (target_weekday - today_weekday + 7) % 7
@@ -61,7 +72,7 @@ if SCHEDULE:
     # Start a loop that checks the time every second until it's exactly the start time
     print(f"Waiting for {START_TIME}...")
     while True:
-        now = datetime.now()
+        now = get_ntp_time()
         if now.strftime("%H:%M") == START_TIME:
             print(f"It's {START_TIME} on {DAY_OF_WEEK}! Starting the script.")
             break
@@ -79,6 +90,34 @@ options.add_argument(f"profile-directory={PROFILE_DIRECTORY}")
 
 # Initialize the undetected Chrome driver with options
 driver = uc.Chrome(options=options)
+
+# Function to select vehicle and checkout
+def select_vehicle_and_checkout(driver, pass_element):
+    # Find and click the vehicle dropdown
+    vehicle_dropdown = pass_element.find_element(By.XPATH, ".//select")
+    vehicle_dropdown.click()
+
+    # Select the vehicle by value
+    select = Select(vehicle_dropdown)
+    select.select_by_value(VEHICLE_OPTION)
+
+    # Click the "Add To Cart" button
+    add_to_cart_button = pass_element.find_element(By.XPATH, ".//a[contains(text(), 'Add To Cart')]")
+    add_to_cart_button.click()
+
+    # Wait for the "Checkout" button and click it
+    checkout_button = WebDriverWait(driver, 120).until(
+        EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Checkout')]"))
+    )
+    checkout_button.click()
+
+    # Wait for the "Yes" button to confirm checkout and click it
+    yes_button = WebDriverWait(driver, 120).until(
+        EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Yes')]"))
+    )
+    yes_button.click()
+
+    print("Checkout confirmed successfully!")
 
 try:
     # Retry logic: keep refreshing the page until any of the specified passes is available
@@ -128,34 +167,6 @@ try:
                     print("Afternoon Pass is sold out or not loaded yet.")
 
         time.sleep(5)  # Short delay before retrying
-
-# Function to select vehicle and checkout
-def select_vehicle_and_checkout(driver, pass_element):
-    # Find and click the vehicle dropdown
-    vehicle_dropdown = pass_element.find_element(By.XPATH, ".//select")
-    vehicle_dropdown.click()
-
-    # Select the vehicle by value
-    select = Select(vehicle_dropdown)
-    select.select_by_value(VEHICLE_OPTION)
-
-    # Click the "Add To Cart" button
-    add_to_cart_button = pass_element.find_element(By.XPATH, ".//a[contains(text(), 'Add To Cart')]")
-    add_to_cart_button.click()
-
-    # Wait for the "Checkout" button and click it
-    checkout_button = WebDriverWait(driver, 120).until(
-        EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Checkout')]"))
-    )
-    checkout_button.click()
-
-    # Wait for the "Yes" button to confirm checkout and click it
-    yes_button = WebDriverWait(driver, 120).until(
-        EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Yes')]"))
-    )
-    yes_button.click()
-
-    print("Checkout confirmed successfully!")
 
 except Exception as e:
     print(f"An error occurred: {e}")
