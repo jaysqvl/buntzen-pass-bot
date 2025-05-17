@@ -5,7 +5,6 @@ import sys
 import time
 
 from src.env_utils import load_config
-from src.chrome_utils import find_chrome_path
 from src.vehicle_selector import select_vehicle_and_checkout
 from src.booking import run_booking_flow
 from src.scheduler import get_ntp_time, get_seconds_until, get_days_until
@@ -49,6 +48,7 @@ user_agent = ua.random
 driver_options = uc.ChromeOptions()
 driver_options.add_argument('--no-sandbox')
 driver_options.add_argument('--disable-dev-shm-usage')
+driver_options.add_argument("--disable-gpu")
 driver_options.add_argument('--enable-javascript')
 driver_options.add_argument(f'--user-agent={user_agent}')
 driver_options.add_argument(f'--user-data-dir={config["USER_DATA_DIR"]}')
