@@ -1,8 +1,10 @@
 import undetected_chromedriver as uc
 from fake_useragent import UserAgent
 from dotenv import load_dotenv
-import sys
 import time
+import os
+from datetime import datetime, timedelta, time as dt_time
+import pytz
 
 from src.env_utils import load_config
 from src.vehicle_selector import select_vehicle_and_checkout
@@ -15,30 +17,49 @@ load_dotenv(override=True)
 # Load config
 config = load_config()
 
-# Only use scheduling if SCHEDULE is true and it is the correct day of the week
-if config['SCHEDULE']:
-    # Calculate days until the specified day of the week
-    days_until_target = get_days_until(config['DAY_OF_WEEK'])
+# --- Scheduling for Pass Release ---
+# Only use scheduling if SCHEDULE is true and TARGET_DATE is set
+if config.get('SCHEDULE') and config.get('TARGET_DATE'):
+    # Calculate the relevant times in PST on the day before TARGET_DATE
+    target_date = datetime.strptime(config['TARGET_DATE'], "%Y-%m-%d")
+    release_date = target_date - timedelta(days=1)
+    pst = pytz.timezone('US/Pacific')
 
-    if days_until_target > 0:
-        # Sleep until the next occurrence of the specified day
-        seconds_until_target_day = days_until_target * 24 * 60 * 60
-        print(f"Script will wake up on {config['DAY_OF_WEEK']}, which is in {seconds_until_target_day} seconds.")
-        time.sleep(seconds_until_target_day)
+    # Parse SLOW_POLL_UNTIL and START_TIME as times
+    slow_poll_until_time = datetime.strptime(config['SLOW_POLL_UNTIL'], "%H:%M").time()
+    start_time = datetime.strptime(config['START_TIME'], "%H:%M").time()
 
-    # Sleep until the wake-up time on the target day
-    time_until_wakeup = get_seconds_until(config['WAKEUP_TIME'])
-    print(f"Script will wake up at {config['WAKEUP_TIME']} on {config['DAY_OF_WEEK']}, which is in {time_until_wakeup} seconds.")
-    time.sleep(time_until_wakeup)
+    # Compose datetimes in PST
+    slow_poll_until_pst = pst.localize(datetime.combine(release_date, slow_poll_until_time))
+    start_time_pst = pst.localize(datetime.combine(release_date, start_time))
 
-    # Start a loop that checks the time every second until it's exactly the start time
-    print(f"Waiting for {config['START_TIME']}...")
+    # Convert to UTC for comparison with NTP time
+    slow_poll_until_utc = slow_poll_until_pst.astimezone(pytz.utc)
+    start_time_utc = start_time_pst.astimezone(pytz.utc)
+
+    print(f"Target pass date: {config['TARGET_DATE']}")
+    print(f"Will slow poll until: {slow_poll_until_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} (PST)")
+    print(f"Will start booking flow at: {start_time_pst.strftime('%Y-%m-%d %H:%M:%S %Z')} (PST)")
+
+    # Phase 1: Slow polling (every 1s) until SLOW_POLL_UNTIL
     while True:
-        now = get_ntp_time()
-        if now.strftime("%H:%M") == config['START_TIME']:
-            print(f"It's {config['START_TIME']} on {config['DAY_OF_WEEK']}! Starting the script.")
+        now_utc = get_ntp_time().replace(tzinfo=pytz.utc)
+        if now_utc >= slow_poll_until_utc:
             break
+        seconds_until_slow_poll = (slow_poll_until_utc - now_utc).total_seconds()
+        print(f"[Slow Poll] Waiting for fast poll window... {int(seconds_until_slow_poll)} seconds remaining.")
         time.sleep(1)
+
+    # Phase 2: Fast polling (every 0.05s) until START_TIME
+    while True:
+        now_utc = get_ntp_time().replace(tzinfo=pytz.utc)
+        if now_utc >= start_time_utc:
+            print(f"It's time! {now_utc.strftime('%Y-%m-%d %H:%M:%S %Z')} (UTC)")
+            break
+        seconds_until_start = (start_time_utc - now_utc).total_seconds()
+        if int(seconds_until_start * 100) % 10 == 0:  # Print every 0.5s
+            print(f"[Fast Poll] Waiting for booking start... {seconds_until_start:.2f} seconds remaining.")
+        time.sleep(0.05)
 
 # Generate a random user-agent
 ua = UserAgent()
@@ -51,22 +72,14 @@ driver_options.add_argument('--disable-dev-shm-usage')
 driver_options.add_argument("--disable-gpu")
 driver_options.add_argument('--enable-javascript')
 driver_options.add_argument(f'--user-agent={user_agent}')
-driver_options.add_argument(f'--user-data-dir={config["USER_DATA_DIR"]}')
-driver_options.add_argument(f'--profile-directory={config["PROFILE_DIRECTORY"]}')
-print(f"Chrome will use user data dir: {config['USER_DATA_DIR']}")
-print(f"Chrome will use profile directory: {config['PROFILE_DIRECTORY']}")
 
-# Find and set the Chrome binary location automatically
-# chrome_path = find_chrome_path()
-# if chrome_path:
-#     driver_options.binary_location = chrome_path
-# else:
-#     print("Could not find Chrome. Please install it or enable DIR override in your .env and input a path.")
-#     sys.exit(1)
+# Ensure the user data directory exists
+os.makedirs(config["USER_DATA_DIR"], exist_ok=True)
+driver_options.add_argument(f'--user-data-dir={config["USER_DATA_DIR"]}')
 
 print("Loaded config:", config)
-# print(f"Using Chrome binary at: {chrome_path}")
 print(f"User agent: {user_agent}")
+print(f"Chrome will use user data dir: {config['USER_DATA_DIR']}")
 print("Initializing Chrome driver...")
 driver = uc.Chrome(options=driver_options, use_subprocess=True)
 print("Chrome driver initialized. Starting booking flow...")

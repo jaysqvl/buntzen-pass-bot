@@ -4,3 +4,4 @@ fake-useragent
 ntplib
 dotenv
 setuptools
+pytz
