@@ -1,10 +1,4 @@
 selenium
-selenium-webdriver
-selenium-support
-selenium-webdriver-support
-selenium-webdriver-support-ui
-selenium-webdriver-support-ui-webdriver
-selenium-webdriver-support-ui-webdriver-support
 undetected-chromedriver
 fake-useragent
 ntplib
