@@ -1,9 +1,201 @@
+import logging
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
+import threading
+import random
+from typing import Callable, Dict, Any
 from .selenium_utils import robust_find_and_act
+from .chrome_utils import open_new_tab, switch_to_tab
+
+logger = logging.getLogger("buntzen_pass_bot.booking")
+
+def find_pass_card(driver, pass_type_label):
+    """
+    Find the card element for the given pass type (e.g., 'Morning', 'Afternoon').
+    Returns the card WebElement or None if not found.
+    """
+    cards = driver.find_elements(By.CSS_SELECTOR, ".card.ImageCard")
+    for card in cards:
+        try:
+            label = card.find_element(By.CSS_SELECTOR, ".Cardimage .text").text
+            if pass_type_label.lower() in label.lower():
+                return card
+        except Exception:
+            continue
+    return None
+
+def is_pass_sold_out(card):
+    """
+    Check if the Add to Cart button in the card says 'Sold out'.
+    Returns True if sold out, False otherwise.
+    """
+    try:
+        add_to_cart_btn = card.find_element(By.CSS_SELECTOR, ".addCartBtnClassification a")
+        return "sold out" in add_to_cart_btn.text.lower()
+    except Exception:
+        return True  # If button not found, treat as sold out
+
+def select_date(driver, target_date):
+    """
+    Clicks the date button for the target date (YYYY-MM-DD) on the current page.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        reload_attempts = 0
+        while True:
+            try:
+                robust_find_and_act(driver, By.CSS_SELECTOR, ".datelist button.date", wait_condition='present', timeout=5, retries=2)
+                break
+            except Exception as e:
+                reload_attempts += 1
+                logger.warning(f"Date buttons not found after 5s, reloading page (attempt {reload_attempts})...")
+                driver.refresh()
+                time.sleep(1)
+        date_buttons = driver.find_elements(By.CSS_SELECTOR, ".datelist button.date")
+        found = False
+        target_day = str(int(target_date.split('-')[2]))  # Remove leading zero
+        for btn in date_buttons:
+            if btn.text.strip() == target_day:
+                if 'active' not in btn.get_attribute('class'):
+                    logger.debug(f"Clicking date button for {target_day}")
+                    robust_find_and_act(driver, By.CSS_SELECTOR, f".datelist button.date:nth-child({date_buttons.index(btn)+1})", action=lambda el: el.click(), wait_condition='clickable', timeout=5, retries=5)
+                    WebDriverWait(driver, 5).until(
+                        lambda d: 'active' in btn.get_attribute('class')
+                    )
+                else:
+                    logger.debug(f"Date button for {target_day} is already active.")
+                found = True
+                break
+        if not found:
+            logger.warning(f"Date button for {target_day} not found. Retrying...")
+            time.sleep(2)
+            return False
+        logger.info(f"Correct date button for {target_day} is now active.")
+        return True
+    except Exception as e:
+        logger.error(f"Error selecting date: {e}")
+        return False
+
+def book_all_day_pass(driver, config, select_vehicle_and_checkout):
+    logger.info(f"Opening All Day Pass URL: {config['ALL_DAY_PASS_URL']}")
+    driver.get(config['ALL_DAY_PASS_URL'])
+    logger.info("Waiting for date buttons to load...")
+    if not select_date(driver, config['TARGET_DATE']):
+        return
+    logger.info("Checking All Day Pass...")
+    try:
+        all_day_pass = robust_find_and_act(driver, By.XPATH, "//*[contains(text(), 'All-day Pass (8 a.m. to 8:00 p.m.)')]", wait_condition='visible', timeout=10, retries=10)
+        logger.info("Found All Day Pass element.")
+        availability_status = robust_find_and_act(all_day_pass, By.XPATH, "../..//*[contains(text(), 'Available')]", wait_condition='visible', timeout=5, retries=5)
+        logger.info("Found availability status for All Day Pass.")
+        if availability_status:
+            logger.info("All Day Pass is available! Proceeding to add to cart...")
+            if select_vehicle_and_checkout(driver, all_day_pass, config['VEHICLE_KEYWORD']):
+                logger.info("Successfully checked out All Day Pass.")
+                return True
+        else:
+            logger.info("All Day Pass is not available.")
+    except (TimeoutException, NoSuchElementException) as e:
+        logger.info(f"All Day Pass is sold out or not loaded yet. Exception: {e}.")
+    return False
+
+def book_half_day_passes_parallel(
+    driver: Any,
+    config: Dict[str, Any],
+    select_vehicle_and_checkout: Callable[[Any, Any, str], bool]
+) -> None:
+    """
+    Try to book half-day passes using parallel threads for each pass type enabled in config.
+    Afternoon is prioritized first if both are enabled.
+    """
+    def parallel_halfday_booking_worker(
+        driver: Any,
+        tab_index: int,
+        stop_event: threading.Event,
+        reload_interval: float,
+        config: Dict[str, Any],
+        select_vehicle_and_checkout: Callable[[Any, Any, str], bool],
+        winner_info: Dict[str, Any],
+        pass_type: str
+    ) -> None:
+        switch_to_tab(driver, tab_index)
+        logger.info(f"[THREAD-{tab_index}] Started with reload interval {reload_interval}s for {pass_type} pass")
+        try:
+            driver.get(config['HALF_DAY_PASS_URL'])
+            select_date(driver, config['TARGET_DATE'])
+            while not stop_event.is_set():
+                try:
+                    card = find_pass_card(driver, pass_type)
+                    if card and not is_pass_sold_out(card):
+                        logger.info(f"[THREAD-{tab_index}] {pass_type} pass available! Signaling other thread to stop and proceeding with booking.")
+                        winner_info['winner'] = tab_index
+                        stop_event.set()
+                        if select_vehicle_and_checkout(driver, card, config['VEHICLE_KEYWORD']):
+                            logger.info(f"[THREAD-{tab_index}] Successfully checked out {pass_type} pass.")
+                        else:
+                            logger.info(f"[THREAD-{tab_index}] Failed to check out {pass_type} pass after adding to cart.")
+                        return
+                    else:
+                        logger.info(f"[THREAD-{tab_index}] {pass_type} pass not available yet, reloading soon...")
+                except Exception as e:
+                    logger.info(f"[THREAD-{tab_index}] Exception: {e}")
+                jitter = random.uniform(-0.5, 0.5)
+                actual_interval = max(0.5, reload_interval + jitter)
+                time.sleep(actual_interval)
+                driver.refresh()
+            if winner_info.get('winner') == tab_index:
+                logger.info(f"[THREAD-{tab_index}] This thread won and completed the booking.")
+            else:
+                logger.info(f"[THREAD-{tab_index}] Stopping because another thread (THREAD-{winner_info.get('winner')}) succeeded.")
+        except Exception as e:
+            logger.info(f"[THREAD-{tab_index}] Exception: {e}")
+
+    open_new_tab(driver, config['HALF_DAY_PASS_URL'])
+
+    def run_phase(pass_type: str) -> None:
+        stop_event = threading.Event()
+        winner_info = {}
+        thread_fast = threading.Thread(target=parallel_halfday_booking_worker, args=(driver, 0, stop_event, 2, config, select_vehicle_and_checkout, winner_info, pass_type))
+        thread_slow = threading.Thread(target=parallel_halfday_booking_worker, args=(driver, 1, stop_event, 5, config, select_vehicle_and_checkout, winner_info, pass_type))
+        logger.info(f"[MAIN] Starting parallel booking threads for {pass_type} pass.")
+        thread_fast.start()
+        thread_slow.start()
+        thread_fast.join()
+        thread_slow.join()
+        logger.info(f"[MAIN] {pass_type} pass booking attempt finished. Winner: THREAD-{winner_info.get('winner')}.")
+
+    if config.get('CHECK_AFTERNOON'):
+        run_phase("Afternoon")
+    if config.get('CHECK_MORNING'):
+        run_phase("Morning")
+
+def main_booking_controller(
+    driver: Any,
+    config: Dict[str, Any],
+    select_vehicle_and_checkout: Callable[[Any, Any, str], bool]
+) -> None:
+    """
+    Modular controller: tries all-day first if enabled, falls back to half-days if enabled and all-day fails.
+    """
+    if config.get('CHECK_ALL_DAY'):
+        logger.info("Trying to book all-day pass...")
+        success = book_all_day_pass(driver, config, select_vehicle_and_checkout)
+        if success:
+            logger.info("Successfully booked all-day pass. Exiting.")
+            return
+        else:
+            logger.info("All-day pass not available or sold out.")
+            if not (config.get('CHECK_MORNING') or config.get('CHECK_AFTERNOON')):
+                logger.info("No half-day passes enabled. Exiting.")
+                return
+            logger.info("Falling back to half-day passes...")
+    if config.get('CHECK_MORNING') or config.get('CHECK_AFTERNOON'):
+        book_half_day_passes_parallel(driver, config, select_vehicle_and_checkout)
+    else:
+        logger.info("No passes enabled in config. Exiting.")
 
 def run_booking_flow(driver, config, select_vehicle_and_checkout):
     """
@@ -15,100 +207,17 @@ def run_booking_flow(driver, config, select_vehicle_and_checkout):
     """
     try:
         while True:
-            # Check for All Day Passes
             if config['CHECK_ALL_DAY']:
-                print(f"[DEBUG] Opening All Day Pass URL: {config['ALL_DAY_PASS_URL']}")
-                driver.get(config['ALL_DAY_PASS_URL'])
-                print("[DEBUG] Waiting for date buttons to load...")
-                try:
-                    # --- Wait for date buttons or reload if missing ---
-                    reload_attempts = 0
-                    while True:
-                        try:
-                            robust_find_and_act(driver, By.CSS_SELECTOR, ".datelist button.date", wait_condition='present', timeout=5, retries=2)
-                            break  # Found date buttons, proceed
-                        except Exception as e:
-                            reload_attempts += 1
-                            print(f"[WARN] Date buttons not found after 5s, reloading page (attempt {reload_attempts})...")
-                            driver.refresh()
-                            time.sleep(1)  # Give the browser a moment to reload
-                    # Find all date buttons
-                    date_buttons = driver.find_elements(By.CSS_SELECTOR, ".datelist button.date")
-                    found = False
-                    target_day = str(int(config['TARGET_DATE'].split('-')[2]))  # Remove leading zero
-                    for btn in date_buttons:
-                        if btn.text.strip() == target_day:
-                            # If not already active, click it
-                            if 'active' not in btn.get_attribute('class'):
-                                print(f"[DEBUG] Clicking date button for {target_day}")
-                                robust_find_and_act(driver, By.CSS_SELECTOR, f".datelist button.date:nth-child({date_buttons.index(btn)+1})", action=lambda el: el.click(), wait_condition='clickable', timeout=5, retries=5)
-                                # Wait for the button to become active
-                                WebDriverWait(driver, 5).until(
-                                    lambda d: 'active' in btn.get_attribute('class')
-                                )
-                            else:
-                                print(f"[DEBUG] Date button for {target_day} is already active.")
-                            found = True
-                            break
-                    if not found:
-                        print(f"[DEBUG] Date button for {target_day} not found. Retrying...")
-                        time.sleep(2)
-                        continue  # Retry loop
-                    print(f"[DEBUG] Correct date button for {target_day} is now active.")
-                    # --- End date selection ---
-
-                    print("[DEBUG] Checking All Day Pass...")
-                    all_day_pass = robust_find_and_act(driver, By.XPATH, "//*[contains(text(), 'All-day Pass (8 a.m. to 8:00 p.m.)')]", wait_condition='visible', timeout=10, retries=10)
-                    print("[DEBUG] Found All Day Pass element.")
-                    availability_status = robust_find_and_act(all_day_pass, By.XPATH, "../..//*[contains(text(), 'Available')]", wait_condition='visible', timeout=5, retries=5)
-                    print("[DEBUG] Found availability status for All Day Pass.")
-                    if availability_status:
-                        print("All Day Pass is available! Proceeding to add to cart...")
-                        if select_vehicle_and_checkout(driver, all_day_pass, config['VEHICLE_KEYWORD']):
-                            print("[DEBUG] Successfully checked out All Day Pass.")
-                            break
-                except (TimeoutException, NoSuchElementException) as e:
-                    print(f"[DEBUG] All Day Pass is sold out or not loaded yet. Exception: {e}. Moving to next check.")
-
-            # Check for Morning and Afternoon Passes
-            if config['CHECK_MORNING'] or config['CHECK_AFTERNOON']:
-                print(f"[DEBUG] Opening Half Day Pass URL: {config['HALF_DAY_PASS_URL']}")
-                driver.get(config['HALF_DAY_PASS_URL'])
-                if config['CHECK_MORNING']:
-                    print("[DEBUG] Checking Morning Pass...")
-                    try:
-                        morning_pass = driver.find_element_by_xpath("//*[contains(text(), 'Morning Pass (8 a.m. to 2 p.m.)')]")
-                        print("[DEBUG] Found Morning Pass element.")
-                        availability_status = morning_pass.find_element_by_xpath("../..//*[contains(text(), 'Available')]")
-                        print("[DEBUG] Found availability status for Morning Pass.")
-                        if availability_status:
-                            print("Morning Pass is available! Proceeding to add to cart...")
-                            if select_vehicle_and_checkout(driver, morning_pass, config['VEHICLE_KEYWORD']):
-                                print("[DEBUG] Successfully checked out Morning Pass.")
-                                break
-                    except (TimeoutException, NoSuchElementException) as e:
-                        print(f"[DEBUG] Morning Pass is sold out or not loaded yet. Exception: {e}. Moving to next check.")
-
-                if config['CHECK_AFTERNOON']:
-                    print("[DEBUG] Checking Afternoon Pass...")
-                    try:
-                        afternoon_pass = driver.find_element_by_xpath("//*[contains(text(), 'Afternoon Pass (2 p.m. to 8:00 p.m.)')]")
-                        print("[DEBUG] Found Afternoon Pass element.")
-                        availability_status = afternoon_pass.find_element_by_xpath("../..//*[contains(text(), 'Available')]")
-                        print("[DEBUG] Found availability status for Afternoon Pass.")
-                        if availability_status:
-                            print("Afternoon Pass is available! Proceeding to add to cart...")
-                            if select_vehicle_and_checkout(driver, afternoon_pass, config['VEHICLE_KEYWORD']):
-                                print("[DEBUG] Successfully checked out Afternoon Pass.")
-                                break
-                    except (TimeoutException, NoSuchElementException) as e:
-                        print(f"[DEBUG] Afternoon Pass is sold out or not loaded yet. Exception: {e}.")
-
-            print("[DEBUG] Sleeping for 5 seconds before retrying...")
-            time.sleep(5)
+                if book_all_day_pass(driver, config, select_vehicle_and_checkout):
+                    break
+            elif config['CHECK_MORNING'] or config['CHECK_AFTERNOON']:
+                book_half_day_passes_parallel(driver, config, select_vehicle_and_checkout)
+            else:
+                logger.warning("No pass type selected in config.")
+                break
     except Exception as e:
-        print(f"[ERROR] An error occurred in booking flow: {e}")
+        logger.error(f"An error occurred in booking flow: {e}")
     finally:
-        print("[DEBUG] Booking flow finished. Closing driver in 5 seconds...")
+        logger.info("Booking flow finished. Closing driver in 5 seconds...")
         time.sleep(5)
         driver.quit() 
