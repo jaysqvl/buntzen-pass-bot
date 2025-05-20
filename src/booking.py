@@ -7,6 +7,7 @@ import time
 import threading
 import random
 from typing import Callable, Dict, Any
+from datetime import datetime
 from .selenium_utils import robust_find_and_act
 from .chrome_utils import open_new_tab, switch_to_tab
 
@@ -102,6 +103,21 @@ def book_all_day_pass(driver, config, select_vehicle_and_checkout):
         logger.info(f"All Day Pass is sold out or not loaded yet. Exception: {e}.")
     return False
 
+def is_target_date_present(driver, target_date: str) -> bool:
+    """
+    Returns True if the target date button is present on the page, False otherwise.
+    """
+    try:
+        date_buttons = driver.find_elements(By.CSS_SELECTOR, ".datelist button.date")
+        target_day = str(int(target_date.split('-')[2]))
+        for btn in date_buttons:
+            if btn.text.strip() == target_day:
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"Error checking for target date button: {e}")
+        return False
+
 def book_half_day_passes_parallel(
     driver: Any,
     config: Dict[str, Any],
@@ -125,6 +141,15 @@ def book_half_day_passes_parallel(
         logger.info(f"[THREAD-{tab_index}] Started with reload interval {reload_interval}s for {pass_type} pass")
         try:
             driver.get(config['HALF_DAY_PASS_URL'])
+            # Wait for date elements to load
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".datelist button.date"))
+            )
+            # If the target date is not present, exit immediately (no reloads)
+            if not is_target_date_present(driver, config['TARGET_DATE']):
+                logger.error(f"[THREAD-{tab_index}] Target date {config['TARGET_DATE']} not found on page. Exiting to avoid unnecessary requests. Enable scheduling if you want to wait for the date.")
+                stop_event.set()
+                return
             select_date(driver, config['TARGET_DATE'])
             while not stop_event.is_set():
                 try:
@@ -179,23 +204,72 @@ def main_booking_controller(
 ) -> None:
     """
     Modular controller: tries all-day first if enabled, falls back to half-days if enabled and all-day fails.
+    Also enforces date distance and SCHEDULE logic.
     """
-    if config.get('CHECK_ALL_DAY'):
-        logger.info("Trying to book all-day pass...")
-        success = book_all_day_pass(driver, config, select_vehicle_and_checkout)
-        if success:
-            logger.info("Successfully booked all-day pass. Exiting.")
-            return
-        else:
-            logger.info("All-day pass not available or sold out.")
-            if not (config.get('CHECK_MORNING') or config.get('CHECK_AFTERNOON')):
-                logger.info("No half-day passes enabled. Exiting.")
+    # Date distance check
+    today = datetime.now().date()
+    try:
+        target_date = datetime.strptime(config['TARGET_DATE'], "%Y-%m-%d").date()
+    except Exception as e:
+        logger.error(f"Invalid TARGET_DATE format: {config['TARGET_DATE']}. Should be YYYY-MM-DD. Exiting.")
+        return
+    days_diff = abs((target_date - today).days)
+    if days_diff > 3:
+        logger.error(f"Target date {config['TARGET_DATE']} is more than 3 days from today. Exiting to avoid unnecessary requests.")
+        return
+    # SCHEDULE=false: try to book immediately, but if date not present, exit
+    if not config.get('SCHEDULE', False):
+        logger.info("SCHEDULE is disabled. Will attempt to book immediately. (For development/testing only!)")
+        # Try all-day first if enabled
+        if config.get('CHECK_ALL_DAY'):
+            logger.info("Trying to book all-day pass...")
+            # Check if date is present before proceeding
+            driver.get(config['ALL_DAY_PASS_URL'])
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".datelist button.date"))
+            )
+            if not is_target_date_present(driver, config['TARGET_DATE']):
+                logger.error(f"Target date {config['TARGET_DATE']} not found on page. Exiting to avoid unnecessary requests. Enable scheduling to wait for the date.")
                 return
-            logger.info("Falling back to half-day passes...")
-    if config.get('CHECK_MORNING') or config.get('CHECK_AFTERNOON'):
+            success = book_all_day_pass(driver, config, select_vehicle_and_checkout)
+            if success:
+                logger.info("Successfully booked all-day pass. Exiting.")
+                return
+            else:
+                logger.info("All-day pass not available or sold out.")
+                if not (config.get('CHECK_MORNING') or config.get('CHECK_AFTERNOON')):
+                    logger.info("No half-day passes enabled. Exiting.")
+                    return
+                logger.info("Falling back to half-day passes...")
+        # Try half-day passes
         book_half_day_passes_parallel(driver, config, select_vehicle_and_checkout)
+        return
+    # SCHEDULE=true: wait for release time, then proceed as normal
     else:
-        logger.info("No passes enabled in config. Exiting.")
+        logger.info("SCHEDULE is enabled. Will wait for release time and then attempt booking.")
+        # Try all-day first if enabled
+        if config.get('CHECK_ALL_DAY'):
+            logger.info("Trying to book all-day pass...")
+            driver.get(config['ALL_DAY_PASS_URL'])
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".datelist button.date"))
+            )
+            if not is_target_date_present(driver, config['TARGET_DATE']):
+                logger.error(f"Target date {config['TARGET_DATE']} not found on page after release time. Exiting to avoid unnecessary requests. The booking site may be delayed or there may be a configuration issue.")
+                return
+            success = book_all_day_pass(driver, config, select_vehicle_and_checkout)
+            if success:
+                logger.info("Successfully booked all-day pass. Exiting.")
+                return
+            else:
+                logger.info("All-day pass not available or sold out.")
+                if not (config.get('CHECK_MORNING') or config.get('CHECK_AFTERNOON')):
+                    logger.info("No half-day passes enabled. Exiting.")
+                    return
+                logger.info("Falling back to half-day passes...")
+        # Try half-day passes
+        book_half_day_passes_parallel(driver, config, select_vehicle_and_checkout)
+        return
 
 def run_booking_flow(driver, config, select_vehicle_and_checkout):
     """

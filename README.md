@@ -49,6 +49,8 @@ This project's purpose is to make it possible for anyone—including the technol
 - Configurable via `.env` file
 - **Future:** Simple web UI for non-technical users
 
+---
+
 ## Requirements
 - Python 3.7+
 - Google Chrome installed
@@ -87,20 +89,21 @@ venv\Scripts\activate
 3. **Create a `.env` file** in the project root (or copy `.env_example`):
 
 ```
-# --- Scheduling Configuration ---
-TARGET_DATE=2024-06-18
-SCHEDULE=true
+# --- General ---
 USER_DATA_DIR=chrome-profile
 
-# --- Booking Configuration ---
-VEHICLE_KEYWORD=Tesla
+# --- Booking Target & Timing ---
+TARGET_DATE=2024-06-18
+SCHEDULE=true
+SLOW_POLL_UNTIL=06:59
+START_TIME=07:00
+
+# --- Booking URLs ---
 ALL_DAY_PASS_URL=https://your-all-day-pass-url.com
 HALF_DAY_PASS_URL=https://your-half-day-pass-url.com
 
-# --- Optional: Polling Configuration ---
-SLOW_POLL_UNTIL=06:59
-START_TIME=07:00
-DAY_OF_WEEK=Monday
+# --- Vehicle Selection ---
+VEHICLE_KEYWORD=Tesla
 
 # --- Pass Type Selection ---
 CHECK_ALL_DAY=true
@@ -111,7 +114,21 @@ CHECK_AFTERNOON=false
 - `USER_DATA_DIR` defaults to `chrome-profile` in this repo if left blank.
 - `VEHICLE_KEYWORD` should be a unique keyword or phrase to identify your vehicle in the dropdown (e.g., 'Tesla', 'MV763F').
 - Set `SCHEDULE` to `true` to enable scheduled runs for a specific `TARGET_DATE`.
-- `SLOW_POLL_UNTIL` and `START_TIME` control the polling speed before booking opens.
+- `SLOW_POLL_UNTIL` and `START_TIME` control the polling speed before booking opens (only used if `SCHEDULE=true`).
+- **The bot will always use the day from `TARGET_DATE` to select the correct date on the booking site.**
+
+### Pass Type Selection Matrix
+- The bot will attempt to book passes in the following priority order:
+    1. If `CHECK_ALL_DAY` is true, it will try to book an All Day Pass first.
+    2. If `CHECK_ALL_DAY` is true but the All Day Pass is not available, and either `CHECK_MORNING` or `CHECK_AFTERNOON` is also true, it will fall back to try for half-day passes.
+    3. If both half-day passes are enabled, the bot will try Afternoon first, then Morning.
+    4. If only one of the half-day passes is enabled, only that pass will be attempted.
+    5. If `CHECK_ALL_DAY` is false, it will only try for the enabled half-day passes (Afternoon first if both are enabled).
+- This allows you to control fallback and priority by toggling these options.
+- **Examples:**
+    - `CHECK_ALL_DAY=true`, `CHECK_MORNING=true`, `CHECK_AFTERNOON=true` will try all-day, then afternoon, then morning.
+    - `CHECK_ALL_DAY=false`, `CHECK_MORNING=true`, `CHECK_AFTERNOON=true` will try afternoon, then morning.
+    - `CHECK_ALL_DAY=false`, `CHECK_MORNING=true`, `CHECK_AFTERNOON=false` will only try for the morning pass.
 
 4. **Ensure your Chrome profile is set up and logged in** (if the site requires authentication).
 

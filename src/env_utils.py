@@ -14,7 +14,6 @@ def load_config():
     config['SCHEDULE'] = os.getenv("SCHEDULE", "false").lower() == "true"
     config['SLOW_POLL_UNTIL'] = os.getenv("SLOW_POLL_UNTIL")
     config['START_TIME'] = os.getenv("START_TIME")
-    config['DAY_OF_WEEK'] = os.getenv("DAY_OF_WEEK").capitalize() if os.getenv("DAY_OF_WEEK") else None
     config['VEHICLE_KEYWORD'] = os.getenv("VEHICLE_KEYWORD")
     config['ALL_DAY_PASS_URL'] = os.getenv("ALL_DAY_PASS_URL")
     config['HALF_DAY_PASS_URL'] = os.getenv("HALF_DAY_PASS_URL")
