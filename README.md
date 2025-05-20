@@ -1,14 +1,53 @@
-# Buntzen Pass Bot
+# Buntzen Pass Bot (Beta)
 
-This project automates the process of checking and reserving day passes for Buntzen Lake using Selenium and undetected-chromedriver. It supports precise scheduling for pass releases, uses your Chrome profile for authentication, and leverages NTP for accurate timing.
+> **Empowering everyone to enjoy BC's beautiful lakes and parks—no matter their tech skills.**
+
+This project's purpose is to make it possible for anyone—including the technologically disadvantaged, like my parents—to get fair access to the beautiful lakes and parks of BC, such as Buntzen Lake. With the rise of online booking systems that sell out instantly, it's become nearly impossible for many people to secure a spot without technical help. My goal is to eventually provide a simple web UI so that anyone can set up what they want and book away—no coding or command line required. Buntzen has been my family's favourite lake for decades, and I want to make sure everyone has a fair chance to enjoy it, not just those with the fastest internet and reflexes.
+
+---
+
+## 🚀 Quick Start (complicated for now I know, docker self-hosted eventually)
+
+1. **Clone this repository:**
+   ```bash
+   git clone https://github.com/yourusername/buntzen-pass-bot.git
+   cd buntzen-pass-bot
+   ```
+
+2. **Create and activate a virtual environment:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Copy the example config and edit it:**
+   ```bash
+   cp .env_example .env
+   ```
+   - Open `.env` in a text editor and fill in your preferences (see below for details).
+
+5. **Run the bot:**
+   ```bash
+   python run.py
+   ```
+
+   - The bot will open Chrome. Log in to the booking site if prompted, then press Enter in your terminal to continue.
+
+---
 
 ## Features
 - Automatically checks for All Day, Morning, or Afternoon passes
 - Adds available passes to cart and proceeds to checkout
 - Uses your existing Chrome profile for authentication
-- Supports scheduling for specific dates and times (with fast/slow polling)
+- Supports precise scheduling for pass releases (with fast/slow polling)
 - Uses NTP (Network Time Protocol) for accurate time
 - Configurable via `.env` file
+- **Future:** Simple web UI for non-technical users
 
 ## Requirements
 - Python 3.7+
