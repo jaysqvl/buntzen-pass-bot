@@ -5,11 +5,17 @@ import time
 import os
 from datetime import datetime, timedelta, time as dt_time
 import pytz
+import threading
+import random
 
 from src.env_utils import load_config
 from src.vehicle_selector import select_vehicle_and_checkout
 from src.booking import run_booking_flow
 from src.scheduler import get_ntp_time, get_seconds_until, get_days_until
+from src.chrome_utils import open_new_tab, switch_to_tab
+
+def log(msg):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 # Load environment variables from .env file
 load_dotenv(override=True)
@@ -82,7 +88,64 @@ print(f"User agent: {user_agent}")
 print(f"Chrome will use user data dir: {config['USER_DATA_DIR']}")
 print("Initializing Chrome driver...")
 driver = uc.Chrome(options=driver_options, use_subprocess=True)
-print("Chrome driver initialized. Starting booking flow...")
+print("Chrome driver initialized. Opening Browser...")
 
-# Run the main booking flow
-run_booking_flow(driver, config, select_vehicle_and_checkout)
+# Prompt user to log in manually before continuing
+print("Please log in to the Buntzen website in the opened browser window.")
+input("Once you have successfully logged in, press Enter here to continue...")
+
+# --- Parallel Booking Logic ---
+
+def parallel_booking_worker(driver, tab_index, stop_event, reload_interval, config, select_vehicle_and_checkout, winner_info):
+    switch_to_tab(driver, tab_index)
+    log(f"[THREAD-{tab_index}] Started with reload interval {reload_interval}s")
+    try:
+        from src.selenium_utils import robust_find_and_act
+        from selenium.webdriver.common.by import By
+        # Go to the all-day pass page
+        driver.get(config['ALL_DAY_PASS_URL'])
+        while not stop_event.is_set():
+            try:
+                # Try to find date buttons quickly
+                robust_find_and_act(driver, By.CSS_SELECTOR, ".datelist button.date", wait_condition='present', timeout=3, retries=2)
+                log(f"[THREAD-{tab_index}] Date buttons found! Signaling other thread to stop and proceeding with booking.")
+                winner_info['winner'] = tab_index
+                stop_event.set()
+                # Proceed with the normal booking flow in this tab
+                run_booking_flow(driver, config, select_vehicle_and_checkout)
+                log(f"[THREAD-{tab_index}] Finished booking flow.")
+                return
+            except Exception as e:
+                jitter = random.uniform(-0.5, 0.5)
+                actual_interval = max(0.5, reload_interval + jitter)
+                log(f"[THREAD-{tab_index}] Date buttons not found, reloading in {actual_interval:.2f}s...")
+                time.sleep(actual_interval)
+                driver.refresh()
+        if winner_info.get('winner') == tab_index:
+            log(f"[THREAD-{tab_index}] This thread won and completed the booking.")
+        else:
+            log(f"[THREAD-{tab_index}] Stopping because another thread (THREAD-{winner_info.get('winner')}) succeeded.")
+    except Exception as e:
+        log(f"[THREAD-{tab_index}] Exception: {e}")
+
+# Open a second tab
+open_new_tab(driver, config['ALL_DAY_PASS_URL'])
+
+# Set up threading event and winner info
+top_event = threading.Event()
+winner_info = {}
+
+# Start two threads: one fast, one slow
+thread_fast = threading.Thread(target=parallel_booking_worker, args=(driver, 0, top_event, 2, config, select_vehicle_and_checkout, winner_info))
+thread_slow = threading.Thread(target=parallel_booking_worker, args=(driver, 1, top_event, 5, config, select_vehicle_and_checkout, winner_info))
+
+log("[MAIN] Starting parallel booking threads.")
+thread_fast.start()
+thread_slow.start()
+
+thread_fast.join()
+thread_slow.join()
+
+log(f"[MAIN] Booking attempt finished. Winner: THREAD-{winner_info.get('winner')}. Closing browser in 5 seconds...")
+time.sleep(5)
+driver.quit()

@@ -2,7 +2,6 @@ import os
 import sys
 import shutil
 
-
 def find_chrome_path():
     """
     Automatically find the Chrome executable path based on the user's platform.
@@ -53,4 +52,20 @@ def list_chrome_profiles(user_data_dir):
         entry_path = os.path.join(user_data_dir, entry)
         if os.path.isdir(entry_path) and (entry == 'Default' or entry.startswith('Profile')):
             profiles.append(entry)
-    return profiles 
+    return profiles
+
+def open_new_tab(driver, url=None):
+    """Open a new tab in the current browser window and optionally navigate to a URL."""
+    driver.execute_script("window.open('');")
+    driver.switch_to.window(driver.window_handles[-1])
+    if url:
+        driver.get(url)
+    return driver.current_window_handle
+
+def switch_to_tab(driver, tab_index):
+    """Switch to the tab at the given index (0-based)."""
+    handles = driver.window_handles
+    if tab_index < 0 or tab_index >= len(handles):
+        raise IndexError(f"Tab index {tab_index} out of range.")
+    driver.switch_to.window(handles[tab_index])
+    return handles[tab_index] 

@@ -1,5 +1,9 @@
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
+from .selenium_utils import robust_find_and_act
 
 def run_booking_flow(driver, config, select_vehicle_and_checkout):
     """
@@ -15,11 +19,48 @@ def run_booking_flow(driver, config, select_vehicle_and_checkout):
             if config['CHECK_ALL_DAY']:
                 print(f"[DEBUG] Opening All Day Pass URL: {config['ALL_DAY_PASS_URL']}")
                 driver.get(config['ALL_DAY_PASS_URL'])
-                print("[DEBUG] Checking All Day Pass...")
+                print("[DEBUG] Waiting for date buttons to load...")
                 try:
-                    all_day_pass = driver.find_element_by_xpath("//*[contains(text(), 'All-day Pass (8 a.m. to 8:00 p.m.)')]")
+                    # --- Wait for date buttons or reload if missing ---
+                    reload_attempts = 0
+                    while True:
+                        try:
+                            robust_find_and_act(driver, By.CSS_SELECTOR, ".datelist button.date", wait_condition='present', timeout=5, retries=2)
+                            break  # Found date buttons, proceed
+                        except Exception as e:
+                            reload_attempts += 1
+                            print(f"[WARN] Date buttons not found after 5s, reloading page (attempt {reload_attempts})...")
+                            driver.refresh()
+                            time.sleep(1)  # Give the browser a moment to reload
+                    # Find all date buttons
+                    date_buttons = driver.find_elements(By.CSS_SELECTOR, ".datelist button.date")
+                    found = False
+                    target_day = str(int(config['TARGET_DATE'].split('-')[2]))  # Remove leading zero
+                    for btn in date_buttons:
+                        if btn.text.strip() == target_day:
+                            # If not already active, click it
+                            if 'active' not in btn.get_attribute('class'):
+                                print(f"[DEBUG] Clicking date button for {target_day}")
+                                robust_find_and_act(driver, By.CSS_SELECTOR, f".datelist button.date:nth-child({date_buttons.index(btn)+1})", action=lambda el: el.click(), wait_condition='clickable', timeout=5, retries=5)
+                                # Wait for the button to become active
+                                WebDriverWait(driver, 5).until(
+                                    lambda d: 'active' in btn.get_attribute('class')
+                                )
+                            else:
+                                print(f"[DEBUG] Date button for {target_day} is already active.")
+                            found = True
+                            break
+                    if not found:
+                        print(f"[DEBUG] Date button for {target_day} not found. Retrying...")
+                        time.sleep(2)
+                        continue  # Retry loop
+                    print(f"[DEBUG] Correct date button for {target_day} is now active.")
+                    # --- End date selection ---
+
+                    print("[DEBUG] Checking All Day Pass...")
+                    all_day_pass = robust_find_and_act(driver, By.XPATH, "//*[contains(text(), 'All-day Pass (8 a.m. to 8:00 p.m.)')]", wait_condition='visible', timeout=10, retries=10)
                     print("[DEBUG] Found All Day Pass element.")
-                    availability_status = all_day_pass.find_element_by_xpath("../..//*[contains(text(), 'Available')]")
+                    availability_status = robust_find_and_act(all_day_pass, By.XPATH, "../..//*[contains(text(), 'Available')]", wait_condition='visible', timeout=5, retries=5)
                     print("[DEBUG] Found availability status for All Day Pass.")
                     if availability_status:
                         print("All Day Pass is available! Proceeding to add to cart...")
