@@ -1,0 +1,13 @@
+services:
+  buntzen-pass-bot:
+    build: .
+    container_name: buntzen-pass-bot
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8090}:8080"
+    environment:
+      APPDATA_DIR: /appdata
+      MAX_CONCURRENT_JOBS: "2"
+    volumes:
+      - ./appdata:/appdata
+    shm_size: "1gb"

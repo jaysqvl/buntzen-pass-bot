@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% macro text_field(label, name, type="text", required=false, placeholder="", step="", autocomplete="off") %}
+  <label class="field">
+    <span>{{ label }}</span>
+    <input
+      type="{{ type }}"
+      name="{{ name }}"
+      value="{{ values.get(name, '') }}"
+      placeholder="{{ placeholder }}"
+      autocomplete="{{ autocomplete }}"
+      {% if required %}required{% endif %}
+      {% if step %}step="{{ step }}"{% endif %}
+    >
+  </label>
+{% endmacro %}
+
+{% macro secret_field(label, name, placeholder) %}
+  <label class="field">
+    <span>{{ label }}</span>
+    <input type="password" name="{{ name }}" placeholder="{{ placeholder }}" autocomplete="off">
+  </label>
+{% endmacro %}
+
+{% macro checkbox(label, name) %}
+  <label class="check-field">
+    <input type="checkbox" name="{{ name }}" {% if values.get(name) %}checked{% endif %}>
+    <span>{{ label }}</span>
+  </label>
+{% endmacro %}
+
+{% block title %}{{ title }} · Buntzen Pass Bot{% endblock %}
+
+{% block content %}
+  <section class="page-title">
+    <div>
+      <p class="eyebrow">Instance Setup</p>
+      <h1>{{ title }}</h1>
+      <p>Save one instance per Yodel account or person. Each instance gets its own persistent browser profile.</p>
+    </div>
+    <a class="button" href="/">Dashboard</a>
+  </section>
+
+  <form method="post" action="{{ '/instances/' ~ instance.id if instance else '/instances' }}" class="instance-form">
+    <section class="form-section">
+      <div class="form-section-head">
+        <div>
+          <h2>Basics</h2>
+          <p>Who this run is for and when the pass releases.</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        {{ text_field("Name", "name", required=true, placeholder="Jay family account") }}
+        {{ text_field("Profile Name", "profile_name", placeholder="auto-filled from name") }}
+        {{ text_field("Target Date", "target_date", type="date", required=true) }}
+        {{ text_field("Release Time", "start_time", type="time", required=true) }}
+        {{ text_field("Timezone", "timezone_name", required=true) }}
+        <label class="field">
+          <span>Run Mode</span>
+          <select name="run_mode">
+            {% for mode in ["dry-run", "manual", "auto"] %}
+              <option value="{{ mode }}" {% if values.get("run_mode") == mode %}selected{% endif %}>{{ mode }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="check-row">
+        {{ checkbox("Enabled", "enabled") }}
+        {{ checkbox("Auto-queue during prep window", "schedule_enabled") }}
+      </div>
+    </section>
+
+    <section class="form-section">
+      <div class="form-section-head">
+        <div>
+          <h2>Pass Selection</h2>
+          <p>Choose the pass types to try and the saved vehicle to match.</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        {{ text_field("Vehicle Keyword", "vehicle_keyword", required=true, placeholder="Plate, nickname, or unique vehicle text") }}
+        {{ text_field("All Day URL", "all_day_pass_url") }}
+        {{ text_field("Half Day URL", "half_day_pass_url") }}
+      </div>
+      <div class="check-row">
+        {{ checkbox("All Day", "check_all_day") }}
+        {{ checkbox("Afternoon", "check_afternoon") }}
+        {{ checkbox("Morning", "check_morning") }}
+      </div>
+    </section>
+
+    <section class="form-section">
+      <div class="form-section-head">
+        <div>
+          <h2>Login And OTP</h2>
+          <p>Credentials are stored in the appdata SQLite database for this personal deployment.</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        {{ text_field("Yodel Email", "yodel_email", type="email", autocomplete="username") }}
+        {{ secret_field("Yodel Password", "yodel_password", "Leave blank to keep existing") }}
+        {{ text_field("Twilio Account SID", "twilio_account_sid") }}
+        {{ secret_field("Twilio Auth Token", "twilio_auth_token", "Leave blank to keep existing") }}
+        {{ text_field("Twilio OTP Number", "twilio_otp_number", placeholder="+16045551212") }}
+        {{ text_field("Alert To Number", "twilio_alert_to_number", placeholder="+16045551212") }}
+      </div>
+      <div class="check-row">
+        {{ checkbox("Twilio alerts enabled", "twilio_alerts_enabled") }}
+      </div>
+    </section>
+
+    <details class="form-section">
+      <summary>
+        <span>
+          <strong>Browser And Timing</strong>
+          <small>Defaults are fine for most runs.</small>
+        </span>
+      </summary>
+      <div class="form-grid details-grid">
+        {{ text_field("Browser Channel", "browser_channel", placeholder="blank in Docker, chrome locally") }}
+        {{ text_field("Prep Minutes Before", "prep_minutes_before", type="number") }}
+        {{ text_field("Auth Deadline Minutes", "auth_deadline_minutes_before", type="number") }}
+        {{ text_field("Poll Deadline Seconds", "poll_deadline_seconds", type="number") }}
+        {{ text_field("Poll Min Seconds", "poll_min_seconds", type="number", step="0.1") }}
+        {{ text_field("Poll Max Seconds", "poll_max_seconds", type="number", step="0.1") }}
+        {{ text_field("OTP Timeout Seconds", "otp_timeout_seconds", type="number") }}
+        {{ text_field("OTP Poll Interval", "otp_poll_interval_seconds", type="number", step="0.1") }}
+      </div>
+      <div class="check-row">
+        {{ checkbox("Headless browser", "headless") }}
+      </div>
+    </details>
+
+    <div class="sticky-actions">
+      <button class="primary" type="submit">Save Instance</button>
+      <a class="button" href="/">Cancel</a>
+    </div>
+  </form>
+
+  {% if instance %}
+    <form class="delete-form" method="post" action="/instances/{{ instance.id }}/delete">
+      <button class="danger" type="submit">Delete Instance</button>
+    </form>
+  {% endif %}
+{% endblock %}

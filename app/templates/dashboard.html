@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard · Buntzen Pass Bot{% endblock %}
+
+{% block content %}
+  <section class="hero-band">
+    <div>
+      <p class="eyebrow">Booking Control</p>
+      <h1>Buntzen pass command center</h1>
+      <p class="hero-copy">
+        Manage saved browser profiles, validate login, dry-run the booking flow,
+        and queue unattended jobs from one LAN dashboard.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <a class="button primary" href="/instances/new">Create Instance</a>
+      <a class="button" href="/jobs">View Jobs</a>
+    </div>
+  </section>
+
+  <section class="stats-grid" aria-label="Dashboard summary">
+    <div class="stat">
+      <span>{{ instances|length }}</span>
+      <strong>Instances</strong>
+    </div>
+    <div class="stat">
+      <span>{{ scheduled_instances|length }}</span>
+      <strong>Auto-queued</strong>
+    </div>
+    <div class="stat">
+      <span>{{ active_jobs|length }}</span>
+      <strong>Active jobs</strong>
+    </div>
+  </section>
+
+  <section class="section-heading">
+    <div>
+      <p class="eyebrow">Accounts</p>
+      <h2>Saved Instances</h2>
+    </div>
+    <a class="button compact" href="/instances/new">Add</a>
+  </section>
+
+  {% if instances %}
+    <section class="instance-grid">
+      {% for item in instances %}
+        <article class="instance-card">
+          <div class="card-head">
+            <div>
+              <a class="card-title" href="/instances/{{ item.id }}">{{ item.name }}</a>
+              <p>{{ item.profile_name or "profile" }} · {{ item.timezone_name }}</p>
+            </div>
+            <span class="pill {{ 'ok' if item.enabled else 'muted-pill' }}">
+              {{ "Enabled" if item.enabled else "Disabled" }}
+            </span>
+          </div>
+
+          <dl class="meta-grid">
+            <div>
+              <dt>Target</dt>
+              <dd>{{ item.target_date }} at {{ item.start_time }}</dd>
+            </div>
+            <div>
+              <dt>Mode</dt>
+              <dd>{{ item.run_mode }}</dd>
+            </div>
+            <div>
+              <dt>Vehicle</dt>
+              <dd>{{ item.vehicle_keyword or "Not set" }}</dd>
+            </div>
+            <div>
+              <dt>Schedule</dt>
+              <dd>{{ "Auto-queue" if item.schedule_enabled else "Manual" }}</dd>
+            </div>
+          </dl>
+
+          <div class="pass-row">
+            {% if item.check_all_day %}<span>All day</span>{% endif %}
+            {% if item.check_afternoon %}<span>Afternoon</span>{% endif %}
+            {% if item.check_morning %}<span>Morning</span>{% endif %}
+            {% if not item.check_all_day and not item.check_afternoon and not item.check_morning %}
+              <span>Pass type not set</span>
+            {% endif %}
+          </div>
+
+          <div class="button-row">
+            <form method="post" action="/instances/{{ item.id }}/run/auth-check">
+              <button type="submit">Auth</button>
+            </form>
+            <form method="post" action="/instances/{{ item.id }}/run/dry-run">
+              <button type="submit">Dry Run</button>
+            </form>
+            <form method="post" action="/instances/{{ item.id }}/run/book">
+              <button class="primary" type="submit">Queue Booking</button>
+            </form>
+            <a class="button ghost" href="/instances/{{ item.id }}">Edit</a>
+          </div>
+        </article>
+      {% endfor %}
+    </section>
+  {% else %}
+    <section class="empty-state">
+      <h2>No instances yet</h2>
+      <p>Create one saved profile per account or person, then run auth-check and dry-run before using auto mode.</p>
+      <a class="button primary" href="/instances/new">Create First Instance</a>
+    </section>
+  {% endif %}
+
+  <section class="section-heading">
+    <div>
+      <p class="eyebrow">Latest Activity</p>
+      <h2>Recent Jobs</h2>
+    </div>
+    <a class="button compact" href="/jobs">All Jobs</a>
+  </section>
+
+  {% include "partials/jobs_table.html" %}
+{% endblock %}

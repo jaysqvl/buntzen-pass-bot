@@ -1,7 +1,0 @@
-selenium
-undetected-chromedriver
-fake-useragent
-ntplib
-dotenv
-setuptools
-pytz

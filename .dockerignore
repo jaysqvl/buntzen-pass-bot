@@ -1,0 +1,10 @@
+.git
+.venv
+env
+__pycache__
+*.pyc
+.env
+appdata
+artifacts
+playwright-profile
+chrome-profile

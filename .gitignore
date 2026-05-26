@@ -1,4 +1,8 @@
 .env
 __pycache__
 env/
+.venv/
 chrome-profile/
+playwright-profile/
+artifacts/
+appdata/

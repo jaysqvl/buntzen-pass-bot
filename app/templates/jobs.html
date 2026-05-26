@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs · Buntzen Pass Bot{% endblock %}
+
+{% block content %}
+  <section class="page-title">
+    <div>
+      <p class="eyebrow">Job History</p>
+      <h1>Runs and diagnostics</h1>
+      <p>Queued and running jobs refresh every {{ refresh_seconds }} seconds.</p>
+    </div>
+    <a class="button" href="/">Dashboard</a>
+  </section>
+
+  {% include "partials/jobs_table.html" %}
+{% endblock %}

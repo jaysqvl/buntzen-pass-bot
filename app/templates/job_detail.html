@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Job #{{ job.id }} · Buntzen Pass Bot{% endblock %}
+
+{% block content %}
+  <section class="page-title">
+    <div>
+      <p class="eyebrow">Job Detail</p>
+      <h1>Job #{{ job.id }}</h1>
+      <p>{{ job.instance_name }} · {{ job.command }} · {{ job.run_mode }}</p>
+    </div>
+    <div class="hero-actions">
+      {% if job.log_path %}
+        <a class="button primary" href="/jobs/{{ job.id }}/log">View Log</a>
+      {% endif %}
+      <a class="button" href="/jobs">Jobs</a>
+    </div>
+  </section>
+
+  <section class="detail-panel">
+    <div class="detail-row">
+      <span>Status</span>
+      <strong><span class="status {{ job.status }}">{{ job.status }}</span></strong>
+    </div>
+    <div class="detail-row">
+      <span>Message</span>
+      <strong>{{ job.message or "No message yet." }}</strong>
+    </div>
+    <div class="detail-row">
+      <span>Created</span>
+      <strong>{{ job.created_at }}</strong>
+    </div>
+    <div class="detail-row">
+      <span>Started</span>
+      <strong>{{ job.started_at or "Not started" }}</strong>
+    </div>
+    <div class="detail-row">
+      <span>Finished</span>
+      <strong>{{ job.finished_at or "Not finished" }}</strong>
+    </div>
+    <div class="detail-row">
+      <span>Exit Code</span>
+      <strong>{{ "" if job.exit_code is none else job.exit_code }}</strong>
+    </div>
+    <div class="detail-row">
+      <span>Artifacts</span>
+      <strong class="path-text">{{ job.artifact_dir or "Not created yet" }}</strong>
+    </div>
+    <div class="detail-row">
+      <span>Log Path</span>
+      <strong class="path-text">{{ job.log_path or "Not created yet" }}</strong>
+    </div>
+  </section>
+{% endblock %}

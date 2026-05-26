@@ -1,152 +1,133 @@
-# Buntzen Pass Bot (Beta)
+# Buntzen Pass Bot
 
-> **Empowering everyone to enjoy BC's beautiful lakes and parks—no matter their tech skills.**
+Python + Playwright app for unattended Buntzen Lake parking pass booking through Yodel.
 
-This project's purpose is to make it possible for anyone—including the technologically disadvantaged, like my parents—to get fair access to the beautiful lakes and parks of BC, such as Buntzen Lake. With the rise of online booking systems that sell out instantly, it's become nearly impossible for many people to secure a spot without technical help. My goal is to eventually provide a simple web UI so that anyone can set up what they want and book away—no coding or command line required. Buntzen has been my family's favourite lake for decades, and I want to make sure everyone has a fair chance to enjoy it, not just those with the fastest internet and reflexes.
+The app is designed for personal deployment with Docker/Portainer:
 
----
+- web UI for multiple saved booking instances
+- one persistent browser profile per account/person
+- SQLite database in appdata
+- job history, logs, screenshots, and Playwright traces in appdata
+- Twilio SMS OTP polling for unattended 2FA
 
-## 🚀 Quick Start (complicated for now I know, docker self-hosted eventually)
+Use responsibly and respect the booking site's rules and rate limits. This app focuses on reliable browser automation with persistent profiles, conservative timing, and clear diagnostics.
 
-1. **Clone this repository:**
-   ```bash
-   git clone https://github.com/yourusername/buntzen-pass-bot.git
-   cd buntzen-pass-bot
-   ```
+## Docker Setup
 
-2. **Create and activate a virtual environment:**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Copy the example config and edit it:**
-   ```bash
-   cp .env_example .env
-   ```
-   - Open `.env` in a text editor and fill in your preferences (see below for details).
-
-5. **Run the bot:**
-   ```bash
-   python run.py
-   ```
-
-   - The bot will open Chrome. Log in to the booking site if prompted, then press Enter in your terminal to continue.
-
----
-
-## Features
-- Automatically checks for All Day, Morning, or Afternoon passes
-- Adds available passes to cart and proceeds to checkout
-- Uses your existing Chrome profile for authentication
-- Supports precise scheduling for pass releases (with fast/slow polling)
-- Uses NTP (Network Time Protocol) for accurate time
-- Configurable via `.env` file
-- **Future:** Simple web UI for non-technical users
-
----
-
-## Requirements
-- Python 3.7+
-- Google Chrome installed
-- Logged into yodelportal (pass the 2FA)
-
-### Python Packages
-- selenium
-- undetected-chromedriver
-- fake-useragent
-- ntplib
-- dotenv
-- setuptools
-- pytz
-
-Install requirements with:
 ```bash
-pip install -r requirements.txt
+docker compose up -d --build
 ```
 
-## Setup
-1. **Clone this repository**
-2. **Create and activate a virtual environment**
+Open:
 
-On Linux/macOS:
+```text
+http://localhost:8090
+```
+
+For Portainer, deploy the included `docker-compose.yml`.
+
+Recommended volume mapping:
+
+```text
+./appdata:/appdata
+```
+
+Optional environment variables:
+
+- `APPDATA_DIR=/appdata`
+- `WEB_PORT=8090`
+- `MAX_CONCURRENT_JOBS=2`
+
+Inside `/appdata`, the app stores:
+
+- `buntzen.db`: SQLite database
+- `profiles/`: persistent Playwright browser profiles, one per instance
+- `artifacts/`: logs, screenshots, HTML captures, and traces
+
+## LAN Workflow
+
+The web UI is the main interface. Anyone on your LAN who can reach the container can create an instance, run validation jobs, and queue booking jobs.
+
+Dashboard files live in:
+
+- `app/templates/`: server-rendered HTML pages and partials
+- `app/static/app.css`: dashboard styling
+
+Button behavior:
+
+- `Auth`: opens the saved browser profile and verifies login/OTP.
+- `Dry Run`: verifies date, pass, and vehicle selection without checkout.
+- `Queue Booking`: starts a job immediately, but the job waits internally until the configured prep/release window.
+- `Auto-queue during prep window`: lets the background scheduler create the booking job automatically when the prep window arrives.
+
+## First Test Flow
+
+1. Open the web UI.
+2. Create an instance for one account/person.
+3. Fill in the target date, vehicle keyword, pass preferences, Twilio details, and Yodel credentials if needed.
+4. Run `Auth` for that instance.
+5. Run `Dry Run`.
+6. Only after both pass, set `Run Mode` to `auto` and use `Queue Booking` or enable `Auto-queue during prep window`.
+
+For unattended use, the Yodel account should use `TWILIO_OTP_NUMBER` as its SMS 2FA number. The app polls Twilio for fresh inbound OTP messages and enters the code in the browser.
+
+The Docker/web-app path is the primary path. Older Selenium helper files remain in the repository as legacy reference code, but the active dependencies and Docker image use Playwright.
+
+## Instance Fields
+
+- `Name`: human-friendly account/person name.
+- `Profile Name`: persistent browser profile folder under `/appdata/profiles`.
+- `Target Date`: pass date, not release date.
+- `Start Time`: release time, normally `07:00`.
+- `Run Mode`: `dry-run`, `manual`, or `auto`.
+- `Headless`: enabled by default for Docker.
+- `Vehicle Keyword`: unique text matching the saved vehicle.
+- `All Day`, `Morning`, `Afternoon`: pass preferences. Order is all-day, then afternoon, then morning.
+- `Auto-queue during prep window`: queue the booking job automatically during the prep window.
+
+## Local CLI
+
+The old single-instance CLI still works for local debugging.
+
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
+cp .env_example .env
+uv run python run.py auth-check
+uv run python run.py dry-run
+uv run python run.py book --mode auto
 ```
 
-On Windows:
-```cmd
-python -m venv venv
-venv\Scripts\activate
-```
+On this Ubuntu/WSL machine, Playwright-managed Chromium is not supported, so local CLI use needs Linux Google Chrome installed and `BROWSER_CHANNEL=chrome`.
 
-3. **Create a `.env` file** in the project root (or copy `.env_example`):
+In Docker, the Playwright base image provides the browser; leave per-instance `Browser Channel` blank unless you know you need a specific installed browser channel.
 
-```
-# --- General ---
-USER_DATA_DIR=chrome-profile
+## Twilio 2FA
 
-# --- Booking Target & Timing ---
-TARGET_DATE=2024-06-18
-SCHEDULE=true
-SLOW_POLL_UNTIL=06:59
-START_TIME=07:00
+Required for fully unattended fresh login:
 
-# --- Booking URLs ---
-ALL_DAY_PASS_URL=https://your-all-day-pass-url.com
-HALF_DAY_PASS_URL=https://your-half-day-pass-url.com
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_OTP_NUMBER`
+- `TWILIO_ALERT_TO_NUMBER`
 
-# --- Vehicle Selection ---
-VEHICLE_KEYWORD=Tesla
+The OTP reader accepts only fresh inbound messages sent after the bot submits login or requests a code. If Yodel will not deliver OTP messages to a Twilio number, the fallback is using an already-authenticated persistent profile.
 
-# --- Pass Type Selection ---
-CHECK_ALL_DAY=true
-CHECK_MORNING=false
-CHECK_AFTERNOON=false
-```
-- Adjust the values to match your setup and preferences.
-- `USER_DATA_DIR` defaults to `chrome-profile` in this repo if left blank.
-- `VEHICLE_KEYWORD` should be a unique keyword or phrase to identify your vehicle in the dropdown (e.g., 'Tesla', 'MV763F').
-- Set `SCHEDULE` to `true` to enable scheduled runs for a specific `TARGET_DATE`.
-- `SLOW_POLL_UNTIL` and `START_TIME` control the polling speed before booking opens (only used if `SCHEDULE=true`).
-- **The bot will always use the day from `TARGET_DATE` to select the correct date on the booking site.**
-
-### Pass Type Selection Matrix
-- The bot will attempt to book passes in the following priority order:
-    1. If `CHECK_ALL_DAY` is true, it will try to book an All Day Pass first.
-    2. If `CHECK_ALL_DAY` is true but the All Day Pass is not available, and either `CHECK_MORNING` or `CHECK_AFTERNOON` is also true, it will fall back to try for half-day passes.
-    3. If both half-day passes are enabled, the bot will try Afternoon first, then Morning.
-    4. If only one of the half-day passes is enabled, only that pass will be attempted.
-    5. If `CHECK_ALL_DAY` is false, it will only try for the enabled half-day passes (Afternoon first if both are enabled).
-- This allows you to control fallback and priority by toggling these options.
-- **Examples:**
-    - `CHECK_ALL_DAY=true`, `CHECK_MORNING=true`, `CHECK_AFTERNOON=true` will try all-day, then afternoon, then morning.
-    - `CHECK_ALL_DAY=false`, `CHECK_MORNING=true`, `CHECK_AFTERNOON=true` will try afternoon, then morning.
-    - `CHECK_ALL_DAY=false`, `CHECK_MORNING=true`, `CHECK_AFTERNOON=false` will only try for the morning pass.
-
-4. **Ensure your Chrome profile is set up and logged in** (if the site requires authentication).
-
-## Usage
-Run the bot with:
-```bash
-python run.py
-```
-
-- If scheduling is enabled, the script will wait for the correct release window for your `TARGET_DATE` before starting the booking flow.
-- The script will check for available passes and attempt to reserve one according to your settings.
+Twilio is the supported unattended OTP receiver today. An iPhone Shortcuts-based OTP inbox is possible, but it is not implemented yet. That would make your iPhone receive the Yodel SMS, then use a message automation to POST the code into the LAN app for the job to consume.
 
 ## Troubleshooting
-- **NTP errors:** If the script cannot reach the NTP server, it will fall back to your system clock and print a warning.
-- **Chrome profile issues:** Make sure the `USER_DATA_DIR` is correct and not in use by another Chrome process.
-- **Element not found errors:** The website layout may have changed. Update the XPaths in the script if needed.
-- **Permissions:** Ensure you have permission to access your Chrome user data directory.
-- **Vehicle not found:** Ensure `VEHICLE_KEYWORD` matches a unique part of your vehicle's name in the dropdown.
 
-## Disclaimer
-This script is for educational purposes only. Use responsibly and respect the terms of service of the website you are automating.
+- `TARGET_DATE is required`: your local `.env` is old; replace/update it from `.env_example`.
+- Browser launch fails locally: install Linux Google Chrome and use `BROWSER_CHANNEL=chrome`, or run the Docker app.
+- `docker` command not found in WSL: enable Docker Desktop WSL integration for this distro, or build/deploy from Portainer directly.
+- OTP never arrives: verify Yodel accepts the Twilio number and Twilio can receive SMS from the sender.
+- Dry run cannot find the pass or vehicle: open the job artifacts and inspect the screenshot/HTML; Yodel selectors may need tuning after a real session.
+- Scheduled job does not start: make sure the instance is enabled, scheduled, and the current time is within the prep window for `TARGET_DATE - 1 day`.
+
+## Development
+
+```bash
+uv sync
+uv run python -m unittest discover -s tests
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
+```

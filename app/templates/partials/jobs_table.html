@@ -1,0 +1,35 @@
+{% if jobs %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Job</th>
+          <th>Instance</th>
+          <th>Command</th>
+          <th>Mode</th>
+          <th>Status</th>
+          <th>Message</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+          <tr>
+            <td><a href="/jobs/{{ job.id }}">#{{ job.id }}</a></td>
+            <td>{{ job.instance_name }}</td>
+            <td>{{ job.command }}</td>
+            <td>{{ job.run_mode }}</td>
+            <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+            <td class="message-cell">{{ job.message }}</td>
+            <td>{{ job.created_at }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <section class="empty-state slim">
+    <h2>No jobs yet</h2>
+    <p>Run Auth, Dry Run, or Queue Booking from an instance to create job history.</p>
+  </section>
+{% endif %}
