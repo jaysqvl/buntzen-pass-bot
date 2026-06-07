@@ -124,6 +124,18 @@ Twilio is the supported unattended OTP receiver today. An iPhone Shortcuts-based
 - Dry run cannot find the pass or vehicle: open the job artifacts and inspect the screenshot/HTML; Yodel selectors may need tuning after a real session.
 - Scheduled job does not start: make sure the instance is enabled, scheduled, and the current time is within the prep window for `TARGET_DATE - 1 day`.
 
+## Dependency Maintenance
+
+Dependabot checks Python, Docker, and GitHub Actions dependencies daily. For a manual refresh:
+
+```bash
+uv lock --upgrade
+uv sync --locked
+uv run python -m unittest discover -s tests
+uv export --format requirements-txt --no-dev --no-emit-project > /tmp/buntzen-requirements.txt
+uvx pip-audit -r /tmp/buntzen-requirements.txt --disable-pip
+```
+
 ## Development
 
 ```bash
