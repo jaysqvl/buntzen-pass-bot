@@ -243,7 +243,7 @@ requires-dist = [
     { name = "playwright", specifier = ">=1.44" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "twilio", specifier = ">=9.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.49.0" },
 ]
 
 [[package]]
