@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.11.19 AS uv
 
-FROM mcr.microsoft.com/playwright/python:v1.60.0-noble
+FROM mcr.microsoft.com/playwright/python:v1.61.0-noble
 
 WORKDIR /app
 
