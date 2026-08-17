@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:0.11.19 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.5 AS uv
 
 FROM mcr.microsoft.com/playwright/python:v1.60.0-noble
 
