@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
+import os
 import sys
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from .config import ActionConfig
 from .control import ControlPort
@@ -47,7 +50,25 @@ def _open_context(playwright: Any, config: ActionConfig) -> Any:
         launch["executable_path"] = config.executable_path
     elif config.browser_channel:
         launch["channel"] = config.browser_channel
+    # Integration tests use an ephemeral self-signed HTTPS server. Keep this
+    # escape hatch both explicit and loopback-only so normal workers retain
+    # strict certificate validation even if their launch configuration is
+    # otherwise operator-controlled.
+    if _allow_insecure_loopback_tls(config):
+        launch["ignore_https_errors"] = True
     return playwright.chromium.launch_persistent_context(**launch)
+
+
+def _allow_insecure_loopback_tls(config: ActionConfig) -> bool:
+    if os.environ.get("BUNTZEN_ACTIONPROC_HELPER") != "e2e-local-tls":
+        return False
+    hostname = urlparse(config.login_probe_url).hostname
+    if hostname == "localhost":
+        return True
+    try:
+        return hostname is not None and ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optional[str]]:
@@ -101,7 +122,10 @@ def _safe_complete(
 def main() -> int:
     redactor = SecretRedactor()
     configure_logging(redactor)
-    stream = JsonLineStream(sys.stdin.buffer, sys.stdout.buffer)
+    # The control inbox remains blocked on stdin while the main thread exits.
+    # Read from FileIO directly so interpreter shutdown never contends for a
+    # BufferedReader lock held by that daemon thread after run.complete.
+    stream = JsonLineStream(sys.stdin.buffer.raw, sys.stdout.buffer)
     try:
         stream.write(
             "worker.ready",
