@@ -1,0 +1,19 @@
+{{define "content"}}
+<section class="hero">
+  <div>
+    <p class="eyebrow">Booking control</p>
+    <h1>Unattended Buntzen passes, with a human override.</h1>
+    <p>Go schedules and routes each job. Isolated Python actions handle Yodel and Playwright.</p>
+  </div>
+  <div class="actions"><a class="button primary" href="/bookings/new">New booking</a><a class="button" href="/profiles/new">New profile</a></div>
+</section>
+<section class="stats">
+  <article><strong>{{.Stats.Profiles}}</strong><span>Profiles</span></article>
+  <article><strong>{{.Stats.Scheduled}}</strong><span>Scheduled</span></article>
+  <article><strong>{{.Stats.Active}}</strong><span>Active jobs</span></article>
+  <article><strong>{{.Stats.Waiting}}</strong><span>Awaiting approval</span></article>
+</section>
+<section class="section-head"><div><p class="eyebrow">Recent activity</p><h2>Jobs</h2></div><a href="/jobs">View all</a></section>
+{{template "jobs_table" .}}
+{{end}}
+{{template "base" .}}

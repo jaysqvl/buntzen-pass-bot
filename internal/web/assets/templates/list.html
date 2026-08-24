@@ -1,0 +1,19 @@
+{{define "content"}}
+<section class="section-head">
+  <div><p class="eyebrow">{{.Eyebrow}}</p><h1>{{.Heading}}</h1><p>{{.Description}}</p></div>
+  {{if .CreateURL}}<a class="button primary" href="{{.CreateURL}}">{{.CreateLabel}}</a>{{end}}
+</section>
+<div class="card-grid">
+{{range .Cards}}
+  <article class="card">
+    <div class="card-title"><div><h2><a href="{{.URL}}">{{.Title}}</a></h2><p>{{.Subtitle}}</p></div><span class="pill {{.StatusClass}}">{{.Status}}</span></div>
+    <dl>{{range .Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>
+    <div class="actions">
+      {{range .Actions}}<a class="button {{.Class}}" href="{{.URL}}">{{.Label}}</a>{{end}}
+      {{range .PostActions}}<form method="post" action="{{.URL}}"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">{{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<button class="{{.Class}}" type="submit">{{.Label}}</button></form>{{end}}
+    </div>
+  </article>
+{{else}}<section class="empty-card"><h2>Nothing here yet</h2><p>{{$.EmptyMessage}}</p></section>{{end}}
+</div>
+{{end}}
+{{template "base" .}}

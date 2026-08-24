@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit and integration tests
+        run: go test -race ./...
+
+  python-actions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Sync locked environment
+        run: uv sync --project actions --locked
+      - name: Lint
+        run: uvx --from ruff==0.12.10 ruff check actions
+      - name: Tests
+        run: uv run --project actions python -m unittest discover -s actions/tests
+      - name: Compile package
+        run: uv run --project actions python -m compileall -q actions/src
+      - name: Dependency audit
+        run: |
+          uv export --project actions --locked --format requirements-txt --no-dev --no-emit-project --output-file /tmp/buntzen-requirements.txt
+          uvx --from pip-audit==2.9.0 pip-audit --disable-pip -r /tmp/buntzen-requirements.txt
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [go, python-actions]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Validate Compose
+        run: BUNTZEN_ADMIN_PASSWORD=ci-only-password docker compose config --quiet
+      - name: Build amd64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          tags: buntzen-pass-bot:ci

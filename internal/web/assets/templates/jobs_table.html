@@ -1,0 +1,12 @@
+{{define "jobs_table"}}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Job</th><th>Profile</th><th>Action</th><th>Status</th><th>Created</th></tr></thead>
+  <tbody>
+  {{range .Jobs}}
+    <tr><td><a href="/jobs/{{.ID}}">{{.ShortID}}</a></td><td>{{.ProfileName}}</td><td>{{.Command}}</td><td><span class="pill {{.StatusClass}}">{{.StatusLabel}}</span></td><td>{{.CreatedLabel}}</td></tr>
+  {{else}}<tr><td colspan="5" class="empty">No jobs yet.</td></tr>{{end}}
+  </tbody>
+</table>
+</div>
+{{end}}

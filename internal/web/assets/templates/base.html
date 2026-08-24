@@ -1,0 +1,37 @@
+{{define "base"}}
+<!doctype html>
+<html lang="en" hx-history="false">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="same-origin">
+  <meta name="htmx-config" content='{"historyCacheSize":0,"includeIndicatorStyles":false}'>
+  <link rel="icon" href="data:,">
+  <title>{{if .Title}}{{.Title}} · {{end}}Buntzen Bot</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script defer src="/static/htmx.min.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  {{if .Authenticated}}
+  <header class="topbar">
+    <a class="brand" href="/">Buntzen <span>Bot</span></a>
+    <nav>
+      <a href="/profiles">Profiles</a>
+      <a href="/sources">OTP Sources</a>
+      <a href="/bookings">Bookings</a>
+      <a href="/jobs">Jobs</a>
+    </nav>
+    <form action="/logout" method="post">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button class="ghost" type="submit">Sign out</button>
+    </form>
+  </header>
+  {{end}}
+  <main class="shell">
+    {{if .Flash}}<div class="flash {{.Flash.Kind}}">{{.Flash.Message}}</div>{{end}}
+    {{template "content" .}}
+  </main>
+</body>
+</html>
+{{end}}

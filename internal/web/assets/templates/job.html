@@ -1,0 +1,20 @@
+{{define "content"}}
+<section class="section-head"><div><p class="eyebrow">Job {{.Job.ShortID}}</p><h1>{{.Job.Command}} · {{.Job.ProfileName}}</h1><p>{{.Job.CreatedLabel}}</p></div><span id="job-pill" class="pill {{.Job.StatusClass}}">{{.Job.StatusLabel}}</span></section>
+<section class="job-layout">
+  <article class="card" id="live-job" data-job-id="{{.Job.ID}}" data-csrf="{{.CSRFToken}}">
+    <h2>Live state</h2>
+    <p id="job-message">{{.Job.Message}}</p>
+    <div id="otp-panel" class="otp-panel" hidden><span>Yodel code</span><strong id="otp-code"></strong><small>Clears after submission or expiry.</small></div>
+    <div id="pairing-panel" class="approval" hidden><p>Confirm which fresh Messages candidate belongs to this Yodel challenge. Codes and sender details are held only in memory.</p><div id="pairing-candidates" class="pairing-candidates"></div></div>
+    <div id="approval-panel" class="approval" {{if not .Job.AwaitingApproval}}hidden{{end}}>
+      <p>Yodel is waiting at final confirmation.</p>
+      <div class="actions"><button class="primary" data-decision="approve">Approve booking</button><button class="danger" data-decision="cancel">Cancel</button></div>
+    </div>
+    {{if .Job.CanCancel}}<button class="danger" data-decision="cancel-job">Cancel job</button>{{end}}
+  </article>
+  <article class="card"><h2>Details</h2><dl>{{range .Job.Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl></article>
+</section>
+<section class="section-head"><div><p class="eyebrow">Sanitized stream</p><h2>Events</h2></div></section>
+<ol class="event-list" id="job-events">{{range .Events}}<li><time>{{.Time}}</time><div><strong>{{.Type}}</strong><p>{{.Message}}</p></div></li>{{end}}</ol>
+{{end}}
+{{template "base" .}}
