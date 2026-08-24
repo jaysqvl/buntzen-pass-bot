@@ -73,10 +73,12 @@ jobs:
           fi
 
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          echo "image=$image" >>"$GITHUB_OUTPUT"
-          echo "sha=$release_sha" >>"$GITHUB_OUTPUT"
-          echo "tag=$RELEASE_TAG" >>"$GITHUB_OUTPUT"
-          echo "version=${RELEASE_TAG#v}" >>"$GITHUB_OUTPUT"
+          {
+            echo "image=$image"
+            echo "sha=$release_sha"
+            echo "tag=$RELEASE_TAG"
+            echo "version=${RELEASE_TAG#v}"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Check out the immutable release commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
