@@ -328,8 +328,11 @@ class YodelAction:
         waiting_for_future_release = datetime.now(release_at.tzinfo) < release_at
         if waiting_for_future_release:
             self.diagnostics.suspend_trace()
-        last_keepalive = 0.0
-        last_heartbeat = 0.0
+        # Trigger both maintenance actions on the first loop iteration without
+        # assuming the host has been up for at least 45 seconds. Fresh CI
+        # runners and newly booted machines can have a smaller monotonic clock.
+        last_keepalive = float("-inf")
+        last_heartbeat = float("-inf")
         self.control.status(
             "release_wait", "Authenticated; waiting for the booking release time."
         )
