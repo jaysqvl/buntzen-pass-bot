@@ -1,12 +1,14 @@
 {{define "content"}}
 <section class="login-card">
-  <p class="eyebrow">Local administration</p>
+  <p class="eyebrow">Local sign in</p>
   <h1>Buntzen Bot</h1>
-  <p>Sign in to manage profiles, OTP sources, and booking jobs.</p>
+  <p>Sign in to access your profiles, OTP sources, and booking jobs.</p>
+  {{if .Message}}<div class="flash success">{{.Message}}</div>{{end}}
   {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
-  <form method="post" action="/login" class="stack">
+  <form method="post" action="/login" class="stack" autocomplete="on">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <label>Admin password<input type="password" name="password" required autofocus autocomplete="current-password"></label>
+    <label>Username<input type="text" name="username" value="{{.Username}}" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+    <label>Password<input type="password" name="password" required autocomplete="current-password"></label>
     <button class="primary" type="submit">Sign in</button>
   </form>
 </section>

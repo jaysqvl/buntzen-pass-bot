@@ -15,6 +15,7 @@ import (
 const (
 	defaultListenAddress = ":8080"
 	defaultMaxJobs       = 2
+	DefaultYodelOrigin   = "https://yodelportal.com"
 )
 
 type Config struct {
@@ -26,12 +27,13 @@ type Config struct {
 	ListenAddress     string
 	MaxConcurrentJobs int
 	SchedulesEnabled  bool
-	AdminUsername     string
-	BootstrapPassword string
 	PythonExecutable  string
 	PythonModule      string
 	BlueBubblesURL    string
+	YodelOrigins      []string
 	AllowedOrigins    []string
+	AllowedHosts      []string
+	SetupToken        string
 }
 
 func Load() (Config, error) {
@@ -56,10 +58,6 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	username := strings.TrimSpace(os.Getenv("BUNTZEN_ADMIN_USERNAME"))
-	if username == "" {
-		username = "admin"
-	}
 	python := strings.TrimSpace(os.Getenv("BUNTZEN_PYTHON"))
 	if python == "" {
 		python = "python3"
@@ -76,6 +74,29 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	yodelOrigins, err := yodelOriginList("BUNTZEN_YODEL_ORIGINS")
+	if err != nil {
+		return Config{}, err
+	}
+	allowedHosts, err := hostList("BUNTZEN_ALLOWED_HOSTS")
+	if err != nil {
+		return Config{}, err
+	}
+	seenHosts := make(map[string]struct{}, len(allowedHosts)+len(allowedOrigins))
+	for _, host := range allowedHosts {
+		seenHosts[host] = struct{}{}
+	}
+	for _, origin := range allowedOrigins {
+		parsed, _ := url.Parse(origin)
+		host, err := CanonicalHost(parsed.Host)
+		if err != nil {
+			return Config{}, err
+		}
+		if _, exists := seenHosts[host]; !exists {
+			allowedHosts = append(allowedHosts, host)
+			seenHosts[host] = struct{}{}
+		}
+	}
 	return Config{
 		AppDataDir:        abs,
 		DatabasePath:      filepath.Join(abs, "buntzen.db"),
@@ -85,13 +106,89 @@ func Load() (Config, error) {
 		ListenAddress:     listen,
 		MaxConcurrentJobs: maxJobs,
 		SchedulesEnabled:  schedules,
-		AdminUsername:     username,
-		BootstrapPassword: os.Getenv("BUNTZEN_ADMIN_PASSWORD"),
 		PythonExecutable:  python,
 		PythonModule:      module,
 		BlueBubblesURL:    blueBubblesURL,
+		YodelOrigins:      yodelOrigins,
 		AllowedOrigins:    allowedOrigins,
+		AllowedHosts:      allowedHosts,
+		SetupToken:        strings.TrimSpace(os.Getenv("BUNTZEN_SETUP_TOKEN")),
 	}, nil
+}
+
+// yodelOriginList returns the exact HTTPS origins that may receive Yodel
+// credentials. The operator may override the production default for a trusted
+// test deployment, but booking records cannot expand this boundary.
+func yodelOriginList(name string) ([]string, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return []string{DefaultYodelOrigin}, nil
+	}
+	values, err := parseOriginList(name, raw)
+	if err != nil {
+		return nil, err
+	}
+	for _, value := range values {
+		if !strings.HasPrefix(value, "https://") {
+			return nil, errors.New(name + " may contain only HTTPS origins")
+		}
+	}
+	return values, nil
+}
+
+func hostList(name string) ([]string, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, errors.New(name + " must be a comma-separated list of hosts")
+		}
+		canonical, err := CanonicalHost(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s contains an invalid host: %w", name, err)
+		}
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		values = append(values, canonical)
+	}
+	return values, nil
+}
+
+// CanonicalHost validates an exact HTTP Host authority. Ports are retained
+// because the browser's same-origin boundary includes them.
+func CanonicalHost(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, ` /\\@`) {
+		return "", errors.New("invalid host")
+	}
+	parsed, err := url.Parse("http://" + value)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("invalid host")
+	}
+	hostname := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if hostname == "" || strings.Contains(hostname, "*") {
+		return "", errors.New("invalid host")
+	}
+	port := parsed.Port()
+	if port != "" {
+		value, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || value == 0 {
+			return "", errors.New("invalid host port")
+		}
+		return net.JoinHostPort(hostname, port), nil
+	}
+	if strings.Contains(hostname, ":") {
+		return "[" + hostname + "]", nil
+	}
+	return hostname, nil
 }
 
 // originList parses an optional comma-separated list of exact browser origins
@@ -101,6 +198,10 @@ func originList(name string) ([]string, error) {
 	if raw == "" {
 		return nil, nil
 	}
+	return parseOriginList(name, raw)
+}
+
+func parseOriginList(name, raw string) ([]string, error) {
 	parts := strings.Split(raw, ",")
 	values := make([]string, 0, len(parts))
 	seen := make(map[string]struct{}, len(parts))
@@ -133,13 +234,14 @@ func CanonicalOrigin(value string) (string, error) {
 	if scheme != "http" && scheme != "https" {
 		return "", errors.New("invalid origin scheme")
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "" {
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host == "" || strings.Contains(host, "*") {
 		return "", errors.New("invalid origin host")
 	}
 	port := parsed.Port()
 	if port != "" {
-		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		value, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || value == 0 {
 			return "", errors.New("invalid origin port")
 		}
 		if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {

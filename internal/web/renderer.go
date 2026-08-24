@@ -30,6 +30,8 @@ type Flash struct {
 type BaseData struct {
 	Title         string
 	Authenticated bool
+	Username      string
+	IsAdmin       bool
 	CSRFToken     string
 	CurrentPath   string
 	Flash         *Flash
@@ -38,6 +40,10 @@ type BaseData struct {
 func NewRenderer() (*Renderer, error) {
 	definitions := map[string][]string{
 		"login":     {"assets/templates/base.html", "assets/templates/login.html"},
+		"setup":     {"assets/templates/base.html", "assets/templates/setup.html"},
+		"account":   {"assets/templates/base.html", "assets/templates/account.html"},
+		"users":     {"assets/templates/base.html", "assets/templates/users.html"},
+		"user":      {"assets/templates/base.html", "assets/templates/user.html"},
 		"dashboard": {"assets/templates/base.html", "assets/templates/jobs_table.html", "assets/templates/dashboard.html"},
 		"list":      {"assets/templates/base.html", "assets/templates/list.html"},
 		"form":      {"assets/templates/base.html", "assets/templates/form.html"},

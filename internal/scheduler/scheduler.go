@@ -43,7 +43,7 @@ func WindowFor(request model.BookingRequest) (Window, error) {
 }
 
 func ShouldQueue(now time.Time, window Window) bool {
-	return !now.Before(window.PrepAt) && !now.After(window.PollEndsAt)
+	return !now.Before(window.PrepAt) && now.Before(window.PollEndsAt)
 }
 
 func DedupKey(request model.BookingRequest) string {

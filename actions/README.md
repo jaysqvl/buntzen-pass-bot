@@ -28,9 +28,10 @@ Go then sends `run.start`:
   "command": "book",
   "mode": "manual",
   "config": {
-    "profile_dir": "/appdata/profiles/home",
+    "profile_dir": "/appdata/profiles/profile-42",
     "target_date": "2030-01-15",
     "timezone": "UTC",
+    "allowed_yodel_origins": ["https://yodelportal.com"],
     "login_probe_url": "https://yodelportal.com/buntzen-lake",
     "all_day_pass_url": "https://yodelportal.com/buntzen-lake",
     "half_day_pass_url": "https://yodelportal.com/buntzen-lake",
@@ -67,6 +68,10 @@ without requesting credentials or a new OTP. `auth-check` and `dry-run` ignore
 the optional scheduling deadline.
 
 Credentials and OTP/provider secrets are forbidden in `run.start`.
+`allowed_yodel_origins` is a non-empty, host-controlled list of exact HTTPS
+origins. Every configured Yodel URL must match it. Python blocks top-level
+navigation away from those origins and re-checks the current page immediately
+before requesting or filling credentials and OTPs.
 
 ## Just-in-time secrets and OTP handshake
 
@@ -112,6 +117,11 @@ returns successfully. A click failure after `confirmation.ready` ends as
 
 Tracing is off while navigating, filling credentials, requesting, receiving,
 and submitting MFA. It starts only after an authenticated page is observed and
-is stopped before every re-authentication. Screenshots are likewise disabled in
-sensitive auth state. The worker never writes page HTML, credentials, OTPs, or
-provider identifiers to disk.
+is stopped before every re-authentication. Future-release and manual modes also
+close the current trace segment before waiting and start a new segment only
+after the release/authentication or approval gate succeeds. Trace files rotate
+through eight fixed names. The Go control plane periodically monitors and cleans
+retained artifacts to a 64-file/64-MiB per-job ceiling; this is not a hard
+filesystem write quota, so transient overshoot remains possible. Screenshots are
+likewise disabled in sensitive auth state. The worker never writes page HTML,
+credentials, OTPs, or provider identifiers to disk.

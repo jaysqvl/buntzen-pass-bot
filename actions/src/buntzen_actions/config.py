@@ -26,6 +26,7 @@ class ActionConfig:
     target_date: date
     timezone_name: str
     login_probe_url: str
+    allowed_yodel_origins: frozenset[str]
     all_day_pass_url: Optional[str]
     half_day_pass_url: Optional[str]
     vehicle_keyword: str
@@ -44,6 +45,12 @@ class ActionConfig:
     @property
     def timezone(self) -> ZoneInfo:
         return ZoneInfo(self.timezone_name)
+
+    def allows_yodel_url(self, value: str) -> bool:
+        try:
+            return _canonical_https_origin(value) in self.allowed_yodel_origins
+        except ValueError:
+            return False
 
     @classmethod
     def from_start(cls, frame: Mapping[str, Any]) -> "ActionConfig":
@@ -91,6 +98,17 @@ class ActionConfig:
         if command in {"dry-run", "book"} and not pass_order:
             raise ProtocolError("at least one pass is required")
 
+        raw_origins = config.get("allowed_yodel_origins")
+        if (
+            not isinstance(raw_origins, list)
+            or not raw_origins
+            or any(not isinstance(item, str) for item in raw_origins)
+        ):
+            raise ProtocolError("allowed_yodel_origins must be a non-empty array")
+        allowed_yodel_origins = frozenset(
+            _validate_origin(item) for item in raw_origins
+        )
+
         all_day_url = _optional_text(config, "all_day_pass_url")
         half_day_url = _optional_text(config, "half_day_pass_url")
         login_probe_url = (
@@ -98,11 +116,19 @@ class ActionConfig:
         )
         if not login_probe_url:
             raise ProtocolError("login_probe_url or a pass URL is required")
-        _validate_url(login_probe_url, "login_probe_url")
-        if "all_day" in pass_order:
-            _validate_url(all_day_url, "all_day_pass_url")
-        if "afternoon" in pass_order or "morning" in pass_order:
-            _validate_url(half_day_url, "half_day_pass_url")
+        _validate_url(login_probe_url, "login_probe_url", allowed_yodel_origins)
+        if all_day_url is not None:
+            _validate_url(
+                all_day_url, "all_day_pass_url", allowed_yodel_origins
+            )
+        elif "all_day" in pass_order:
+            raise ProtocolError("all_day_pass_url is required for the selected action")
+        if half_day_url is not None:
+            _validate_url(
+                half_day_url, "half_day_pass_url", allowed_yodel_origins
+            )
+        elif "afternoon" in pass_order or "morning" in pass_order:
+            raise ProtocolError("half_day_pass_url is required for the selected action")
 
         vehicle_keyword = _required_text(config, "vehicle_keyword")
         headless = _optional_bool(config, "headless", False)
@@ -147,6 +173,7 @@ class ActionConfig:
             target_date=target_date,
             timezone_name=timezone_name,
             login_probe_url=login_probe_url,
+            allowed_yodel_origins=allowed_yodel_origins,
             all_day_pass_url=all_day_url,
             half_day_pass_url=half_day_url,
             vehicle_keyword=vehicle_keyword,
@@ -219,9 +246,51 @@ def _parse_datetime(value: str) -> datetime:
         raise ProtocolError("scheduled timestamps must use RFC3339") from exc
 
 
-def _validate_url(value: Optional[str], key: str) -> None:
+def _validate_url(
+    value: Optional[str], key: str, allowed_origins: frozenset[str]
+) -> None:
     if not value:
         raise ProtocolError(f"{key} is required for the selected action")
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ProtocolError(f"{key} must be an HTTP(S) URL")
+    try:
+        origin = _canonical_https_origin(value)
+    except ValueError as exc:
+        raise ProtocolError(f"{key} must be an absolute HTTPS URL") from exc
+    if origin not in allowed_origins:
+        raise ProtocolError(f"{key} must use an approved Yodel origin")
+
+
+def _validate_origin(value: str) -> str:
+    parsed = urlparse(value.strip())
+    if parsed.path or parsed.params or parsed.query or parsed.fragment:
+        raise ProtocolError("allowed_yodel_origins contains an invalid origin")
+    try:
+        return _canonical_https_origin(value)
+    except ValueError as exc:
+        raise ProtocolError(
+            "allowed_yodel_origins contains an invalid origin"
+        ) from exc
+
+
+def _canonical_https_origin(value: str) -> str:
+    parsed = urlparse(value.strip())
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("invalid HTTPS URL")
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if not hostname or "*" in hostname:
+        raise ValueError("invalid HTTPS host")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid HTTPS port") from exc
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("invalid HTTPS port")
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    if port is not None and port != 443:
+        hostname = f"{hostname}:{port}"
+    return f"https://{hostname}"

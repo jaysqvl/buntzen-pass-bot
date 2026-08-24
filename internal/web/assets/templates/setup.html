@@ -1,0 +1,17 @@
+{{define "content"}}
+<section class="login-card">
+  <p class="eyebrow">First-run setup</p>
+  <h1>Create the administrator</h1>
+  <p>This first account is the permanent administrator. Enter the one-time setup token printed by the host process, then choose its username and password.</p>
+  {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
+  <form method="post" action="/setup" class="stack" autocomplete="on">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label>Setup token<input type="password" name="setup_token" required autocomplete="off"></label>
+    <label>Admin username<input type="text" name="username" value="{{.Username}}" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+    <label>Password<input type="password" name="password" required autocomplete="new-password"></label>
+    <label>Confirm password<input type="password" name="password_confirm" required autocomplete="new-password"></label>
+    <button class="primary" type="submit">Create administrator</button>
+  </form>
+</section>
+{{end}}
+{{template "base" .}}

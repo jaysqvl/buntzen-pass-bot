@@ -47,6 +47,9 @@ func TestShouldQueueUsesBoundedWindow(t *testing.T) {
 	if !ShouldQueue(window.ReleaseAt, window) {
 		t.Fatal("did not queue at release")
 	}
+	if ShouldQueue(window.PollEndsAt, window) {
+		t.Fatal("queued at the exclusive poll-window boundary")
+	}
 	if ShouldQueue(window.PollEndsAt.Add(time.Nanosecond), window) {
 		t.Fatal("queued after poll window")
 	}

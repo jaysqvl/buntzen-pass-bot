@@ -1,0 +1,22 @@
+{{define "content"}}
+<section class="section-head">
+  <div><p class="eyebrow">Account security</p><h1>{{.Username}}</h1><p>Change the password for your signed-in account.</p></div>
+</section>
+{{if .PasswordRequired}}<div class="flash">Set a new password before continuing.</div>{{end}}
+{{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
+<form method="post" action="/account/password" class="form-card account-form" autocomplete="on">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <fieldset>
+    <legend>Change password</legend>
+    <p class="field-help">Enter your current password to confirm this change.</p>
+    <div class="form-grid">
+      <label><span>Current password</span><input type="password" name="current_password" required autocomplete="current-password"></label>
+      <span class="form-spacer" aria-hidden="true"></span>
+      <label><span>New password</span><input type="password" name="new_password" required autocomplete="new-password"></label>
+      <label><span>Confirm new password</span><input type="password" name="password_confirm" required autocomplete="new-password"></label>
+    </div>
+  </fieldset>
+  <div class="actions"><button class="primary" type="submit">Change password</button></div>
+</form>
+{{end}}
+{{template "base" .}}

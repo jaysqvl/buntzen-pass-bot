@@ -5,9 +5,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -42,9 +42,9 @@ type selectOption struct {
 	Selected     bool
 }
 type formField struct {
-	Name, Label, Type, Value, Placeholder, Help, Step string
-	Required, Checked                                 bool
-	Options                                           []selectOption
+	Name, Label, Type, Value, Placeholder, Help, Step, Min, Max string
+	Required, Checked                                           bool
+	Options                                                     []selectOption
 }
 type formSection struct {
 	Title, Help string
@@ -57,7 +57,7 @@ type formData struct {
 }
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
-	sources, err := s.store.ListOTPSources(r.Context())
+	sources, err := s.userStore(r).ListOTPSources(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
@@ -113,7 +113,7 @@ func (s *Server) sourceNew(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sourceCreate(w http.ResponseWriter, r *http.Request) {
 	input, err := s.sourceInput(r, nil)
 	if err == nil {
-		_, err = s.store.CreateOTPSource(r.Context(), input)
+		_, err = s.userStore(r).CreateOTPSource(r.Context(), input)
 	}
 	if err != nil {
 		s.sourceForm(w, r, nil, safeFormError(err))
@@ -127,7 +127,7 @@ func (s *Server) sourceEdit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	source, err := s.store.GetOTPSource(r.Context(), id)
+	source, err := s.userStore(r).GetOTPSource(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
@@ -140,14 +140,14 @@ func (s *Server) sourceUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	current, err := s.store.GetOTPSource(r.Context(), id)
+	current, err := s.userStore(r).GetOTPSource(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
 	}
 	input, err := s.sourceInput(r, &current)
 	if err == nil {
-		_, err = s.store.UpdateOTPSource(r.Context(), id, input)
+		_, err = s.userStore(r).UpdateOTPSource(r.Context(), id, input)
 	}
 	if err != nil {
 		s.sourceForm(w, r, &current, safeFormError(err))
@@ -161,7 +161,7 @@ func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	source, err := s.store.GetOTPSource(r.Context(), id)
+	source, err := s.userStore(r).GetOTPSource(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
@@ -184,7 +184,11 @@ func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	job, err := s.engine.QueuePairing(r.Context(), id)
+	if _, err := s.userStore(r).GetOTPSource(r.Context(), id); err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	job, err := s.engine.QueuePairing(r.Context(), requestAuth(r).Authenticated.User.ID, id)
 	if err != nil {
 		http.Error(w, "pairing could not be started; assign the source to an enabled profile and booking first", http.StatusConflict)
 		return
@@ -197,6 +201,7 @@ func contextWithTimeout(r *http.Request, timeout time.Duration) (context.Context
 }
 
 func (s *Server) sourceInput(r *http.Request, current *model.OTPSource) (store.OTPSourceInput, error) {
+	userStore := s.userStore(r)
 	provider := model.OTPProvider(strings.TrimSpace(r.Form.Get("provider")))
 	input := store.OTPSourceInput{Name: r.Form.Get("name"), Provider: provider}
 	if current != nil && provider == current.Provider {
@@ -206,28 +211,36 @@ func (s *Server) sourceInput(r *http.Request, current *model.OTPSource) (store.O
 	case model.OTPProviderBlueBubbles:
 		var cfg bluebubbles.Config
 		if current != nil && current.Provider == provider {
-			if err := s.store.GetOTPSourceConfig(r.Context(), current.ID, &cfg); err != nil {
+			if err := userStore.GetOTPSourceConfig(r.Context(), current.ID, &cfg); err != nil {
 				return input, err
 			}
 		}
 		if value := strings.TrimSpace(r.Form.Get("bb_base_url")); value != "" {
 			cfg.BaseURL = value
 		}
-		if value := r.Form.Get("bb_password"); value != "" {
+		passwordProvided := r.Form.Get("bb_password") != ""
+		if value := r.Form.Get("bb_password"); passwordProvided {
 			cfg.Password = value
 		}
 		identity, err := blueBubblesIdentity(cfg.BaseURL)
 		if err != nil {
 			return input, err
 		}
+		if current != nil && current.Provider == provider && identity != current.Identity && !passwordProvided {
+			// Do not let a retained write-only password cross the old inbox
+			// boundary, even transiently in the replacement config.
+			cfg.Password = ""
+			return input, errors.New("re-enter the BlueBubbles password when changing its server URL")
+		}
+		cfg.BaseURL = identity
 		if _, err := bluebubbles.New(cfg); err != nil {
 			return input, err
 		}
-		input.Identity, input.ProviderConfig = identity, cfg
+		input.Identity, input.ProviderConfig, input.SecretProvided = identity, cfg, passwordProvided
 	case model.OTPProviderTwilio:
 		var cfg twilio.Config
 		if current != nil && current.Provider == provider {
-			if err := s.store.GetOTPSourceConfig(r.Context(), current.ID, &cfg); err != nil {
+			if err := userStore.GetOTPSourceConfig(r.Context(), current.ID, &cfg); err != nil {
 				return input, err
 			}
 		}
@@ -263,7 +276,22 @@ func blueBubblesIdentity(value string) (string, error) {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return "", errors.New("BlueBubbles URL must be a server root such as http://bluebubbles.example:1234")
 	}
-	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host), nil
+	scheme := strings.ToLower(parsed.Scheme)
+	hostname := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	port := parsed.Port()
+	if hostname == "" {
+		return "", errors.New("BlueBubbles URL must include a server hostname")
+	}
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	host := hostname
+	if port != "" {
+		host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	return scheme + "://" + host, nil
 }
 
 func phoneIdentity(value string) string {
@@ -277,18 +305,19 @@ func phoneIdentity(value string) string {
 }
 
 func (s *Server) sourceForm(w http.ResponseWriter, r *http.Request, source *model.OTPSource, formError string) {
+	userStore := s.userStore(r)
 	creating := source == nil
 	provider, name, bbURL, twilioTo, twilioSender := string(model.OTPProviderBlueBubbles), "", s.config.BlueBubblesURL, "", ""
 	if source != nil {
 		provider, name = string(source.Provider), source.Name
 		if source.Provider == model.OTPProviderBlueBubbles {
 			var cfg bluebubbles.Config
-			if s.store.GetOTPSourceConfig(r.Context(), source.ID, &cfg) == nil {
+			if userStore.GetOTPSourceConfig(r.Context(), source.ID, &cfg) == nil {
 				bbURL = cfg.BaseURL
 			}
 		} else {
 			var cfg twilio.Config
-			if s.store.GetOTPSourceConfig(r.Context(), source.ID, &cfg) == nil {
+			if userStore.GetOTPSourceConfig(r.Context(), source.ID, &cfg) == nil {
 				twilioTo, twilioSender = cfg.ToNumber, cfg.Sender
 			}
 		}
@@ -326,12 +355,13 @@ func secretPlaceholder(creating bool) string {
 }
 
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
-	profiles, err := s.store.ListProfiles(r.Context())
+	userStore := s.userStore(r)
+	profiles, err := userStore.ListProfiles(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
 	}
-	sources, _ := s.store.ListOTPSources(r.Context())
+	sources, _ := userStore.ListOTPSources(r.Context())
 	sourceNames := map[int64]string{}
 	for _, source := range sources {
 		sourceNames[source.ID] = source.Name
@@ -342,7 +372,7 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 		if profile.Enabled {
 			status, class = "Enabled", "ok"
 		}
-		data.Cards = append(data.Cards, listCard{Title: profile.Name, Subtitle: profile.BrowserProfile, Status: status, StatusClass: class, URL: fmt.Sprintf("/profiles/%d", profile.ID), Fields: []labelValue{{"Vehicle", profile.DefaultVehicle}, {"OTP source", sourceNames[profile.OTPSourceID]}, {"Browser", browserLabel(profile)}}, Actions: []cardAction{{"Edit", fmt.Sprintf("/profiles/%d", profile.ID), ""}}})
+		data.Cards = append(data.Cards, listCard{Title: profile.Name, Subtitle: fmt.Sprintf("Browser identity %d", profile.ID), Status: status, StatusClass: class, URL: fmt.Sprintf("/profiles/%d", profile.ID), Fields: []labelValue{{"Vehicle", profile.DefaultVehicle}, {"OTP source", sourceNames[profile.OTPSourceID]}, {"Browser", browserLabel(profile)}}, Actions: []cardAction{{"Edit", fmt.Sprintf("/profiles/%d", profile.ID), ""}}})
 	}
 	s.render(w, http.StatusOK, "list", data)
 }
@@ -361,7 +391,7 @@ func (s *Server) profileNew(w http.ResponseWriter, r *http.Request) { s.profileF
 func (s *Server) profileCreate(w http.ResponseWriter, r *http.Request) {
 	input, err := profileInput(r, true)
 	if err == nil {
-		_, err = s.store.CreateProfile(r.Context(), input)
+		_, err = s.userStore(r).CreateProfile(r.Context(), input)
 	}
 	if err != nil {
 		s.profileForm(w, r, nil, safeFormError(err))
@@ -374,7 +404,7 @@ func (s *Server) profileEdit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	profile, err := s.store.GetProfile(r.Context(), id)
+	profile, err := s.userStore(r).GetProfile(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
@@ -386,14 +416,14 @@ func (s *Server) profileUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	current, err := s.store.GetProfile(r.Context(), id)
+	current, err := s.userStore(r).GetProfile(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
 	}
 	input, err := profileInput(r, false)
 	if err == nil {
-		_, err = s.store.UpdateProfile(r.Context(), id, input)
+		_, err = s.userStore(r).UpdateProfile(r.Context(), id, input)
 	}
 	if err != nil {
 		s.profileForm(w, r, &current, safeFormError(err))
@@ -407,10 +437,7 @@ func profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
 	if err != nil {
 		return store.ProfileInput{}, errors.New("browser timeout must be a number")
 	}
-	input := store.ProfileInput{Name: r.Form.Get("name"), BrowserProfile: r.Form.Get("browser_profile"), DefaultVehicle: r.Form.Get("default_vehicle"), OTPSourceID: parseInt64(r.Form.Get("otp_source_id")), Headless: checked(r, "headless"), BrowserChannel: r.Form.Get("browser_channel"), BrowserExecutable: r.Form.Get("browser_executable"), DefaultTimeoutMS: timeout, Enabled: checked(r, "enabled")}
-	if !validDirectoryName(input.BrowserProfile) {
-		return input, errors.New("browser profile must be one safe directory name")
-	}
+	input := store.ProfileInput{Name: r.Form.Get("name"), DefaultVehicle: r.Form.Get("default_vehicle"), OTPSourceID: parseInt64(r.Form.Get("otp_source_id")), Headless: checked(r, "headless"), BrowserChannel: r.Form.Get("browser_channel"), BrowserExecutable: r.Form.Get("browser_executable"), DefaultTimeoutMS: timeout, Enabled: checked(r, "enabled")}
 	email, password := strings.TrimSpace(r.Form.Get("yodel_email")), r.Form.Get("yodel_password")
 	if creating || email != "" || password != "" {
 		if email == "" || password == "" {
@@ -421,13 +448,8 @@ func profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
 	return input, nil
 }
 
-func validDirectoryName(value string) bool {
-	value = strings.TrimSpace(value)
-	return value != "" && value != "." && value != ".." && filepath.Base(value) == value && !strings.ContainsAny(value, `/\\`)
-}
-
 func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *model.Profile, formError string) {
-	sources, err := s.store.ListOTPSources(r.Context())
+	sources, err := s.userStore(r).ListOTPSources(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
@@ -438,7 +460,7 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 		value = *profile
 	}
 	if r.Method == http.MethodPost {
-		value.Name, value.BrowserProfile, value.DefaultVehicle = r.Form.Get("name"), r.Form.Get("browser_profile"), r.Form.Get("default_vehicle")
+		value.Name, value.DefaultVehicle = r.Form.Get("name"), r.Form.Get("default_vehicle")
 		value.OTPSourceID, value.Headless, value.Enabled = parseInt64(r.Form.Get("otp_source_id")), checked(r, "headless"), checked(r, "enabled")
 		value.BrowserChannel, value.BrowserExecutable = r.Form.Get("browser_channel"), r.Form.Get("browser_executable")
 		value.DefaultTimeoutMS, _ = strconv.Atoi(r.Form.Get("default_timeout_ms"))
@@ -453,7 +475,7 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 	}
 	data := formData{BaseData: base(r, heading), Eyebrow: "Browser identity", Heading: heading, Description: "Credentials are write-only and are passed to Python only when Yodel displays a login form.", CancelURL: "/profiles", ActionURL: actionURL, SubmitLabel: submit, FormError: formError}
 	data.Sections = []formSection{
-		{Title: "Profile", Fields: []formField{{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true}, {Name: "browser_profile", Label: "Browser profile directory", Type: "text", Value: value.BrowserProfile, Required: true, Placeholder: "home"}, {Name: "default_vehicle", Label: "Vehicle keyword", Type: "text", Value: value.DefaultVehicle, Required: true}, {Name: "otp_source_id", Label: "Exclusive OTP source", Type: "select", Required: true, Options: options}, {Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled}}},
+		{Title: "Profile", Help: "Buntzen assigns a private persistent browser identity automatically.", Fields: []formField{{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true}, {Name: "default_vehicle", Label: "Vehicle keyword", Type: "text", Value: value.DefaultVehicle, Required: true}, {Name: "otp_source_id", Label: "Exclusive OTP source", Type: "select", Required: true, Options: options}, {Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled}}},
 		{Title: "Yodel credentials", Fields: []formField{{Name: "yodel_email", Label: "Email", Type: "password", Placeholder: secretPlaceholder(creating)}, {Name: "yodel_password", Label: "Password", Type: "password", Placeholder: secretPlaceholder(creating)}}},
 		{Title: "Browser", Help: "Native macOS normally uses channel chrome. Docker uses bundled Chromium, so leave channel and executable blank there.", Fields: []formField{{Name: "headless", Label: "Run headless", Type: "checkbox", Checked: value.Headless}, {Name: "browser_channel", Label: "Browser channel", Type: "text", Value: value.BrowserChannel, Placeholder: "chrome"}, {Name: "browser_executable", Label: "Executable path override", Type: "text", Value: value.BrowserExecutable}, {Name: "default_timeout_ms", Label: "Action timeout (ms)", Type: "number", Value: strconv.Itoa(value.DefaultTimeoutMS), Required: true, Step: "1000"}}},
 	}
@@ -461,12 +483,13 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 }
 
 func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
-	bookings, err := s.store.ListBookingRequests(r.Context())
+	userStore := s.userStore(r)
+	bookings, err := userStore.ListBookingRequests(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
 	}
-	profiles, _ := s.store.ListProfiles(r.Context())
+	profiles, _ := userStore.ListProfiles(r.Context())
 	names := map[int64]string{}
 	for _, profile := range profiles {
 		names[profile.ID] = profile.Name
@@ -495,9 +518,9 @@ func passNames(values []model.PassType) []string {
 
 func (s *Server) bookingNew(w http.ResponseWriter, r *http.Request) { s.bookingForm(w, r, nil, "") }
 func (s *Server) bookingCreate(w http.ResponseWriter, r *http.Request) {
-	request, err := bookingInput(r, 0)
+	request, err := s.bookingInput(r, 0)
 	if err == nil {
-		_, err = s.store.CreateBookingRequest(r.Context(), request)
+		_, err = s.userStore(r).CreateBookingRequest(r.Context(), request)
 	}
 	if err != nil {
 		s.bookingForm(w, r, nil, safeFormError(err))
@@ -510,7 +533,7 @@ func (s *Server) bookingEdit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	booking, err := s.store.GetBookingRequest(r.Context(), id)
+	booking, err := s.userStore(r).GetBookingRequest(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
@@ -522,14 +545,14 @@ func (s *Server) bookingUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	current, err := s.store.GetBookingRequest(r.Context(), id)
+	current, err := s.userStore(r).GetBookingRequest(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
 	}
-	request, err := bookingInput(r, id)
+	request, err := s.bookingInput(r, id)
 	if err == nil {
-		_, err = s.store.UpdateBookingRequest(r.Context(), request)
+		_, err = s.userStore(r).UpdateBookingRequest(r.Context(), request)
 	}
 	if err != nil {
 		s.bookingForm(w, r, &current, safeFormError(err))
@@ -542,6 +565,10 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, err := s.userStore(r).GetBookingRequest(r.Context(), id); err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
 	command := model.JobCommand(r.Form.Get("command"))
 	if !command.Valid() {
 		http.Error(w, "invalid command", http.StatusBadRequest)
@@ -551,7 +578,7 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	if command == model.CommandDryRun {
 		mode = model.RunModeDryRun
 	}
-	job, err := s.engine.QueueBooking(r.Context(), id, command, mode)
+	job, err := s.engine.QueueBooking(r.Context(), requestAuth(r).Authenticated.User.ID, id, command, mode)
 	if err != nil {
 		http.Error(w, "job could not be queued", http.StatusConflict)
 		return
@@ -559,7 +586,7 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d?ok=queued", job.ID), http.StatusSeeOther)
 }
 
-func bookingInput(r *http.Request, id int64) (model.BookingRequest, error) {
+func (s *Server) bookingInput(r *http.Request, id int64) (model.BookingRequest, error) {
 	intField := func(name string) (int, error) { return strconv.Atoi(strings.TrimSpace(r.Form.Get(name))) }
 	floatField := func(name string) (float64, error) { return strconv.ParseFloat(strings.TrimSpace(r.Form.Get(name)), 64) }
 	prep, err := intField("prep_minutes_before")
@@ -583,11 +610,11 @@ func bookingInput(r *http.Request, id int64) (model.BookingRequest, error) {
 		return model.BookingRequest{}, errors.New("maximum poll delay must be a number")
 	}
 	request := model.BookingRequest{ID: id, Name: r.Form.Get("name"), ProfileID: parseInt64(r.Form.Get("profile_id")), Enabled: checked(r, "enabled"), ScheduleEnabled: checked(r, "schedule_enabled"), TargetDate: r.Form.Get("target_date"), Timezone: r.Form.Get("timezone"), ReleaseTime: r.Form.Get("release_time"), PrepMinutesBefore: prep, AuthDeadlineMinutesBefore: authDeadline, PollDeadlineSeconds: pollDeadline, PollMinSeconds: pollMin, PollMaxSeconds: pollMax, ConfirmationMode: model.RunMode(r.Form.Get("confirmation_mode")), LoginProbeURL: r.Form.Get("login_probe_url"), AllDayPassURL: r.Form.Get("all_day_pass_url"), HalfDayPassURL: r.Form.Get("half_day_pass_url"), CheckAllDay: checked(r, "check_all_day"), CheckAfternoon: checked(r, "check_afternoon"), CheckMorning: checked(r, "check_morning")}
-	return request, request.Validate()
+	return request, request.ValidateForOrigins(s.config.YodelOrigins)
 }
 
 func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *model.BookingRequest, formError string) {
-	profiles, err := s.store.ListProfiles(r.Context())
+	profiles, err := s.userStore(r).ListProfiles(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
@@ -598,7 +625,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		value = *booking
 	}
 	if r.Method == http.MethodPost {
-		parsed, _ := bookingInput(r, value.ID)
+		parsed, _ := s.bookingInput(r, value.ID)
 		value = parsed
 	}
 	profileOptions := make([]selectOption, 0, len(profiles))
@@ -614,7 +641,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		{Title: "Request", Fields: []formField{{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true}, {Name: "profile_id", Label: "Yodel profile", Type: "select", Required: true, Options: profileOptions}, {Name: "target_date", Label: "Target date", Type: "date", Value: value.TargetDate, Required: true}, {Name: "timezone", Label: "Timezone", Type: "text", Value: value.Timezone, Required: true}, {Name: "release_time", Label: "Release time", Type: "time", Value: value.ReleaseTime, Required: true}, {Name: "confirmation_mode", Label: "Confirmation", Type: "select", Required: true, Options: []selectOption{{Value: "manual", Label: "Manual approval", Selected: value.ConfirmationMode == model.RunModeManual}, {Value: "auto", Label: "Automatic confirmation", Selected: value.ConfirmationMode == model.RunModeAuto}}}, {Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled}, {Name: "schedule_enabled", Label: "Auto-queue in prep window", Type: "checkbox", Checked: value.ScheduleEnabled}}},
 		{Title: "Yodel URLs", Fields: []formField{{Name: "login_probe_url", Label: "Login probe URL", Type: "url", Value: value.LoginProbeURL, Required: true}, {Name: "all_day_pass_url", Label: "All-day pass URL", Type: "url", Value: value.AllDayPassURL}, {Name: "half_day_pass_url", Label: "Half-day pass URL", Type: "url", Value: value.HalfDayPassURL}}},
 		{Title: "Pass order", Help: "Selection order is fixed: all-day, then afternoon, then morning.", Fields: []formField{{Name: "check_all_day", Label: "All-day", Type: "checkbox", Checked: value.CheckAllDay}, {Name: "check_afternoon", Label: "Afternoon", Type: "checkbox", Checked: value.CheckAfternoon}, {Name: "check_morning", Label: "Morning", Type: "checkbox", Checked: value.CheckMorning}}},
-		{Title: "Timing", Fields: []formField{{Name: "prep_minutes_before", Label: "Prep minutes before", Type: "number", Value: strconv.Itoa(value.PrepMinutesBefore), Required: true, Step: "1"}, {Name: "auth_deadline_minutes_before", Label: "Auth deadline minutes before", Type: "number", Value: strconv.Itoa(value.AuthDeadlineMinutesBefore), Required: true, Step: "1"}, {Name: "poll_deadline_seconds", Label: "Poll deadline seconds", Type: "number", Value: strconv.Itoa(value.PollDeadlineSeconds), Required: true, Step: "1"}, {Name: "poll_min_seconds", Label: "Minimum poll delay", Type: "number", Value: strconv.FormatFloat(value.PollMinSeconds, 'f', -1, 64), Required: true, Step: "0.1"}, {Name: "poll_max_seconds", Label: "Maximum poll delay", Type: "number", Value: strconv.FormatFloat(value.PollMaxSeconds, 'f', -1, 64), Required: true, Step: "0.1"}}},
+		{Title: "Timing", Fields: []formField{{Name: "prep_minutes_before", Label: "Prep minutes before", Type: "number", Value: strconv.Itoa(value.PrepMinutesBefore), Required: true, Step: "1", Min: "0", Max: strconv.Itoa(model.MaxPrepMinutesBefore)}, {Name: "auth_deadline_minutes_before", Label: "Auth deadline minutes before", Type: "number", Value: strconv.Itoa(value.AuthDeadlineMinutesBefore), Required: true, Step: "1", Min: "0", Max: strconv.Itoa(model.MaxPrepMinutesBefore)}, {Name: "poll_deadline_seconds", Label: "Poll deadline seconds", Type: "number", Value: strconv.Itoa(value.PollDeadlineSeconds), Required: true, Step: "1", Min: "1", Max: "900"}, {Name: "poll_min_seconds", Label: "Minimum poll delay", Type: "number", Value: strconv.FormatFloat(value.PollMinSeconds, 'f', -1, 64), Required: true, Step: "0.1", Min: "0.1", Max: "60"}, {Name: "poll_max_seconds", Label: "Maximum poll delay", Type: "number", Value: strconv.FormatFloat(value.PollMaxSeconds, 'f', -1, 64), Required: true, Step: "0.1", Min: "0.1", Max: "60"}}},
 	}
 	s.render(w, formStatus(formError), "form", data)
 }
@@ -633,6 +660,9 @@ func formStatus(err string) int {
 	return http.StatusOK
 }
 func safeFormError(err error) string {
+	if errors.Is(err, store.ErrResourceLimit) {
+		return "This account has reached the limit for this resource."
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return "That name, inbox, browser profile, or exclusive source is already in use."
 	}

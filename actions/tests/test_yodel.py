@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.parse import urlparse
 
 from buntzen_actions.control import Credentials
 from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
@@ -78,11 +79,22 @@ class FakeControl:
         self.events.append(("status", phase))
 
 
+def allows_example_origin(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme == "https" and parsed.netloc == "example.test"
+
+
+def configure_example_origin(action) -> None:
+    action.config = SimpleNamespace(allows_yodel_url=allows_example_origin)
+    action.page = SimpleNamespace(url="https://example.test/login")
+
+
 class LoginAction(YodelAction):
     def __init__(self, events, submit, next_state="otp") -> None:
         self.events = events
         self.control = FakeControl(events)
-        self.page = object()
+        self.page = SimpleNamespace(url="https://example.test/login")
+        self.config = SimpleNamespace(allows_yodel_url=allows_example_origin)
         self.next_state = next_state
         self._email = Locator(events, "email")
         self._password = Locator(events, "password")
@@ -110,9 +122,11 @@ class LoginAction(YodelAction):
 class DeadlinePage:
     def __init__(self, events) -> None:
         self.events = events
+        self.url = "https://example.test/login"
 
     def goto(self, url, wait_until):
         self.events.append(("goto", url))
+        self.url = url
 
     def evaluate(self, expression):
         self.events.append(("evaluate", None))
@@ -135,7 +149,10 @@ class DeadlineAction(YodelAction):
         self.page = DeadlinePage(events)
         self.control = FakeControl(events)
         self.diagnostics = DeadlineDiagnostics(events)
-        self.config = SimpleNamespace(login_probe_url="https://example.test")
+        self.config = SimpleNamespace(
+            login_probe_url="https://example.test",
+            allows_yodel_url=allows_example_origin,
+        )
         self.authenticated = authenticated
 
     def _settle_page(self, timeout_ms=15_000):
@@ -154,9 +171,11 @@ class DeadlineAction(YodelAction):
 class BookingPage:
     def __init__(self, events) -> None:
         self.events = events
+        self.url = "https://example.test"
 
     def goto(self, url, wait_until):
         self.events.append(("goto", url))
+        self.url = url
 
 
 class BookingControl(FakeControl):
@@ -169,11 +188,16 @@ class BookingAction(YodelAction):
         self.events = events
         self.page = BookingPage(events)
         self.control = BookingControl(events)
+        self.diagnostics = SimpleNamespace(
+            suspend_trace=lambda: events.append(("trace", "suspended")),
+            authenticated=lambda: events.append(("trace", "resumed")),
+        )
         self.config = SimpleNamespace(
             target_date=date(2030, 1, 15),
             vehicle_keyword="Example Vehicle",
             all_day_pass_url="https://example.test/all",
             half_day_pass_url="https://example.test/half",
+            allows_yodel_url=allows_example_origin,
         )
         self.container = object()
         self.final_confirm = object()
@@ -212,7 +236,78 @@ class BookingAction(YodelAction):
         self.events.append(("diagnostic", name))
 
 
+class ReleaseDiagnostics:
+    def __init__(self, events, suspend_error=None) -> None:
+        self.events = events
+        self.suspend_error = suspend_error
+
+    def suspend_trace(self):
+        self.events.append(("trace", "suspended"))
+        if self.suspend_error is not None:
+            raise self.suspend_error
+
+    def authenticated(self):
+        self.events.append(("trace", "resumed"))
+
+
+class ReleaseInbox:
+    def __init__(self, events, failure=None) -> None:
+        self.events = events
+        self.failure = failure
+
+    def check_cancelled(self):
+        self.events.append(("cancel", "checked"))
+        if self.failure is not None:
+            raise self.failure
+
+
+class ReleaseControl(FakeControl):
+    def __init__(self, events, cancellation=None) -> None:
+        super().__init__(events)
+        self.inbox = ReleaseInbox(events, cancellation)
+
+    def heartbeat(self, phase):
+        self.events.append(("heartbeat", phase))
+
+
+class ReleaseAction(YodelAction):
+    def __init__(self, events, release_at, keepalive_error=None, suspend_error=None) -> None:
+        self.events = events
+        self.diagnostics = ReleaseDiagnostics(events, suspend_error)
+        self.control = ReleaseControl(events)
+        self.config = SimpleNamespace(
+            release_at=release_at,
+            auth_deadline_at=release_at - timedelta(minutes=5),
+        )
+        self.keepalive_error = keepalive_error
+
+    def keep_session_warm(self, auth_deadline_at=None):
+        self.events.append(("keepalive", "started"))
+        # A successful re-authentication would resume tracing. The release
+        # wait must immediately suspend it again.
+        self.diagnostics.authenticated()
+        if self.keepalive_error is not None:
+            raise self.keepalive_error
+
+    def _is_authenticated(self):
+        self.events.append(("auth", "checked"))
+        return True
+
+
 class YodelTests(unittest.TestCase):
+    def test_auth_does_not_navigate_or_request_credentials_when_trace_stop_fails(self) -> None:
+        events = []
+        action = DeadlineAction(events)
+        action.diagnostics.pause_for_auth = lambda: (_ for _ in ()).throw(
+            ActionError("synthetic trace stop failure")
+        )
+
+        with self.assertRaises(ActionError):
+            action.ensure_authenticated()
+
+        self.assertNotIn("goto", [event[0] for event in events])
+        self.assertNotIn("credentials.request", [event[0] for event in events])
+
     def test_login_arms_provider_before_clicking(self) -> None:
         events = []
         submit = Locator(events, "login")
@@ -225,6 +320,49 @@ class YodelTests(unittest.TestCase):
         self.assertLess(names.index("click.login"), names.index("otp.triggered"))
         self.assertLess(names.index("otp.triggered"), names.index("otp.fill"))
         self.assertNotIn("private-password", repr(events))
+
+    def test_credentials_are_not_requested_after_cross_origin_navigation(self) -> None:
+        events = []
+        action = LoginAction(events, Locator(events, "login"))
+        action.page.url = "https://attacker.example/login"
+        with self.assertRaises(ActionError):
+            action._complete_login_form()
+        self.assertNotIn("credentials.request", [event[0] for event in events])
+
+    def test_goto_rejects_cross_origin_redirect_target(self) -> None:
+        events = []
+
+        class RedirectPage:
+            url = "about:blank"
+
+            def goto(self, url, wait_until):
+                events.append(("goto", url))
+                self.url = "https://attacker.example/redirected"
+
+        action = object.__new__(YodelAction)
+        action.page = RedirectPage()
+        action.config = SimpleNamespace(allows_yodel_url=allows_example_origin)
+        with self.assertRaises(ActionError):
+            action._goto_allowed("https://example.test/login")
+        self.assertEqual(events, [("goto", "https://example.test/login")])
+
+    def test_navigation_guard_aborts_cross_origin_top_level_request(self) -> None:
+        events = []
+        frame = object()
+        action = object.__new__(YodelAction)
+        action.page = SimpleNamespace(main_frame=frame)
+        action.config = SimpleNamespace(allows_yodel_url=allows_example_origin)
+        route = SimpleNamespace(
+            abort=lambda reason: events.append(("abort", reason)),
+            continue_=lambda: events.append(("continue", None)),
+        )
+        request = SimpleNamespace(
+            is_navigation_request=lambda: True,
+            frame=frame,
+            url="https://attacker.example/redirected",
+        )
+        action._guard_navigation(route, request)
+        self.assertEqual(events, [("abort", "blockedbyclient")])
 
     def test_failed_login_click_reports_trigger_failure(self) -> None:
         events = []
@@ -274,10 +412,150 @@ class YodelTests(unittest.TestCase):
         self.assertNotIn("otp.prepare", [event[0] for event in events])
         self.assertIn(("status", "auth_expired"), events)
 
+    def test_future_release_wait_suspends_reauth_trace_until_release(self) -> None:
+        events = []
+        release_at = datetime(2030, 1, 14, 7, 0, tzinfo=timezone.utc)
+        before_release = release_at - timedelta(hours=1)
+        action = ReleaseAction(events, release_at)
+        clock = SimpleNamespace(
+            now=Mock(
+                side_effect=[
+                    before_release,
+                    before_release,
+                    before_release,
+                    release_at,
+                ]
+            )
+        )
+
+        with patch("buntzen_actions.yodel.datetime", clock), patch(
+            "buntzen_actions.yodel.time.monotonic", return_value=1.0
+        ), patch("buntzen_actions.yodel.time.sleep"):
+            action.wait_for_release_if_needed()
+
+        trace_events = [event for event in events if event[0] == "trace"]
+        self.assertEqual(
+            trace_events,
+            [
+                ("trace", "suspended"),
+                ("trace", "resumed"),
+                ("trace", "suspended"),
+                ("trace", "resumed"),
+            ],
+        )
+        self.assertLess(
+            events.index(("trace", "suspended"), 1),
+            events.index(("auth", "checked")),
+        )
+        self.assertLess(
+            events.index(("trace", "resumed"), events.index(("auth", "checked"))),
+            events.index(("release.ready", {})),
+        )
+
+    def test_release_wait_does_not_begin_when_trace_stop_fails(self) -> None:
+        events = []
+        release_at = datetime(2030, 1, 14, 7, 0, tzinfo=timezone.utc)
+        before_release = release_at - timedelta(hours=1)
+        action = ReleaseAction(
+            events,
+            release_at,
+            suspend_error=ActionError("synthetic trace stop failure"),
+        )
+
+        with patch(
+            "buntzen_actions.yodel.datetime",
+            SimpleNamespace(now=Mock(return_value=before_release)),
+        ), self.assertRaises(ActionError):
+            action.wait_for_release_if_needed()
+
+        self.assertEqual(events, [("trace", "suspended")])
+
+    def test_release_wait_cancellation_never_resumes_trace(self) -> None:
+        events = []
+        release_at = datetime(2030, 1, 14, 7, 0, tzinfo=timezone.utc)
+        before_release = release_at - timedelta(hours=1)
+        action = ReleaseAction(events, release_at)
+        action.control.inbox.failure = Cancelled("cancelled during release wait")
+        clock = SimpleNamespace(now=Mock(side_effect=[before_release, before_release]))
+
+        with patch("buntzen_actions.yodel.datetime", clock), self.assertRaises(
+            Cancelled
+        ):
+            action.wait_for_release_if_needed()
+
+        self.assertEqual(
+            [event for event in events if event[0] == "trace"],
+            [("trace", "suspended")],
+        )
+        self.assertNotIn(("release.ready", {}), events)
+
+    def test_release_wait_error_resuspends_trace_and_does_not_resume(self) -> None:
+        events = []
+        release_at = datetime(2030, 1, 14, 7, 0, tzinfo=timezone.utc)
+        before_release = release_at - timedelta(hours=1)
+        action = ReleaseAction(events, release_at, ActionError("keepalive failed"))
+        clock = SimpleNamespace(now=Mock(side_effect=[before_release, before_release]))
+
+        with patch("buntzen_actions.yodel.datetime", clock), patch(
+            "buntzen_actions.yodel.time.monotonic", return_value=1.0
+        ), self.assertRaises(ActionError):
+            action.wait_for_release_if_needed()
+
+        self.assertEqual(
+            [event for event in events if event[0] == "trace"],
+            [
+                ("trace", "suspended"),
+                ("trace", "resumed"),
+                ("trace", "suspended"),
+            ],
+        )
+        self.assertNotIn(("release.ready", {}), events)
+
+    def test_release_gate_resuspends_final_reauthentication_before_resume(self) -> None:
+        events = []
+        release_at = datetime(2030, 1, 14, 7, 0, tzinfo=timezone.utc)
+        before_release = release_at - timedelta(hours=1)
+        action = ReleaseAction(events, release_at)
+        action.config.auth_deadline_at = None
+        action._is_authenticated = lambda: events.append(
+            ("auth", "checked")
+        ) or False
+
+        def reauthenticate(auth_deadline_at=None):
+            events.append(("reauth", "started"))
+            action.diagnostics.authenticated()
+            return True
+
+        action.ensure_authenticated = reauthenticate
+        clock = SimpleNamespace(now=Mock(side_effect=[before_release, release_at]))
+
+        with patch("buntzen_actions.yodel.datetime", clock):
+            action.wait_for_release_if_needed()
+
+        trace_events = [event for event in events if event[0] == "trace"]
+        self.assertEqual(
+            trace_events,
+            [
+                ("trace", "suspended"),
+                ("trace", "resumed"),
+                ("trace", "suspended"),
+                ("trace", "resumed"),
+            ],
+        )
+        reauth_resume = events.index(
+            ("trace", "resumed"), events.index(("reauth", "started"))
+        )
+        resuspended = events.index(("trace", "suspended"), reauth_resume)
+        final_resume = events.index(("trace", "resumed"), resuspended)
+        self.assertLess(reauth_resume, resuspended)
+        self.assertLess(resuspended, final_resume)
+        self.assertIn(("release.ready", {}), events)
+
     def test_final_click_is_bracketed(self) -> None:
         events = []
         action = object.__new__(YodelAction)
         action.control = FakeControl(events)
+        configure_example_origin(action)
         locator = Locator(events, "confirm")
         action._click_final_confirmation(locator, PASS_PREFERENCES["all_day"])
         self.assertEqual(events[0][0], "confirmation.starting")
@@ -304,6 +582,7 @@ class YodelTests(unittest.TestCase):
 
                 control.await_confirmation_ready = reject_confirmation
                 action.control = control
+                configure_example_origin(action)
                 with self.assertRaises(ActionError):
                     action._click_final_confirmation(
                         Locator(events, "confirm"),
@@ -315,6 +594,7 @@ class YodelTests(unittest.TestCase):
         events = []
         action = object.__new__(YodelAction)
         action.control = FakeControl(events)
+        configure_example_origin(action)
         with self.assertRaises(OutcomeUnknown):
             action._click_final_confirmation(
                 Locator(events, "confirm", fails=True),
@@ -359,10 +639,17 @@ class YodelTests(unittest.TestCase):
         self.assertTrue(
             manual._try_pass(PASS_PREFERENCES["all_day"], mode="manual").success
         )
-        manual_names = [event[0] for event in manual_events]
         self.assertLess(
-            manual_names.index("approval.wait"),
-            manual_names.index("confirmation.click"),
+            manual_events.index(("trace", "suspended")),
+            manual_events.index(("approval.wait", "all_day")),
+        )
+        self.assertLess(
+            manual_events.index(("approval.wait", "all_day")),
+            manual_events.index(("trace", "resumed")),
+        )
+        self.assertLess(
+            manual_events.index(("trace", "resumed")),
+            manual_events.index(("confirmation.click", "all_day")),
         )
 
         auto_events = []
@@ -372,7 +659,24 @@ class YodelTests(unittest.TestCase):
         )
         auto_names = [event[0] for event in auto_events]
         self.assertNotIn("approval.wait", auto_names)
+        self.assertNotIn("trace", auto_names)
         self.assertIn("confirmation.click", auto_names)
+
+    def test_manual_wait_does_not_begin_when_trace_stop_fails(self) -> None:
+        events = []
+        action = BookingAction(events)
+
+        def fail_trace_stop():
+            events.append(("trace", "suspended"))
+            raise ActionError("synthetic trace stop failure")
+
+        action.diagnostics.suspend_trace = fail_trace_stop
+        with self.assertRaises(ActionError):
+            action._try_pass(PASS_PREFERENCES["all_day"], mode="manual")
+
+        names = [event[0] for event in events]
+        self.assertNotIn("approval.wait", names)
+        self.assertNotIn("confirmation.click", names)
 
 
 if __name__ == "__main__":

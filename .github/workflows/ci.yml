@@ -18,6 +18,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Public-tree privacy guard
+        run: python3 scripts/check_public_tree.py
       - name: Formatting
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
@@ -53,7 +55,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
       - name: Validate Compose
-        run: BUNTZEN_ADMIN_PASSWORD=ci-only-password docker compose config --quiet
+        run: docker compose config --quiet
       - name: Build amd64 image
         uses: docker/build-push-action@v7
         with:

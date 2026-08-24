@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,11 @@ const (
 	csrfCookie      = "buntzen_csrf"
 	loginCSRFCookie = "buntzen_login_csrf"
 	sessionLifetime = 24 * time.Hour
+	loginWindow     = 15 * time.Minute
+	loginUserLimit  = 5
+	loginIPLimit    = 10
+	passwordLimit   = 5
+	maxFormBody     = 64 << 10
 )
 
 type contextKey string
@@ -38,12 +44,14 @@ type requestSession struct {
 }
 
 type Server struct {
-	config   config.Config
-	store    *store.Store
-	engine   *engine.Engine
-	renderer *Renderer
-	mux      *http.ServeMux
-	loginMu  sync.Mutex
+	config       config.Config
+	store        *store.Store
+	engine       *engine.Engine
+	renderer     *Renderer
+	mux          *http.ServeMux
+	loginMu      sync.Mutex
+	passwordMu   sync.Mutex
+	passwordBusy map[int64]struct{}
 }
 
 func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) (*Server, error) {
@@ -54,7 +62,10 @@ func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) 
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{config: cfg, store: database, engine: runner, renderer: renderer, mux: http.NewServeMux()}
+	server := &Server{
+		config: cfg, store: database, engine: runner, renderer: renderer,
+		mux: http.NewServeMux(), passwordBusy: make(map[int64]struct{}),
+	}
 	server.routes()
 	return server, nil
 }
@@ -68,7 +79,19 @@ func (s *Server) routes() {
 	})
 	s.mux.HandleFunc("GET /login", s.loginPage)
 	s.mux.HandleFunc("POST /login", s.login)
+	s.mux.HandleFunc("GET /setup", s.setupPage)
+	s.mux.HandleFunc("POST /setup", s.setup)
 	s.mux.HandleFunc("POST /logout", s.authenticated(s.logout))
+	s.mux.HandleFunc("GET /account", s.authenticated(s.accountPage))
+	s.mux.HandleFunc("POST /account/password", s.authenticated(s.accountPassword))
+
+	s.mux.HandleFunc("GET /admin/users", s.authenticated(s.adminOnly(s.usersPage)))
+	s.mux.HandleFunc("GET /admin/users/new", s.authenticated(s.adminOnly(s.userNewPage)))
+	s.mux.HandleFunc("POST /admin/users/new", s.authenticated(s.adminOnly(s.userCreate)))
+	s.mux.HandleFunc("GET /admin/users/{id}", s.authenticated(s.adminOnly(s.userEditPage)))
+	s.mux.HandleFunc("POST /admin/users/{id}", s.authenticated(s.adminOnly(s.userUpdate)))
+	s.mux.HandleFunc("POST /admin/users/{id}/password", s.authenticated(s.adminOnly(s.userResetPassword)))
+	s.mux.HandleFunc("POST /admin/users/{id}/delete", s.authenticated(s.adminOnly(s.userDelete)))
 
 	s.mux.HandleFunc("GET /{$}", s.authenticated(s.dashboard))
 	s.mux.HandleFunc("GET /sources", s.authenticated(s.sources))
@@ -105,27 +128,39 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		if !validHost(r.Host) {
+		if !s.hostAllowed(r.Host) {
 			http.Error(w, "invalid Host header", http.StatusBadRequest)
 			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func validHost(host string) bool {
-	host = strings.TrimSpace(host)
-	if host == "" || strings.ContainsAny(host, ` /\\@`) {
+func (s *Server) hostAllowed(value string) bool {
+	host, err := config.CanonicalHost(value)
+	if err != nil {
 		return false
 	}
-	name := host
+	hostname := host
 	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		name = parsed
-	} else if strings.Count(host, ":") > 1 && !strings.HasPrefix(host, "[") {
-		return false
+		hostname = parsed
 	}
-	name = strings.Trim(name, "[]")
-	return name != ""
+	hostname = strings.Trim(hostname, "[]")
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	if address := net.ParseIP(hostname); address != nil && address.IsLoopback() {
+		return true
+	}
+	for _, allowed := range s.config.AllowedHosts {
+		if host == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func sameOrigin(r *http.Request) bool {
@@ -217,7 +252,23 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 		}
 		_ = s.store.TouchSession(r.Context(), sessionToken.Value)
 		ctx := context.WithValue(r.Context(), sessionContextKey, requestSession{Authenticated: authenticated, CSRFToken: csrfValue.Value})
-		next(w, r.WithContext(ctx))
+		authenticatedRequest := r.WithContext(ctx)
+		if authenticated.User.MustChangePassword && r.URL.Path != "/account" && r.URL.Path != "/account/password" && r.URL.Path != "/logout" {
+			http.Redirect(w, authenticatedRequest, "/account?password=required", http.StatusSeeOther)
+			return
+		}
+		next(w, authenticatedRequest)
+	}
+}
+
+func (s *Server) adminOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := requestAuth(r).Authenticated.User
+		if user.Role != model.RoleAdmin || user.Status != model.UserActive {
+			http.Error(w, "administrator access required", http.StatusForbidden)
+			return
+		}
+		next(w, r)
 	}
 }
 
@@ -233,6 +284,10 @@ func (s *Server) unauthorized(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
+	if hasUsers, err := s.store.HasUsers(r.Context()); err == nil && !hasUsers {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -241,15 +296,24 @@ func requestAuth(r *http.Request) requestSession {
 	return value
 }
 
+func (s *Server) userStore(r *http.Request) store.UserStore {
+	return s.store.ForUser(requestAuth(r).Authenticated.User.ID)
+}
+
 func base(r *http.Request, title string) BaseData {
 	session := requestAuth(r)
-	return BaseData{Title: title, Authenticated: session.Authenticated.Admin.ID > 0, CSRFToken: session.CSRFToken, CurrentPath: r.URL.Path, Flash: flashFor(r.URL.Query().Get("ok"))}
+	user := session.Authenticated.User
+	return BaseData{Title: title, Authenticated: user.ID > 0, Username: user.Username, IsAdmin: user.Role == model.RoleAdmin, CSRFToken: session.CSRFToken, CurrentPath: r.URL.Path, Flash: flashFor(r.URL.Query().Get("ok"))}
 }
 
 func flashFor(value string) *Flash {
 	messages := map[string]string{
 		"created": "Saved successfully.", "updated": "Changes saved.", "queued": "Job queued.",
 		"healthy": "Provider authentication succeeded.", "cancelled": "Cancellation requested.", "decided": "Decision sent to the waiting browser.",
+		"setup": "Administrator account created.", "user-created": "User account created.",
+		"user-updated": "User access updated.", "user-password": "Temporary password set and existing sessions revoked.",
+		"user-deleted":         "Member account and database records were deleted; managed local files were reconciled.",
+		"user-deleted-cleanup": "Member account and database records were deleted; managed local-file cleanup will retry automatically.",
 	}
 	if message := messages[value]; message != "" {
 		return &Flash{Kind: "success", Message: message}
@@ -267,7 +331,23 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
+type authPageData struct {
+	BaseData
+	Error    string
+	Message  string
+	Username string
+}
+
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
+	hasUsers, err := s.store.HasUsers(r.Context())
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	if !hasUsers {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		if _, err := s.store.GetSession(r.Context(), cookie.Value); err == nil {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -280,17 +360,18 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setCookie(w, loginCSRFCookie, token, 10*time.Minute)
-	data := struct {
-		BaseData
-		Error string
-	}{BaseData: BaseData{Title: "Sign in", CSRFToken: token}, Error: loginError(r.URL.Query().Get("error"))}
+	message := ""
+	if r.URL.Query().Get("ok") == "password-changed" {
+		message = "Password changed. Sign in again."
+	}
+	data := authPageData{BaseData: BaseData{Title: "Sign in", CSRFToken: token}, Error: loginError(r.URL.Query().Get("error")), Message: message}
 	s.render(w, http.StatusOK, "login", data)
 }
 
 func loginError(value string) string {
 	switch value {
 	case "invalid":
-		return "The password was not accepted."
+		return "The username or password was not accepted."
 	case "limited":
 		return "Too many attempts. Wait before trying again."
 	default:
@@ -299,8 +380,6 @@ func loginError(value string) string {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
 	if !s.originAllowed(r) {
 		rejectCrossOrigin(w, r)
 		return
@@ -314,32 +393,55 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	rateKey := remoteIP(r) + ":" + s.config.AdminUsername
-	allowed, _, err := s.store.LoginRateLimit(r.Context(), rateKey, time.Now().UTC(), 15*time.Minute, 5)
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	hasUsers, err := s.store.HasUsers(r.Context())
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	if !hasUsers {
+		clearCookie(w, loginCSRFCookie)
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+	username := strings.TrimSpace(r.Form.Get("username"))
+	normalizedUsername, normalizeErr := auth.NormalizeUsername(username)
+	if normalizeErr != nil {
+		normalizedUsername = "<invalid>"
+	}
+	ipKey := loginRateKey("ip", remoteIP(r))
+	userKey := loginRateKey("ip-user", remoteIP(r), normalizedUsername)
+	allowedIP, _, err := s.store.LoginRateLimit(r.Context(), ipKey, time.Now().UTC(), loginWindow, loginIPLimit)
 	if err != nil {
 		http.Error(w, "login unavailable", http.StatusInternalServerError)
 		return
 	}
-	if !allowed {
+	allowedUser, _, err := s.store.LoginRateLimit(r.Context(), userKey, time.Now().UTC(), loginWindow, loginUserLimit)
+	if err != nil {
+		http.Error(w, "login unavailable", http.StatusInternalServerError)
+		return
+	}
+	if !allowedIP || !allowedUser {
 		http.Redirect(w, r, "/login?error=limited", http.StatusSeeOther)
 		return
 	}
-	admin, ok, err := s.store.AuthenticateAdmin(r.Context(), s.config.AdminUsername, r.Form.Get("password"))
+	_, credentials, ok, err := s.store.AuthenticateAndCreateSession(
+		r.Context(), username, r.Form.Get("password"), sessionLifetime,
+	)
 	if err != nil {
 		http.Error(w, "login unavailable", http.StatusInternalServerError)
 		return
 	}
-	if err := s.store.RecordLoginAttempt(r.Context(), rateKey, ok); err != nil {
+	if err := s.store.RecordLoginAttempts(r.Context(), []string{ipKey, userKey}, ok); err != nil {
+		if ok {
+			_ = s.store.DeleteSession(r.Context(), credentials.Token)
+		}
 		http.Error(w, "login unavailable", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
 		http.Redirect(w, r, "/login?error=invalid", http.StatusSeeOther)
-		return
-	}
-	credentials, err := s.store.NewSession(r.Context(), admin.ID, sessionLifetime)
-	if err != nil {
-		http.Error(w, "could not create session", http.StatusInternalServerError)
 		return
 	}
 	setCookie(w, sessionCookie, credentials.Token, sessionLifetime)
@@ -348,12 +450,406 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
+	hasUsers, err := s.store.HasUsers(r.Context())
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	if hasUsers {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		http.Error(w, "could not create setup form", http.StatusInternalServerError)
+		return
+	}
+	setCookie(w, loginCSRFCookie, token, 10*time.Minute)
+	s.render(w, http.StatusOK, "setup", authPageData{BaseData: BaseData{Title: "First-run setup", CSRFToken: token}, Username: "admin"})
+}
+
+func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
+	if !s.originAllowed(r) {
+		rejectCrossOrigin(w, r)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	cookie, err := r.Cookie(loginCSRFCookie)
+	if err != nil || !constantEqual(cookie.Value, r.Form.Get("csrf_token")) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	hasUsers, err := s.store.HasUsers(r.Context())
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	if hasUsers {
+		clearCookie(w, loginCSRFCookie)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	if s.config.SetupToken == "" {
+		http.Error(w, "first-run setup is unavailable until the host provides a setup token", http.StatusServiceUnavailable)
+		return
+	}
+	username := strings.TrimSpace(r.Form.Get("username"))
+	if !tokenEqual(s.config.SetupToken, r.Form.Get("setup_token")) {
+		s.renderSetupError(w, username, "The one-time setup token was not accepted. Check the host logs and try again.")
+		return
+	}
+	password := r.Form.Get("password")
+	if password != r.Form.Get("password_confirm") {
+		s.renderSetupError(w, username, "The passwords do not match.")
+		return
+	}
+	_, err = s.store.SetupAdmin(r.Context(), username, password)
+	if err != nil {
+		hasUsers, checkErr := s.store.HasUsers(r.Context())
+		if checkErr == nil && hasUsers {
+			clearCookie(w, loginCSRFCookie)
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		s.renderSetupError(w, username, accountFormError(err))
+		return
+	}
+	_, credentials, authenticated, err := s.store.AuthenticateAndCreateSession(
+		r.Context(), username, password, sessionLifetime,
+	)
+	if err != nil || !authenticated {
+		http.Error(w, "could not create session", http.StatusInternalServerError)
+		return
+	}
+	setCookie(w, sessionCookie, credentials.Token, sessionLifetime)
+	setCookie(w, csrfCookie, credentials.CSRFToken, sessionLifetime)
+	clearCookie(w, loginCSRFCookie)
+	http.Redirect(w, r, "/?ok=setup", http.StatusSeeOther)
+}
+
+func tokenEqual(left, right string) bool {
+	return constantEqual(auth.HashToken(left), auth.HashToken(right))
+}
+
+func (s *Server) renderSetupError(w http.ResponseWriter, username, message string) {
+	token, err := auth.NewToken()
+	if err != nil {
+		http.Error(w, "could not create setup form", http.StatusInternalServerError)
+		return
+	}
+	setCookie(w, loginCSRFCookie, token, 10*time.Minute)
+	s.render(w, http.StatusUnprocessableEntity, "setup", authPageData{BaseData: BaseData{Title: "First-run setup", CSRFToken: token}, Error: message, Username: username})
+}
+
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.DeleteSession(r.Context(), cookie.Value)
 	}
 	clearAuthCookies(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+type accountPageData struct {
+	BaseData
+	Error            string
+	PasswordRequired bool
+}
+
+func (s *Server) accountPage(w http.ResponseWriter, r *http.Request) {
+	s.renderAccount(w, r, "")
+}
+
+func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
+	password := r.Form.Get("new_password")
+	if password != r.Form.Get("password_confirm") {
+		s.renderAccount(w, r, "The new passwords do not match.")
+		return
+	}
+	userID := requestAuth(r).Authenticated.User.ID
+	release := s.tryPasswordChange(userID)
+	if release == nil {
+		http.Error(w, "another password change is already running for this account", http.StatusTooManyRequests)
+		return
+	}
+	defer release()
+	rateKey := loginRateKey("password-change", strconv.FormatInt(userID, 10))
+	allowed, _, err := s.store.LoginRateLimit(r.Context(), rateKey, time.Now().UTC(), loginWindow, passwordLimit)
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	if !allowed {
+		http.Error(w, "too many password attempts; wait before trying again", http.StatusTooManyRequests)
+		return
+	}
+	changed, err := s.store.ChangeUserPassword(r.Context(), userID, r.Form.Get("current_password"), password)
+	if recordErr := s.store.RecordLoginAttempt(r.Context(), rateKey, err == nil && changed); recordErr != nil {
+		s.internal(w)
+		return
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrPasswordUnchanged) {
+			s.renderAccount(w, r, "Choose a new password that differs from the temporary or current password.")
+			return
+		}
+		s.renderAccount(w, r, accountFormError(err))
+		return
+	}
+	if !changed {
+		s.renderAccount(w, r, "The current password was not accepted.")
+		return
+	}
+	clearAuthCookies(w)
+	http.Redirect(w, r, "/login?ok=password-changed", http.StatusSeeOther)
+}
+
+func (s *Server) tryPasswordChange(userID int64) func() {
+	s.passwordMu.Lock()
+	defer s.passwordMu.Unlock()
+	if userID <= 0 {
+		return nil
+	}
+	if _, busy := s.passwordBusy[userID]; busy {
+		return nil
+	}
+	s.passwordBusy[userID] = struct{}{}
+	return func() {
+		s.passwordMu.Lock()
+		delete(s.passwordBusy, userID)
+		s.passwordMu.Unlock()
+	}
+}
+
+func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, formError string) {
+	user := requestAuth(r).Authenticated.User
+	s.render(w, formStatus(formError), "account", accountPageData{
+		BaseData:         base(r, "Account"),
+		Error:            formError,
+		PasswordRequired: user.MustChangePassword || r.URL.Query().Get("password") == "required",
+	})
+}
+
+type userRow struct {
+	ID                                                               int64
+	Username, Role, Status, StatusClass, PasswordState, CreatedLabel string
+	Editable                                                         bool
+}
+
+type usersPageData struct {
+	BaseData
+	Users []userRow
+}
+
+func (s *Server) usersPage(w http.ResponseWriter, r *http.Request) {
+	users, err := s.store.ListUsers(r.Context())
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	data := usersPageData{BaseData: base(r, "Users")}
+	for _, user := range users {
+		status, statusClass := "Disabled", ""
+		if user.Status == model.UserActive {
+			status, statusClass = "Active", "ok"
+		}
+		passwordState := "Current"
+		if user.MustChangePassword {
+			passwordState = "Change required"
+		}
+		role := "Member"
+		if user.Role == model.RoleAdmin {
+			role = "Permanent admin"
+		}
+		data.Users = append(data.Users, userRow{
+			ID:            user.ID,
+			Username:      user.Username,
+			Role:          role,
+			Status:        status,
+			StatusClass:   statusClass,
+			PasswordState: passwordState,
+			CreatedLabel:  user.CreatedAt.Local().Format("Jan 2, 2006"),
+			Editable:      user.Role == model.RoleMember,
+		})
+	}
+	s.render(w, http.StatusOK, "users", data)
+}
+
+type userPageData struct {
+	BaseData
+	Heading, Description, Error, FormUsername string
+	UserID                                    int64
+	Creating, Enabled, DeleteAllowed          bool
+}
+
+func (s *Server) userNewPage(w http.ResponseWriter, r *http.Request) {
+	s.renderUserNew(w, r, "", "")
+}
+
+func (s *Server) userCreate(w http.ResponseWriter, r *http.Request) {
+	username, password := strings.TrimSpace(r.Form.Get("username")), r.Form.Get("password")
+	if password != r.Form.Get("password_confirm") {
+		s.renderUserNew(w, r, username, "The passwords do not match.")
+		return
+	}
+	_, err := s.store.CreateMember(r.Context(), store.CreateUserInput{Username: username, Password: password, MustChangePassword: true})
+	if err != nil {
+		s.renderUserNew(w, r, username, accountFormError(err))
+		return
+	}
+	http.Redirect(w, r, "/admin/users?ok=user-created", http.StatusSeeOther)
+}
+
+func (s *Server) renderUserNew(w http.ResponseWriter, r *http.Request, username, formError string) {
+	s.render(w, formStatus(formError), "user", userPageData{
+		BaseData:     base(r, "New user"),
+		Heading:      "New user",
+		Description:  "Create a regular member account. Administrator privileges cannot be assigned here.",
+		Error:        formError,
+		FormUsername: username,
+		Creating:     true,
+	})
+}
+
+func (s *Server) userEditPage(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	user, err := s.store.GetUser(r.Context(), id)
+	if err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	if user.Role == model.RoleAdmin {
+		http.Error(w, "the permanent administrator is managed from Account", http.StatusForbidden)
+		return
+	}
+	s.renderUserEdit(w, r, user.ID, user.Username, user.Status == model.UserActive, "")
+}
+
+func (s *Server) userUpdate(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	current, err := s.store.GetUser(r.Context(), id)
+	if err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	if current.Role == model.RoleAdmin {
+		http.Error(w, "the permanent administrator cannot be modified here", http.StatusForbidden)
+		return
+	}
+	status := model.UserDisabled
+	if checked(r, "enabled") {
+		status = model.UserActive
+	}
+	username := strings.TrimSpace(r.Form.Get("username"))
+	_, err = s.store.UpdateUser(r.Context(), id, store.UserUpdateInput{Username: username, Status: status})
+	if err != nil {
+		s.renderUserEdit(w, r, id, username, status == model.UserActive, accountFormError(err))
+		return
+	}
+	http.Redirect(w, r, "/admin/users?ok=user-updated", http.StatusSeeOther)
+}
+
+func (s *Server) userResetPassword(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	current, err := s.store.GetUser(r.Context(), id)
+	if err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	if current.Role == model.RoleAdmin {
+		http.Error(w, "the permanent administrator cannot be reset here", http.StatusForbidden)
+		return
+	}
+	password := r.Form.Get("password")
+	if password != r.Form.Get("password_confirm") {
+		s.renderUserEdit(w, r, id, current.Username, current.Status == model.UserActive, "The passwords do not match.")
+		return
+	}
+	if err := s.store.ResetUserPassword(r.Context(), id, password, true); err != nil {
+		s.renderUserEdit(w, r, id, current.Username, current.Status == model.UserActive, accountFormError(err))
+		return
+	}
+	http.Redirect(w, r, "/admin/users?ok=user-password", http.StatusSeeOther)
+}
+
+func (s *Server) userDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	current, err := s.store.GetUser(r.Context(), id)
+	if err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	if current.Role == model.RoleAdmin {
+		http.Error(w, "the permanent administrator cannot be deleted", http.StatusForbidden)
+		return
+	}
+	if err := s.store.DeleteMember(r.Context(), id, r.Form.Get("confirm_username")); err != nil {
+		s.renderUserEdit(w, r, id, current.Username, current.Status == model.UserActive, memberDeleteFormError(err))
+		return
+	}
+	if err := s.engine.ReconcileStorage(r.Context()); err != nil {
+		log.Printf("post-deletion managed storage reconciliation failed; periodic maintenance will retry: %v", err)
+		http.Redirect(w, r, "/admin/users?ok=user-deleted-cleanup", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/admin/users?ok=user-deleted", http.StatusSeeOther)
+}
+
+func (s *Server) renderUserEdit(w http.ResponseWriter, r *http.Request, id int64, username string, enabled bool, formError string) {
+	s.render(w, formStatus(formError), "user", userPageData{
+		BaseData:      base(r, "Manage user"),
+		Heading:       "Manage " + username,
+		Description:   "Rename, enable, disable, reset, or permanently delete this member account.",
+		Error:         formError,
+		FormUsername:  username,
+		UserID:        id,
+		Enabled:       enabled,
+		DeleteAllowed: !enabled,
+	})
+}
+
+func memberDeleteFormError(err error) string {
+	switch {
+	case errors.Is(err, store.ErrMemberMustBeDisabled):
+		return "Disable this member before deleting the account."
+	case errors.Is(err, store.ErrMemberDeleteConfirmation):
+		return "Type the member username exactly to confirm deletion."
+	case errors.Is(err, store.ErrMemberHasActiveJobs):
+		return "Wait for the member's active jobs to finish cancellation, then try again."
+	default:
+		return "The member account could not be deleted."
+	}
+}
+
+func accountFormError(err error) string {
+	if errors.Is(err, store.ErrConflict) {
+		return "That username is already in use."
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(message, "username") {
+		return "Use a valid username that is not already in use."
+	}
+	if strings.Contains(message, "password") {
+		return "Use a password that meets the minimum length requirement."
+	}
+	return "The submitted account details were not accepted."
 }
 
 func setCookie(w http.ResponseWriter, name, value string, lifetime time.Duration) {
@@ -377,6 +873,11 @@ func remoteIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+func loginRateKey(parts ...string) string {
+	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return fmt.Sprintf("%x", digest[:])
+}
+
 func (s *Server) render(w http.ResponseWriter, status int, name string, data any) {
 	if err := s.renderer.Render(w, status, name, data); err != nil {
 		log.Printf("render %s failed: %v", name, err)
@@ -395,17 +896,18 @@ type dashboardData struct {
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	profiles, err := s.store.ListProfiles(r.Context())
+	userStore := s.userStore(r)
+	profiles, err := userStore.ListProfiles(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
 	}
-	bookings, err := s.store.ListBookingRequests(r.Context())
+	bookings, err := userStore.ListBookingRequests(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
 	}
-	jobs, err := s.store.ListJobs(r.Context(), 10)
+	jobs, err := userStore.ListJobs(r.Context(), 10)
 	if err != nil {
 		s.internal(w)
 		return
@@ -425,7 +927,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 			data.Stats.Waiting++
 		}
 	}
-	data.Jobs = s.jobRows(r.Context(), jobs)
+	data.Jobs = s.jobRows(r.Context(), userStore, jobs)
 	s.render(w, http.StatusOK, "dashboard", data)
 }
 
@@ -445,16 +947,17 @@ type jobsData struct {
 }
 
 func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.store.ListJobs(r.Context(), 200)
+	userStore := s.userStore(r)
+	jobs, err := userStore.ListJobs(r.Context(), 200)
 	if err != nil {
 		s.internal(w)
 		return
 	}
-	s.render(w, http.StatusOK, "jobs", jobsData{BaseData: base(r, "Jobs"), Jobs: s.jobRows(r.Context(), jobs)})
+	s.render(w, http.StatusOK, "jobs", jobsData{BaseData: base(r, "Jobs"), Jobs: s.jobRows(r.Context(), userStore, jobs)})
 }
 
-func (s *Server) jobRows(ctx context.Context, jobs []model.Job) []jobRow {
-	profiles, _ := s.store.ListProfiles(ctx)
+func (s *Server) jobRows(ctx context.Context, userStore store.UserStore, jobs []model.Job) []jobRow {
+	profiles, _ := userStore.ListProfiles(ctx)
 	names := make(map[int64]string, len(profiles))
 	for _, profile := range profiles {
 		names[profile.ID] = profile.Name
@@ -492,13 +995,14 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	job, err := s.store.GetJob(r.Context(), id)
+	userStore := s.userStore(r)
+	job, err := userStore.GetJob(r.Context(), id)
 	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
 	}
-	profile, _ := s.store.GetProfile(r.Context(), job.ProfileID)
-	events, err := s.store.ListJobEvents(r.Context(), id, 0, 500)
+	profile, _ := userStore.GetProfile(r.Context(), job.ProfileID)
+	events, err := userStore.ListJobEvents(r.Context(), id, 0, 500)
 	if err != nil {
 		s.internal(w)
 		return
@@ -517,7 +1021,8 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := s.store.GetJob(r.Context(), id); err != nil {
+	userStore := s.userStore(r)
+	if _, err := userStore.GetJob(r.Context(), id); err != nil {
 		s.notFoundOrInternal(w, err)
 		return
 	}
@@ -543,12 +1048,12 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	existing, _ := s.store.ListJobEvents(r.Context(), id, 0, 1000)
+	existing, _ := userStore.ListJobEvents(r.Context(), id, 0, 1000)
 	var afterID int64
 	if len(existing) > 0 {
 		afterID = existing[len(existing)-1].ID
 	}
-	s.writeJobState(w, id)
+	s.writeJobState(w, userStore, id)
 	flusher.Flush()
 	jobKey := strconv.FormatInt(id, 10)
 	live, unsubscribe := s.engine.Hub().Subscribe(jobKey)
@@ -572,7 +1077,7 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			if event.Kind == "otp" || event.Kind == "pairing" {
 				writeSSE(w, event.Kind, event.Data)
 			} else {
-				s.writeJobState(w, id)
+				s.writeJobState(w, userStore, id)
 			}
 			flusher.Flush()
 		case <-poll.C:
@@ -580,7 +1085,7 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 				expireStream()
 				return
 			}
-			events, err := s.store.ListJobEvents(r.Context(), id, afterID, 100)
+			events, err := userStore.ListJobEvents(r.Context(), id, afterID, 100)
 			if err != nil {
 				return
 			}
@@ -588,11 +1093,11 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 				writeSSE(w, "job_event", map[string]any{"time": event.CreatedAt.Local().Format("15:04:05"), "type": event.Kind, "message": event.Message})
 				afterID = event.ID
 			}
-			job, err := s.store.GetJob(r.Context(), id)
+			job, err := userStore.GetJob(r.Context(), id)
 			if err != nil {
 				return
 			}
-			s.writeJobState(w, id)
+			s.writeJobState(w, userStore, id)
 			flusher.Flush()
 			if job.Status.Terminal() {
 				return
@@ -608,8 +1113,8 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) writeJobState(w http.ResponseWriter, id int64) {
-	job, err := s.store.GetJob(context.Background(), id)
+func (s *Server) writeJobState(w http.ResponseWriter, userStore store.UserStore, id int64) {
+	job, err := userStore.GetJob(context.Background(), id)
 	if err != nil {
 		return
 	}
@@ -629,17 +1134,22 @@ func (s *Server) jobDecision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, err := s.userStore(r).GetJob(r.Context(), id); err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
 	decision := r.Form.Get("decision")
+	userID := requestAuth(r).Authenticated.User.ID
 	var err error
 	switch decision {
 	case "approve":
-		err = s.engine.Decide(r.Context(), id, model.DecisionApprove)
+		err = s.engine.Decide(r.Context(), userID, id, model.DecisionApprove)
 	case "cancel":
-		err = s.engine.Decide(r.Context(), id, model.DecisionCancel)
+		err = s.engine.Decide(r.Context(), userID, id, model.DecisionCancel)
 	case "cancel-job":
-		err = s.engine.CancelJob(r.Context(), id)
+		err = s.engine.CancelJob(r.Context(), userID, id)
 	case "pair":
-		err = s.engine.ChoosePairing(id, r.Form.Get("message_id"))
+		err = s.engine.ChoosePairing(r.Context(), userID, id, r.Form.Get("message_id"))
 	default:
 		http.Error(w, "unsupported decision", http.StatusBadRequest)
 		return

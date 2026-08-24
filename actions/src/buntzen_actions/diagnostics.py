@@ -5,8 +5,11 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from .errors import ActionError
+
 
 logger = logging.getLogger("buntzen_actions.diagnostics")
+MAX_TRACE_SEGMENTS = 8
 
 
 class SafeDiagnostics:
@@ -35,6 +38,10 @@ class SafeDiagnostics:
             self.context.tracing.start(screenshots=True, snapshots=True, sources=True)
             self._tracing = True
 
+    def suspend_trace(self) -> None:
+        """Close the current trace segment during an unbounded safe wait."""
+        self._stop_trace()
+
     def screenshot(self, page: Any, name: str) -> Optional[Path]:
         if not self._safe or self.base_dir is None:
             return None
@@ -48,20 +55,31 @@ class SafeDiagnostics:
 
     def close(self) -> None:
         self._safe = False
-        self._stop_trace()
+        self._stop_trace(best_effort=True)
 
-    def _stop_trace(self) -> None:
+    def _stop_trace(self, *, best_effort: bool = False) -> None:
         if not self._tracing:
             return
-        self._tracing = False
-        self._trace_index += 1
+        next_trace_index = (self._trace_index % MAX_TRACE_SEGMENTS) + 1
         if self.base_dir is None:
+            self._tracing = False
             return
-        path = self.base_dir / f"trace-{self._trace_index}.zip"
+        path = self.base_dir / f"trace-{next_trace_index}.zip"
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not replace rotated trace segment %s", path.name)
         try:
             self.context.tracing.stop(path=str(path))
-        except Exception:
+        except Exception as exc:
             logger.warning("Could not finish safe Playwright trace segment")
+            if not best_effort:
+                raise ActionError(
+                    "Safe diagnostics could not be stopped before a sensitive action or wait"
+                ) from exc
+            return
+        self._tracing = False
+        self._trace_index = next_trace_index
 
 
 def _safe_name(value: str) -> str:

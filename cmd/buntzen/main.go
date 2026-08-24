@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
+	accountauth "github.com/jaysqvl/buntzen-pass-bot/internal/auth"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
 	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
@@ -86,7 +87,7 @@ func runDoctor(ctx context.Context, cfg config.Config, database *store.Store) er
 	}
 	pythonOK, pythonError := doctorPython(ctx, cfg)
 	providerReports := make([]map[string]any, 0)
-	sources, err := database.ListOTPSources(ctx)
+	sources, err := database.SystemListOTPSources(ctx)
 	if err != nil {
 		return err
 	}
@@ -176,14 +177,25 @@ func runServe(parent context.Context, cfg config.Config, database *store.Store) 
 		return err
 	}
 	defer instanceLock.Close()
-	if _, _, err := database.BootstrapAdmin(parent, cfg.AdminUsername, cfg.BootstrapPassword); err != nil {
-		return fmt.Errorf("bootstrap administrator (set BUNTZEN_ADMIN_PASSWORD on first launch): %w", err)
-	}
-	// The environment value is bootstrap-only. Do not retain another copy in
-	// either the web server or worker engine after the password hash exists.
-	cfg.BootstrapPassword = ""
+	// The recovery secret is never part of normal service operation and must
+	// not be inherited by action-worker subprocesses.
 	_ = os.Unsetenv("BUNTZEN_ADMIN_PASSWORD")
-	recovered, err := database.RecoverInterruptedJobs(parent)
+	hasUsers, err := database.HasUsers(parent)
+	if err != nil {
+		return err
+	}
+	if !hasUsers {
+		if cfg.SetupToken == "" {
+			cfg.SetupToken, err = accountauth.NewToken()
+			if err != nil {
+				return fmt.Errorf("generate first-run setup token: %w", err)
+			}
+			log.Printf("first-run setup token: %s", cfg.SetupToken)
+		} else {
+			log.Print("first-run setup token loaded from BUNTZEN_SETUP_TOKEN")
+		}
+	}
+	recovered, err := database.SystemRecoverInterruptedJobs(parent)
 	if err != nil {
 		return err
 	}
@@ -236,10 +248,19 @@ func runJobCommand(parent context.Context, cfg config.Config, database *store.St
 	}
 	command := model.JobCommand(commandName)
 	runMode := model.RunMode("")
+	requestedMode := strings.TrimSpace(*mode)
 	if command == model.CommandDryRun {
+		if requestedMode != "" {
+			return errors.New("--mode is only valid for book")
+		}
 		runMode = model.RunModeDryRun
-	} else if command == model.CommandBook && strings.TrimSpace(*mode) != "" {
-		runMode = model.RunMode(*mode)
+	} else if command == model.CommandBook && requestedMode != "" {
+		runMode = model.RunMode(requestedMode)
+		if runMode != model.RunModeManual && runMode != model.RunModeAuto {
+			return errors.New("book --mode must be manual or auto")
+		}
+	} else if command != model.CommandBook && requestedMode != "" {
+		return errors.New("--mode is only valid for book")
 	}
 	instanceLock, lockErr := lockfile.TryAcquire(cfg.AppDataDir + "/control-plane.lock")
 	ownsControlPlane := lockErr == nil
@@ -252,7 +273,7 @@ func runJobCommand(parent context.Context, cfg config.Config, database *store.St
 	if ownsControlPlane {
 		defer instanceLock.Close()
 		if command == model.CommandBook && runMode != model.RunModeAuto {
-			booking, err := database.GetBookingRequest(parent, *bookingID)
+			booking, err := database.SystemGetBookingRequest(parent, *bookingID)
 			if err != nil {
 				return err
 			}
@@ -263,7 +284,7 @@ func runJobCommand(parent context.Context, cfg config.Config, database *store.St
 				return errors.New("manual book requires the running web control plane for approval; start serve or use --mode auto")
 			}
 		}
-		if _, err := database.RecoverInterruptedJobs(parent); err != nil {
+		if _, err := database.SystemRecoverInterruptedJobs(parent); err != nil {
 			return err
 		}
 	}
@@ -274,16 +295,16 @@ func runJobCommand(parent context.Context, cfg config.Config, database *store.St
 		jobEngine.Start(ctx)
 		defer jobEngine.Stop()
 	}
-	job, err := jobEngine.QueueBooking(ctx, *bookingID, command, runMode)
+	job, err := jobEngine.SystemQueueBooking(ctx, *bookingID, command, runMode)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("queued job %d\n", job.ID)
-	finished, err := jobEngine.Wait(ctx, job.ID)
+	finished, err := jobEngine.SystemWait(ctx, job.ID)
 	if err != nil {
 		if ctx.Err() != nil {
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = database.RequestJobCancellation(cancelCtx, job.ID)
+			_ = database.SystemRequestJobCancellation(cancelCtx, job.ID)
 			cancel()
 			return errors.New("interrupted; durable job cancellation was requested")
 		}
@@ -323,10 +344,11 @@ func adminPasswordCommand(ctx context.Context, cfg config.Config, database *stor
 	if password == "" {
 		return errors.New("BUNTZEN_ADMIN_PASSWORD must contain the new password")
 	}
-	if err := database.ResetAdminPassword(ctx, cfg.AdminUsername, password); err != nil {
+	admin, err := database.ResetAdministratorPassword(ctx, password)
+	if err != nil {
 		return err
 	}
-	fmt.Println("administrator password reset; existing sessions were revoked")
+	fmt.Printf("administrator %q password reset; existing sessions were revoked\n", admin.Username)
 	return nil
 }
 

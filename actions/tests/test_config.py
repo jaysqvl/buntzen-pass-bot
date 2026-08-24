@@ -17,6 +17,7 @@ def start_frame() -> dict:
             "profile_dir": "/tmp/buntzen-profile",
             "target_date": "2030-01-15",
             "timezone": "UTC",
+            "allowed_yodel_origins": ["https://yodelportal.com"],
             "login_probe_url": "https://yodelportal.com/buntzen-lake",
             "all_day_pass_url": "https://yodelportal.com/buntzen-lake",
             "half_day_pass_url": "https://yodelportal.com/buntzen-lake",
@@ -62,6 +63,30 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_auth_deadline_after_release(self) -> None:
         frame = start_frame()
         frame["config"]["auth_deadline_at"] = "2030-01-14T07:01:00Z"
+        with self.assertRaises(ProtocolError):
+            ActionConfig.from_start(frame)
+
+    def test_rejects_booking_urls_outside_approved_https_origin(self) -> None:
+        for value in (
+            "https://attacker.example/buntzen-lake",
+            "https://yodelportal.com.attacker.example/buntzen-lake",
+            "http://yodelportal.com/buntzen-lake",
+        ):
+            with self.subTest(value=value):
+                frame = start_frame()
+                frame["config"]["login_probe_url"] = value
+                with self.assertRaises(ProtocolError):
+                    ActionConfig.from_start(frame)
+
+    def test_requires_exact_trusted_origin_list(self) -> None:
+        frame = start_frame()
+        del frame["config"]["allowed_yodel_origins"]
+        with self.assertRaises(ProtocolError):
+            ActionConfig.from_start(frame)
+        frame = start_frame()
+        frame["config"]["allowed_yodel_origins"] = [
+            "https://yodelportal.com/path"
+        ]
         with self.assertRaises(ProtocolError):
             ActionConfig.from_start(frame)
 

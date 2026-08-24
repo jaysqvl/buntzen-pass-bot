@@ -16,13 +16,18 @@ class Tracing:
     def start(self, **kwargs):
         return None
 
+
+class Page:
+    def route(self, pattern, handler):
+        return None
+
     def stop(self, **kwargs):
         return None
 
 
 class Context:
     def __init__(self) -> None:
-        self.pages = [object()]
+        self.pages = [Page()]
         self.tracing = Tracing()
         self.closed = 0
         self.default_timeout = None
@@ -76,6 +81,7 @@ def make_config(profile_dir: Path) -> ActionConfig:
         target_date=__import__("datetime").date(2030, 1, 15),
         timezone_name="UTC",
         login_probe_url="https://example.test",
+        allowed_yodel_origins=frozenset({"https://example.test"}),
         all_day_pass_url=None,
         half_day_pass_url=None,
         vehicle_keyword="car",
@@ -119,6 +125,12 @@ class WorkerTests(unittest.TestCase):
                     "chromium_sandbox"
                 ],
                 True,
+            )
+            self.assertEqual(
+                PlaywrightManager.last_playwright.chromium.launch_options[
+                    "service_workers"
+                ],
+                "block",
             )
             self.assertNotIn(
                 "--no-sandbox",

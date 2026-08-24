@@ -73,46 +73,46 @@ func TestConcurrentMigrationIsSerialized(t *testing.T) {
 
 func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
+	store := ownedTestStore(t)
 	providerConfig := map[string]any{
 		"base_url": "http://bluebubbles.example:1234",
 		"password": "test-only-provider-password",
 	}
-	source, err := store.CreateOTPSource(ctx, OTPSourceInput{
+	source, err := store.CreateOTPSource(ctx, testUserID, OTPSourceInput{
 		Name: "Example Messages", Provider: model.OTPProviderBlueBubbles,
 		Identity: "http://bluebubbles.example:1234", ProviderConfig: providerConfig,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateProfile(ctx, ProfileInput{
-		Name: "Empty", BrowserProfile: "empty", DefaultVehicle: "Example Vehicle",
+	if _, err := store.CreateProfile(ctx, testUserID, ProfileInput{
+		Name: "Empty", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{},
 	}); err == nil {
 		t.Fatal("empty Yodel credentials were accepted")
 	}
-	profile, err := store.CreateProfile(ctx, ProfileInput{
-		Name: "Example", BrowserProfile: "example", DefaultVehicle: "Example Vehicle",
+	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
+		Name: "Example", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Email: "user@example.test", Password: "test-only-yodel-password"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials, err := store.GetProfileCredentials(ctx, profile.ID)
+	credentials, err := store.GetProfileCredentials(ctx, testUserID, profile.ID)
 	if err != nil || credentials.Email != "user@example.test" || credentials.Password != "test-only-yodel-password" {
 		t.Fatalf("credentials=%+v err=%v", credentials, err)
 	}
 	var decoded map[string]any
-	if err := store.GetOTPSourceConfig(ctx, source.ID, &decoded); err != nil {
+	if err := store.GetOTPSourceConfig(ctx, testUserID, source.ID, &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if decoded["password"] != "test-only-provider-password" {
 		t.Fatalf("provider config = %#v", decoded)
 	}
-	_, err = store.CreateProfile(ctx, ProfileInput{
-		Name: "Second", BrowserProfile: "second", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
+	_, err = store.CreateProfile(ctx, testUserID, ProfileInput{
+		Name: "Second", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
 		DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Email: "second@example.test", Password: "password"},
 	})
@@ -137,22 +137,8 @@ func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
 	}
 }
 
-func TestBrowserProfileMustBeFilesystemSafeAndCaseStable(t *testing.T) {
-	profile := model.Profile{
-		Name: "Example", BrowserProfile: "Example", DefaultVehicle: "Example Vehicle",
-		OTPSourceID: 1, DefaultTimeoutMS: 15_000,
-	}
-	if err := model.ValidateProfile(profile); err == nil {
-		t.Fatal("uppercase browser directory should be rejected")
-	}
-	profile.BrowserProfile = "example_main-1"
-	if err := model.ValidateProfile(profile); err != nil {
-		t.Fatalf("safe browser directory rejected: %v", err)
-	}
-}
-
 func TestBookingPreservesExplicitZeroOffsetsAndRejectsRelativeURLs(t *testing.T) {
-	store := testStore(t)
+	store := ownedTestStore(t)
 	profile, _ := fixtureProfileAndBooking(t, store, "zero-offset-base")
 	request := model.BookingRequest{
 		Name: "zero offsets", ProfileID: profile.ID, Enabled: true, TargetDate: "2030-01-15",
@@ -162,7 +148,7 @@ func TestBookingPreservesExplicitZeroOffsetsAndRejectsRelativeURLs(t *testing.T)
 		LoginProbeURL: "https://example.test/login", AllDayPassURL: "https://example.test/all",
 		CheckAllDay: true,
 	}
-	created, err := store.CreateBookingRequest(context.Background(), request)
+	created, err := store.CreateBookingRequest(context.Background(), testUserID, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,38 +157,82 @@ func TestBookingPreservesExplicitZeroOffsetsAndRejectsRelativeURLs(t *testing.T)
 	}
 	request.Name = "invalid URL"
 	request.LoginProbeURL = "/relative"
-	if _, err := store.CreateBookingRequest(context.Background(), request); err == nil {
+	if _, err := store.CreateBookingRequest(context.Background(), testUserID, request); err == nil {
 		t.Fatal("relative login URL was accepted")
 	}
 }
 
 func TestBlueBubblesPairingFingerprintIsAllOrNothing(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
-	_, err := store.CreateOTPSource(ctx, OTPSourceInput{
+	store := ownedTestStore(t)
+	_, err := store.CreateOTPSource(ctx, testUserID, OTPSourceInput{
 		Name: "partial", Provider: model.OTPProviderBlueBubbles, Identity: "http://mac.test:1234",
 		ProviderConfig: map[string]string{"password": "secret"}, PairingChatGUID: "chat-only",
 	})
 	if err == nil || !strings.Contains(err.Error(), "chat, sender, and service") {
 		t.Fatalf("partial pairing error = %v", err)
 	}
-	source, err := store.CreateOTPSource(ctx, OTPSourceInput{
+	source, err := store.CreateOTPSource(ctx, testUserID, OTPSourceInput{
 		Name: "complete", Provider: model.OTPProviderBlueBubbles, Identity: "http://mac.test:1234",
 		ProviderConfig: map[string]string{"password": "secret"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateOTPSourcePairing(ctx, source.ID, "chat", "+15550100123", "SMS"); err != nil {
+	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
+		Name: "pairing profile", DefaultVehicle: "Example Vehicle",
+		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
+		Credentials: &model.ProfileCredentials{Email: "pairing@example.test", Password: "password"},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	paired, err := store.GetOTPSource(ctx, source.ID)
+	booking, err := store.CreateBookingRequest(ctx, testUserID, model.BookingRequest{
+		Name: "pairing booking", ProfileID: profile.ID, Enabled: true,
+		TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
+		PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120,
+		PollMinSeconds: 1, PollMaxSeconds: 2, ConfirmationMode: model.RunModeManual,
+		LoginProbeURL: "https://example.test/login", AllDayPassURL: "https://example.test/all", CheckAllDay: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookingID := booking.ID
+	job, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
+		BookingRequestID: &bookingID, Command: model.CommandAuthCheck, RunMode: model.RunModeManual,
+		DedupKey: fmt.Sprintf("pairing:%d:test", source.ID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err = store.SystemClaimNextDueJobAt(ctx, "pairing-worker", time.Now().UTC().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SystemPersistOTPSourcePairing(ctx, job.ID, source.ID, "chat", "+15550100123", "SMS"); err != nil {
+		t.Fatal(err)
+	}
+	paired, err := store.GetOTPSource(ctx, testUserID, source.ID)
 	if err != nil || paired.PairingChatGUID != "chat" || paired.PairingSender != "+15550100123" || paired.PairingService != "SMS" {
 		t.Fatalf("paired source=%+v err=%v", paired, err)
 	}
-	changed, err := store.UpdateOTPSource(ctx, source.ID, OTPSourceInput{
+	if _, err := store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning}, model.JobSucceeded, JobTransition{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateOTPSource(ctx, testUserID, source.ID, OTPSourceInput{
+		Name: "complete", Provider: model.OTPProviderBlueBubbles,
+		Identity: "http://different-mac.test:1234", ProviderConfig: map[string]string{"password": "secret"},
+	}); err == nil || !strings.Contains(err.Error(), "newly supplied password") {
+		t.Fatalf("identity change with retained password error = %v", err)
+	}
+	unchanged, err := store.GetOTPSource(ctx, testUserID, source.ID)
+	if err != nil || unchanged.Identity != source.Identity {
+		t.Fatalf("source changed after rejected password retention: %+v err=%v", unchanged, err)
+	}
+	changed, err := store.UpdateOTPSource(ctx, testUserID, source.ID, OTPSourceInput{
 		Name: "complete", Provider: model.OTPProviderBlueBubbles,
 		Identity: "http://different-mac.test:1234", ProviderConfig: map[string]string{"password": "rotated"},
+		SecretProvided:  true,
 		PairingChatGUID: paired.PairingChatGUID, PairingSender: paired.PairingSender, PairingService: paired.PairingService,
 	})
 	if err != nil {
@@ -213,70 +243,102 @@ func TestBlueBubblesPairingFingerprintIsAllOrNothing(t *testing.T) {
 	}
 }
 
+func TestPairingPersistenceHonorsCommittedRevocation(t *testing.T) {
+	t.Run("job cancellation", func(t *testing.T) {
+		ctx := context.Background()
+		database := ownedTestStore(t)
+		source, job := claimedBlueBubblesPairingJob(t, database, testUserID, "cancel")
+		if err := database.RequestJobCancellation(ctx, testUserID, job.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.SystemPersistOTPSourcePairing(ctx, job.ID, source.ID, "chat", "+15550100123", "SMS"); !errors.Is(err, ErrTransitionConflict) {
+			t.Fatalf("pairing after cancellation error = %v", err)
+		}
+		assertSourceUnpaired(t, database, testUserID, source.ID)
+	})
+
+	t.Run("account disable", func(t *testing.T) {
+		ctx := context.Background()
+		database := ownedTestStore(t)
+		member, err := database.CreateMember(ctx, CreateUserInput{Username: "pairing-member", Password: "member pairing password"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		source, job := claimedBlueBubblesPairingJob(t, database, member.ID, "disable")
+		if _, err := database.UpdateUser(ctx, member.ID, UserUpdateInput{Username: member.Username, Status: model.UserDisabled}); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.SystemPersistOTPSourcePairing(ctx, job.ID, source.ID, "chat", "+15550100123", "SMS"); !errors.Is(err, ErrTransitionConflict) {
+			t.Fatalf("pairing after account disable error = %v", err)
+		}
+		assertSourceUnpaired(t, database, member.ID, source.ID)
+	})
+}
+
 func TestJobsClaimExclusivelyAndRecoverSafely(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
+	store := ownedTestStore(t)
 	firstProfile, firstBooking := fixtureProfileAndBooking(t, store, "first")
 	_, secondBooking := fixtureProfileAndBooking(t, store, "second")
 	now := time.Date(2030, 1, 14, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 
 	firstID := firstBooking.ID
-	first, err := store.EnqueueJob(ctx, EnqueueJobParams{
+	first, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &firstID, Command: model.CommandBook, RunMode: model.RunModeManual,
 		DueAt: now, DedupKey: "first-booking",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.EnqueueJob(ctx, EnqueueJobParams{
+	if _, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &firstID, Command: model.CommandBook, RunMode: model.RunModeManual,
 		DueAt: now, DedupKey: "first-booking",
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate scheduled enqueue error = %v", err)
 	}
-	_, err = store.EnqueueJob(ctx, EnqueueJobParams{
+	_, err = store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		ProfileID: firstProfile.ID, Command: model.CommandAuthCheck, RunMode: model.RunModeManual, DueAt: now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondID := secondBooking.ID
-	second, err := store.EnqueueJob(ctx, EnqueueJobParams{
+	second, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &secondID, Command: model.CommandBook, RunMode: model.RunModeAuto, DueAt: now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	claimedFirst, err := store.ClaimNextDueJobAt(ctx, "worker-1", now)
+	claimedFirst, err := store.SystemClaimNextDueJobAt(ctx, "worker-1", now)
 	if err != nil || claimedFirst.ID != first.ID {
 		t.Fatalf("first claim=%+v err=%v", claimedFirst, err)
 	}
-	claimedSecond, err := store.ClaimNextDueJobAt(ctx, "worker-2", now)
+	claimedSecond, err := store.SystemClaimNextDueJobAt(ctx, "worker-2", now)
 	if err != nil || claimedSecond.ID != second.ID {
 		t.Fatalf("second claim=%+v err=%v", claimedSecond, err)
 	}
-	if _, err := store.ClaimNextDueJobAt(ctx, "worker-3", now); !errors.Is(err, ErrNotFound) {
+	if _, err := store.SystemClaimNextDueJobAt(ctx, "worker-3", now); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("same-profile claim error = %v", err)
 	}
-	if err := store.MarkConfirmationStarted(ctx, claimedSecond.ID); err != nil {
+	if err := store.SystemMarkConfirmationStarted(ctx, claimedSecond.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	recovered, err := store.RecoverInterruptedJobs(ctx)
+	recovered, err := store.SystemRecoverInterruptedJobs(ctx)
 	if err != nil || recovered != 2 {
 		t.Fatalf("recovered=%d err=%v", recovered, err)
 	}
-	firstAfter, _ := store.GetJob(ctx, claimedFirst.ID)
-	secondAfter, _ := store.GetJob(ctx, claimedSecond.ID)
+	firstAfter, _ := store.GetJob(ctx, testUserID, claimedFirst.ID)
+	secondAfter, _ := store.GetJob(ctx, testUserID, claimedSecond.ID)
 	if firstAfter.Status != model.JobInterrupted {
 		t.Fatalf("first status = %s", firstAfter.Status)
 	}
 	if secondAfter.Status != model.JobOutcomeUnknown {
 		t.Fatalf("second status = %s", secondAfter.Status)
 	}
-	queued, err := store.ClaimNextDueJobAt(ctx, "worker-3", now)
+	queued, err := store.SystemClaimNextDueJobAt(ctx, "worker-3", now)
 	if err != nil || queued.ProfileID != firstProfile.ID {
 		t.Fatalf("queued job was not retained: %+v err=%v", queued, err)
 	}
@@ -284,21 +346,21 @@ func TestJobsClaimExclusivelyAndRecoverSafely(t *testing.T) {
 
 func TestQueuedJobGuardsProfileSourceAndBookingConfiguration(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
+	store := ownedTestStore(t)
 	profile, booking := fixtureProfileAndBooking(t, store, "guarded")
-	source, err := store.GetOTPSource(ctx, profile.OTPSourceID)
+	source, err := store.GetOTPSource(ctx, testUserID, profile.OTPSourceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bookingID := booking.ID
-	job, err := store.EnqueueJob(ctx, EnqueueJobParams{
+	job, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &bookingID, Command: model.CommandBook, RunMode: model.RunModeManual,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.UpdateProfile(ctx, profile.ID, ProfileInput{
-		Name: profile.Name, BrowserProfile: profile.BrowserProfile, DefaultVehicle: "New vehicle",
+	_, err = store.UpdateProfile(ctx, testUserID, profile.ID, ProfileInput{
+		Name: profile.Name, DefaultVehicle: "New vehicle",
 		OTPSourceID: profile.OTPSourceID, Headless: profile.Headless,
 		BrowserChannel: profile.BrowserChannel, BrowserExecutable: profile.BrowserExecutable,
 		DefaultTimeoutMS: profile.DefaultTimeoutMS, Enabled: profile.Enabled,
@@ -307,23 +369,23 @@ func TestQueuedJobGuardsProfileSourceAndBookingConfiguration(t *testing.T) {
 		t.Fatalf("profile mutation error = %v", err)
 	}
 	booking.Name = "changed booking"
-	if _, err := store.UpdateBookingRequest(ctx, booking); !errors.Is(err, ErrConflict) {
+	if _, err := store.UpdateBookingRequest(ctx, testUserID, booking); !errors.Is(err, ErrConflict) {
 		t.Fatalf("booking mutation error = %v", err)
 	}
-	_, err = store.UpdateOTPSource(ctx, source.ID, OTPSourceInput{
+	_, err = store.UpdateOTPSource(ctx, testUserID, source.ID, OTPSourceInput{
 		Name: source.Name, Provider: source.Provider, Identity: source.Identity,
 		ProviderConfig: map[string]string{"password": "replacement"},
 	})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("source mutation error = %v", err)
 	}
-	if _, err := store.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobQueued},
+	if _, err := store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobQueued},
 		model.JobCancelled, JobTransition{Message: "cancelled"}); err != nil {
 		t.Fatal(err)
 	}
 	profile.DefaultVehicle = "New vehicle"
-	updated, err := store.UpdateProfile(ctx, profile.ID, ProfileInput{
-		Name: profile.Name, BrowserProfile: profile.BrowserProfile, DefaultVehicle: profile.DefaultVehicle,
+	updated, err := store.UpdateProfile(ctx, testUserID, profile.ID, ProfileInput{
+		Name: profile.Name, DefaultVehicle: profile.DefaultVehicle,
 		OTPSourceID: profile.OTPSourceID, Headless: profile.Headless,
 		BrowserChannel: profile.BrowserChannel, BrowserExecutable: profile.BrowserExecutable,
 		DefaultTimeoutMS: profile.DefaultTimeoutMS, Enabled: profile.Enabled,
@@ -335,36 +397,36 @@ func TestQueuedJobGuardsProfileSourceAndBookingConfiguration(t *testing.T) {
 
 func TestTransitionsDecisionsAndEventRedaction(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
+	store := ownedTestStore(t)
 	_, booking := fixtureProfileAndBooking(t, store, "approval")
 	bookingID := booking.ID
-	job, err := store.EnqueueJob(ctx, EnqueueJobParams{
+	job, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &bookingID, Command: model.CommandBook, RunMode: model.RunModeManual,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err = store.ClaimNextDueJob(ctx, "worker")
+	job, err = store.SystemClaimNextDueJob(ctx, "worker")
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err = store.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
+	job, err = store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
 		model.JobAwaitingApproval, JobTransition{Message: "Waiting for approval"})
 	if err != nil || job.Status != model.JobAwaitingApproval {
 		t.Fatalf("awaiting transition=%+v err=%v", job, err)
 	}
-	decision, err := store.RecordJobDecision(ctx, job.ID, model.DecisionApprove)
+	decision, err := store.RecordJobDecision(ctx, testUserID, job.ID, model.DecisionApprove)
 	if err != nil || decision.Decision != model.DecisionApprove {
 		t.Fatalf("decision=%+v err=%v", decision, err)
 	}
-	if _, err := store.RecordJobDecision(ctx, job.ID, model.DecisionApprove); err != nil {
+	if _, err := store.RecordJobDecision(ctx, testUserID, job.ID, model.DecisionApprove); err != nil {
 		t.Fatalf("idempotent approval: %v", err)
 	}
-	if _, err := store.RecordJobDecision(ctx, job.ID, model.DecisionCancel); !errors.Is(err, ErrDecisionConflict) {
+	if _, err := store.RecordJobDecision(ctx, testUserID, job.ID, model.DecisionCancel); !errors.Is(err, ErrDecisionConflict) {
 		t.Fatalf("conflicting decision error = %v", err)
 	}
 
-	event, err := store.AppendJobEvent(ctx, JobEventInput{
+	event, err := store.SystemAppendJobEvent(ctx, JobEventInput{
 		JobID: job.ID, Kind: "otp.received", Message: "code=654321 was submitted with password",
 		Data: map[string]any{
 			"otp_code": "654321", "detail": "received 654321", "numeric": 654321,
@@ -383,17 +445,17 @@ func TestTransitionsDecisionsAndEventRedaction(t *testing.T) {
 		}
 	}
 
-	job, err = store.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobAwaitingApproval},
+	job, err = store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobAwaitingApproval},
 		model.JobRunning, JobTransition{ConfirmationStarted: true})
 	if err != nil || job.ConfirmationStartedAt == nil {
 		t.Fatalf("approval transition=%+v err=%v", job, err)
 	}
-	job, err = store.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
+	job, err = store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
 		model.JobSucceeded, JobTransition{Message: "Booked", ExitCode: intPointer(0)})
 	if err != nil || job.Status != model.JobSucceeded || job.FinishedAt == nil {
 		t.Fatalf("terminal transition=%+v err=%v", job, err)
 	}
-	if _, err := store.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
+	if _, err := store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
 		model.JobFailed, JobTransition{}); !errors.Is(err, ErrTransitionConflict) {
 		t.Fatalf("terminal transition was not protected: %v", err)
 	}
@@ -401,20 +463,20 @@ func TestTransitionsDecisionsAndEventRedaction(t *testing.T) {
 
 func TestConcurrentApprovalRaceHasSingleDurableWinner(t *testing.T) {
 	ctx := context.Background()
-	database := testStore(t)
+	database := ownedTestStore(t)
 	_, booking := fixtureProfileAndBooking(t, database, "approval-race")
 	bookingID := booking.ID
-	job, err := database.EnqueueJob(ctx, EnqueueJobParams{
+	job, err := database.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &bookingID, Command: model.CommandBook, RunMode: model.RunModeManual,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err = database.ClaimNextDueJob(ctx, "worker")
+	job, err = database.SystemClaimNextDueJob(ctx, "worker")
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err = database.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
+	job, err = database.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning},
 		model.JobAwaitingApproval, JobTransition{Message: "Waiting for approval"})
 	if err != nil {
 		t.Fatal(err)
@@ -429,7 +491,7 @@ func TestConcurrentApprovalRaceHasSingleDurableWinner(t *testing.T) {
 	for _, decision := range []model.ApprovalDecision{model.DecisionApprove, model.DecisionCancel} {
 		go func(decision model.ApprovalDecision) {
 			<-start
-			_, err := database.RecordJobDecision(ctx, job.ID, decision)
+			_, err := database.RecordJobDecision(ctx, testUserID, job.ID, decision)
 			results <- outcome{decision: decision, err: err}
 		}(decision)
 	}
@@ -454,7 +516,7 @@ func TestConcurrentApprovalRaceHasSingleDurableWinner(t *testing.T) {
 	if winner == "" || conflicts != 1 {
 		t.Fatalf("approval race winner=%q conflicts=%d", winner, conflicts)
 	}
-	recorded, err := database.GetJobDecision(ctx, job.ID)
+	recorded, err := database.GetJobDecision(ctx, testUserID, job.ID)
 	if err != nil || recorded.Decision != winner {
 		t.Fatalf("recorded decision=%+v winner=%q err=%v", recorded, winner, err)
 	}
@@ -462,11 +524,11 @@ func TestConcurrentApprovalRaceHasSingleDurableWinner(t *testing.T) {
 
 func TestConcurrentClaimsAcquireOnlyOneProfileLease(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
+	store := ownedTestStore(t)
 	profile, _ := fixtureProfileAndBooking(t, store, "parallel")
 	now := time.Date(2030, 1, 14, 12, 0, 0, 0, time.UTC)
 	for range 8 {
-		if _, err := store.EnqueueJob(ctx, EnqueueJobParams{
+		if _, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 			ProfileID: profile.ID, Command: model.CommandAuthCheck,
 			RunMode: model.RunModeManual, DueAt: now,
 		}); err != nil {
@@ -482,7 +544,7 @@ func TestConcurrentClaimsAcquireOnlyOneProfileLease(t *testing.T) {
 	for worker := range 8 {
 		go func() {
 			<-start
-			job, err := store.ClaimNextDueJobAt(ctx, fmt.Sprintf("worker-%d", worker), now)
+			job, err := store.SystemClaimNextDueJobAt(ctx, fmt.Sprintf("worker-%d", worker), now)
 			results <- claim{job: job, err: err}
 		}()
 	}
@@ -505,38 +567,38 @@ func TestConcurrentClaimsAcquireOnlyOneProfileLease(t *testing.T) {
 
 func TestDurableCancellationStopsQueuedAndFlagsRunningJobs(t *testing.T) {
 	ctx := context.Background()
-	database := testStore(t)
+	database := ownedTestStore(t)
 	profile, _ := fixtureProfileAndBooking(t, database, "cancel")
-	queued, err := database.EnqueueJob(ctx, EnqueueJobParams{
+	queued, err := database.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		ProfileID: profile.ID, Command: model.CommandAuthCheck,
 		RunMode: model.RunModeManual, DueAt: time.Now(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.RequestJobCancellation(ctx, queued.ID); err != nil {
+	if err := database.RequestJobCancellation(ctx, testUserID, queued.ID); err != nil {
 		t.Fatal(err)
 	}
-	queued, _ = database.GetJob(ctx, queued.ID)
+	queued, _ = database.GetJob(ctx, testUserID, queued.ID)
 	if queued.Status != model.JobCancelled || !queued.CancelRequested {
 		t.Fatalf("queued cancellation = %+v", queued)
 	}
 
-	running, err := database.EnqueueJob(ctx, EnqueueJobParams{
+	running, err := database.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		ProfileID: profile.ID, Command: model.CommandAuthCheck,
 		RunMode: model.RunModeManual, DueAt: time.Now(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	running, err = database.ClaimNextDueJob(ctx, "worker")
+	running, err = database.SystemClaimNextDueJob(ctx, "worker")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.RequestJobCancellation(ctx, running.ID); err != nil {
+	if err := database.RequestJobCancellation(ctx, testUserID, running.ID); err != nil {
 		t.Fatal(err)
 	}
-	requested, err := database.JobCancellationRequested(ctx, running.ID)
+	requested, err := database.SystemJobCancellationRequested(ctx, running.ID)
 	if err != nil || !requested {
 		t.Fatalf("running cancellation requested=%v err=%v", requested, err)
 	}
@@ -544,50 +606,49 @@ func TestDurableCancellationStopsQueuedAndFlagsRunningJobs(t *testing.T) {
 
 func TestExpiredQueuedJobNeverStarts(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
+	store := ownedTestStore(t)
 	profile, booking := fixtureProfileAndBooking(t, store, "expired")
 	now := time.Date(2030, 1, 14, 12, 0, 0, 0, time.UTC)
 	expires := now.Add(time.Minute)
 	bookingID := booking.ID
-	stale, err := store.EnqueueJob(ctx, EnqueueJobParams{
+	stale, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &bookingID, Command: model.CommandBook, RunMode: model.RunModeAuto,
 		DueAt: now, ExpiresAt: &expires,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid, err := store.EnqueueJob(ctx, EnqueueJobParams{
+	valid, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		ProfileID: profile.ID, Command: model.CommandAuthCheck, RunMode: model.RunModeManual,
 		DueAt: now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := store.ClaimNextDueJobAt(ctx, "worker", expires)
+	claimed, err := store.SystemClaimNextDueJobAt(ctx, "worker", expires)
 	if err != nil || claimed.ID != valid.ID {
 		t.Fatalf("claimed=%+v err=%v", claimed, err)
 	}
-	stale, err = store.GetJob(ctx, stale.ID)
+	stale, err = store.GetJob(ctx, testUserID, stale.ID)
 	if err != nil || stale.Status != model.JobFailed || stale.StartedAt != nil {
 		t.Fatalf("stale=%+v err=%v", stale, err)
 	}
 }
 
-func TestAdminSessionsAndRateLimit(t *testing.T) {
+func TestAccountSessionsAndRateLimit(t *testing.T) {
 	ctx := context.Background()
-	store := testStore(t)
-	admin, created, err := store.BootstrapAdmin(ctx, "admin", "a strong local admin password")
-	if err != nil || !created {
-		t.Fatalf("bootstrap=%+v created=%v err=%v", admin, created, err)
+	store := emptyTestStore(t)
+	admin, err := store.SetupAdmin(ctx, "admin", "a strong local admin password")
+	if err != nil {
+		t.Fatalf("setup=%+v err=%v", admin, err)
 	}
-	_, created, err = store.BootstrapAdmin(ctx, "admin", "ignored because it already exists")
-	if err != nil || created {
-		t.Fatalf("second bootstrap created=%v err=%v", created, err)
+	if _, err = store.SetupAdmin(ctx, "admin", "ignored because it already exists"); !errors.Is(err, ErrSetupComplete) {
+		t.Fatalf("second setup err=%v", err)
 	}
-	if _, ok, err := store.AuthenticateAdmin(ctx, "admin", "wrong password"); err != nil || ok {
+	if _, ok, err := store.AuthenticateUser(ctx, "admin", "wrong password"); err != nil || ok {
 		t.Fatalf("wrong password ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := store.AuthenticateAdmin(ctx, "admin", "a strong local admin password"); err != nil || !ok {
+	if _, ok, err := store.AuthenticateUser(ctx, "admin", "a strong local admin password"); err != nil || !ok {
 		t.Fatalf("correct password ok=%v err=%v", ok, err)
 	}
 
@@ -599,7 +660,7 @@ func TestAdminSessionsAndRateLimit(t *testing.T) {
 		t.Fatal("raw session material was stored or CSRF validation failed")
 	}
 	loaded, err := store.GetSession(ctx, credentials.Token)
-	if err != nil || loaded.Admin.ID != admin.ID {
+	if err != nil || loaded.User.ID != admin.ID {
 		t.Fatalf("session=%+v err=%v", loaded, err)
 	}
 
@@ -624,6 +685,25 @@ func TestAdminSessionsAndRateLimit(t *testing.T) {
 }
 
 func testStore(t *testing.T) *Store {
+	return emptyTestStore(t)
+}
+
+const testUserID int64 = 1
+
+func ownedTestStore(t *testing.T) *Store {
+	t.Helper()
+	store := emptyTestStore(t)
+	user, err := store.SetupAdmin(context.Background(), "test-admin", "a strong test password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.ID != testUserID {
+		t.Fatalf("test user ID = %d, want %d", user.ID, testUserID)
+	}
+	return store
+}
+
+func emptyTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := OpenMigrated(context.Background(), filepath.Join(t.TempDir(), "buntzen.db"), testEncryptor(t))
 	if err != nil {
@@ -645,22 +725,22 @@ func testEncryptor(t *testing.T) *secretcrypto.Encryptor {
 func fixtureProfileAndBooking(t *testing.T, store *Store, name string) (model.Profile, model.BookingRequest) {
 	t.Helper()
 	ctx := context.Background()
-	source, err := store.CreateOTPSource(ctx, OTPSourceInput{
-		Name: name + " source", Provider: model.OTPProviderBlueBubbles,
-		Identity: "http://" + name + ".test:1234", ProviderConfig: map[string]string{"password": "test"},
+	source, err := store.CreateOTPSource(ctx, testUserID, OTPSourceInput{
+		Name: name + " source", Provider: model.OTPProviderTwilio,
+		Identity: "twilio:" + name, ProviderConfig: map[string]string{"auth_token": "test"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := store.CreateProfile(ctx, ProfileInput{
-		Name: name + " profile", BrowserProfile: name, DefaultVehicle: "Example Vehicle",
+	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
+		Name: name + " profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Email: name + "@example.test", Password: "password"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	booking, err := store.CreateBookingRequest(ctx, model.BookingRequest{
+	booking, err := store.CreateBookingRequest(ctx, testUserID, model.BookingRequest{
 		Name: name + " booking", ProfileID: profile.ID, Enabled: true,
 		TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
 		PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120,
@@ -674,6 +754,61 @@ func fixtureProfileAndBooking(t *testing.T, store *Store, name string) (model.Pr
 	return profile, booking
 }
 
+func claimedBlueBubblesPairingJob(t *testing.T, database *Store, userID int64, name string) (model.OTPSource, model.Job) {
+	t.Helper()
+	ctx := context.Background()
+	source, err := database.CreateOTPSource(ctx, userID, OTPSourceInput{
+		Name: name + " Messages", Provider: model.OTPProviderBlueBubbles,
+		Identity:       "http://" + name + ".example.test:1234",
+		ProviderConfig: map[string]string{"password": "synthetic-provider-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := database.CreateProfile(ctx, userID, ProfileInput{
+		Name: name + " profile", DefaultVehicle: "Example Vehicle",
+		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
+		Credentials: &model.ProfileCredentials{Email: name + "@example.test", Password: "synthetic-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	booking, err := database.CreateBookingRequest(ctx, userID, model.BookingRequest{
+		Name: name + " booking", ProfileID: profile.ID, Enabled: true,
+		TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
+		PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120,
+		PollMinSeconds: 1, PollMaxSeconds: 2, ConfirmationMode: model.RunModeManual,
+		LoginProbeURL: "https://example.test/login", AllDayPassURL: "https://example.test/all", CheckAllDay: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookingID := booking.ID
+	job, err := database.EnqueueJob(ctx, userID, EnqueueJobParams{
+		BookingRequestID: &bookingID, Command: model.CommandAuthCheck, RunMode: model.RunModeManual,
+		DedupKey: fmt.Sprintf("pairing:%d:%s", source.ID, name),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err = database.SystemClaimNextDueJobAt(ctx, "pairing-worker", time.Now().UTC().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source, job
+}
+
+func assertSourceUnpaired(t *testing.T, database *Store, userID, sourceID int64) {
+	t.Helper()
+	source, err := database.GetOTPSource(context.Background(), userID, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.PairingChatGUID != "" || source.PairingSender != "" || source.PairingService != "" {
+		t.Fatalf("revoked pairing write persisted: %+v", source)
+	}
+}
+
 func intPointer(value int) *int { return &value }
 
 func TestEncryptedSecretsNeverReachDatabaseFiles(t *testing.T) {
@@ -684,15 +819,19 @@ func TestEncryptedSecretsNeverReachDatabaseFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := store.CreateOTPSource(ctx, OTPSourceInput{
+	admin, err := store.SetupAdmin(ctx, "test-admin", "a strong test password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.CreateOTPSource(ctx, admin.ID, OTPSourceInput{
 		Name: "source", Provider: model.OTPProviderTwilio, Identity: "acct:+15550100123",
 		ProviderConfig: map[string]string{"auth_token": "never-persist-this-plaintext"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.CreateProfile(ctx, ProfileInput{
-		Name: "profile", BrowserProfile: "profile", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
+	_, err = store.CreateProfile(ctx, admin.ID, ProfileInput{
+		Name: "profile", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
 		DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Email: "hidden@example.test", Password: "also-never-persist"},
 	})

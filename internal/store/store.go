@@ -25,6 +25,7 @@ var (
 	ErrUnversionedDatabase = errors.New("refusing to overwrite an unversioned database")
 	ErrTransitionConflict  = errors.New("job state transition conflict")
 	ErrDecisionConflict    = errors.New("job already has a different decision")
+	ErrResourceLimit       = fmt.Errorf("%w: per-user resource limit reached", ErrConflict)
 )
 
 //go:embed migrations/*.sql
@@ -52,7 +53,7 @@ func Open(ctx context.Context, databasePath string, encryptor *secretcrypto.Encr
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
 	databaseURL := (&url.URL{Scheme: "file", Path: abs}).String()
-	dsn := databaseURL + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	dsn := databaseURL + "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -236,6 +237,9 @@ func mapWriteError(err error) error {
 	if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
 		return fmt.Errorf("%w: %v", ErrConflict, err)
 	}
+	if strings.Contains(strings.ToLower(err.Error()), "limit reached") {
+		return fmt.Errorf("%w: %v", ErrResourceLimit, err)
+	}
 	if strings.Contains(strings.ToLower(err.Error()), "foreign key constraint failed") {
 		return fmt.Errorf("%w: record is in use or references a missing dependency", ErrConflict)
 	}
@@ -254,6 +258,33 @@ func (s *Store) classifyGuardedUpdate(ctx context.Context, table string, id int6
 	// table is always a package-owned constant at the call sites below.
 	if err := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT count(*) FROM %s WHERE id = ?", table), id).Scan(&exists); err != nil {
 		return fmt.Errorf("classify guarded update: %w", err)
+	}
+	if exists == 0 {
+		return ErrNotFound
+	}
+	return fmt.Errorf("%w: record has a queued or active job", ErrConflict)
+}
+
+func (s *Store) classifyOwnedGuardedUpdate(
+	ctx context.Context,
+	table string,
+	userID, id int64,
+	result sql.Result,
+) error {
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read affected row count: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+	var exists int
+	// table is always a package-owned constant at the call sites below.
+	if err := s.db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT count(*) FROM %s WHERE id = ? AND user_id = ?", table),
+		id, userID,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("classify owned guarded update: %w", err)
 	}
 	if exists == 0 {
 		return ErrNotFound
