@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import queue
+import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+from buntzen_actions.control import ControlPort
+from buntzen_actions.errors import ActionError, ApprovalExpired, Cancelled
+from buntzen_actions.secrets import SecretRedactor
+
+
+class FakeStream:
+    def __init__(self) -> None:
+        self.events = []
+
+    def write(self, event_type, **payload) -> None:
+        self.events.append((event_type, payload))
+
+
+class FakeInbox:
+    def __init__(self, frames) -> None:
+        self.frames = list(frames)
+        self.ignored = []
+
+    def receive(self, expected, timeout=None, predicate=None):
+        if not self.frames:
+            raise queue.Empty
+        frame = self.frames.pop(0)
+        if predicate is not None and not predicate(frame):
+            raise AssertionError("test supplied a mismatched frame")
+        return frame
+
+    def ignore_otp_challenge(self, challenge_id) -> None:
+        self.ignored.append(challenge_id)
+
+
+class ControlTests(unittest.TestCase):
+    def test_otp_is_received_but_never_echoed(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox([])
+        control = ControlPort(stream, inbox, SecretRedactor())
+
+        # Freeze the correlation id by capturing it after otp.prepare.
+        def receive(expected, timeout=None, predicate=None):
+            challenge_id = stream.events[0][1]["challenge_id"]
+            frame_type = "otp.ready" if len(stream.events) == 1 else "otp.provide"
+            frame = {"v": 1, "type": frame_type, "challenge_id": challenge_id}
+            if frame_type == "otp.provide":
+                frame["code"] = "654321"
+            self.assertTrue(predicate(frame))
+            return frame
+
+        inbox.receive = receive
+        challenge_id = control.prepare_otp("login_submit")
+        control.otp_triggered(challenge_id)
+        value = control.wait_for_otp(challenge_id)
+        self.assertEqual(value, "654321")
+        control.otp_submitted(challenge_id)
+        self.assertNotIn("654321", repr(stream.events))
+        self.assertEqual(
+            [event[0] for event in stream.events],
+            ["otp.prepare", "otp.triggered", "otp.submitted"],
+        )
+
+    def test_provider_expiry_is_a_safe_failure(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox([])
+        control = ControlPort(stream, inbox, SecretRedactor())
+
+        def receive(expected, timeout=None, predicate=None):
+            challenge_id = stream.events[0][1]["challenge_id"]
+            return {"v": 1, "type": "otp.expired", "challenge_id": challenge_id}
+
+        inbox.receive = receive
+        with self.assertRaises(ActionError):
+            control.prepare_otp("resend")
+        self.assertEqual(stream.events[-1][0], "otp.failed")
+
+    def test_auth_deadline_stops_otp_wait_and_clears_challenge(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox([])
+        control = ControlPort(stream, inbox, SecretRedactor())
+        with self.assertRaises(ActionError):
+            control.wait_for_otp(
+                "challenge",
+                deadline_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+            )
+        self.assertEqual(stream.events[-1][0], "otp.failed")
+        self.assertEqual(stream.events[-1][1]["reason"], "auth_deadline")
+        self.assertEqual(inbox.ignored, ["challenge"])
+
+    def test_past_auth_deadline_does_not_arm_provider(self) -> None:
+        stream = FakeStream()
+        control = ControlPort(stream, FakeInbox([]), SecretRedactor())
+        with self.assertRaises(ActionError):
+            control.prepare_otp(
+                "login_submit",
+                deadline_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            )
+        self.assertEqual(stream.events, [])
+
+    def test_otp_arriving_after_deadline_is_not_returned(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox(
+            [
+                {
+                    "v": 1,
+                    "type": "otp.provide",
+                    "challenge_id": "challenge",
+                    "code": "123456",
+                }
+            ]
+        )
+        control = ControlPort(stream, inbox, SecretRedactor())
+        with patch(
+            "buntzen_actions.control._remaining_seconds", side_effect=[1.0, -0.01]
+        ):
+            with self.assertRaises(ActionError):
+                control.wait_for_otp(
+                    "challenge", deadline_at=datetime.now(timezone.utc)
+                )
+        self.assertNotIn("123456", repr(stream.events))
+        self.assertEqual(stream.events[-1][1]["reason"], "auth_deadline")
+
+    def test_manual_wait_has_no_deadline_and_can_cancel(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox([])
+        calls = 0
+
+        def receive(expected, timeout=None, predicate=None):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise queue.Empty
+            approval_id = stream.events[0][1]["approval_id"]
+            return {"v": 1, "type": "approval.cancel", "approval_id": approval_id}
+
+        inbox.receive = receive
+        control = ControlPort(stream, inbox, SecretRedactor())
+        with self.assertRaises(Cancelled):
+            control.wait_for_approval(
+                "all_day",
+                "All-day",
+                browser_is_ready=lambda: True,
+                heartbeat_seconds=0,
+                check_seconds=0,
+            )
+        self.assertIn("heartbeat", [event[0] for event in stream.events])
+        self.assertEqual(stream.events[-1][0], "approval.cancelled")
+
+    def test_confirmation_barrier_emits_id_and_waits_for_matching_ack(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox([])
+
+        def receive(expected, timeout=None, predicate=None):
+            confirmation_id = stream.events[0][1]["confirmation_id"]
+            frame = {
+                "v": 1,
+                "type": "confirmation.ready",
+                "confirmation_id": confirmation_id,
+            }
+            self.assertEqual(expected, {"confirmation.ready", "confirmation.error"})
+            self.assertTrue(predicate(frame))
+            return frame
+
+        inbox.receive = receive
+        control = ControlPort(stream, inbox, SecretRedactor())
+        confirmation_id = control.await_confirmation_ready("all_day", "All-day")
+        self.assertEqual(confirmation_id, stream.events[0][1]["confirmation_id"])
+        self.assertEqual(len(confirmation_id), 32)
+        self.assertEqual(stream.events[0][0], "confirmation.starting")
+
+    def test_confirmation_error_or_missing_ack_never_returns_ready(self) -> None:
+        for response in ("confirmation.error", None):
+            with self.subTest(response=response):
+                stream = FakeStream()
+                inbox = FakeInbox([])
+                if response is not None:
+
+                    def receive(expected, timeout=None, predicate=None):
+                        confirmation_id = stream.events[0][1]["confirmation_id"]
+                        return {
+                            "v": 1,
+                            "type": response,
+                            "confirmation_id": confirmation_id,
+                        }
+
+                    inbox.receive = receive
+                control = ControlPort(stream, inbox, SecretRedactor())
+                with self.assertRaises(ActionError):
+                    control.await_confirmation_ready("all_day", "All-day")
+                self.assertEqual(stream.events[0][0], "confirmation.starting")
+
+    def test_manual_wait_expires_when_browser_is_no_longer_ready(self) -> None:
+        stream = FakeStream()
+        control = ControlPort(stream, FakeInbox([]), SecretRedactor())
+        with self.assertRaises(ApprovalExpired):
+            control.wait_for_approval(
+                "all_day",
+                "All-day",
+                browser_is_ready=lambda: False,
+                heartbeat_seconds=0,
+                check_seconds=0,
+            )
+        self.assertEqual(stream.events[-1][0], "approval.expired")
+
+
+if __name__ == "__main__":
+    unittest.main()

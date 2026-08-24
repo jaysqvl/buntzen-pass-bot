@@ -1,0 +1,12 @@
+.env
+__pycache__
+env/
+.venv/
+**/.venv/
+**/*.egg-info/
+chrome-profile/
+playwright-profile/
+artifacts/
+appdata/
+.native-appdata/
+/buntzen
