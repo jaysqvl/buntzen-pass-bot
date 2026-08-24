@@ -1,0 +1,26 @@
+vulnerabilities:
+  - id: CVE-2025-3887
+    purls:
+      - "pkg:deb/ubuntu/gstreamer1.0-plugins-bad@1.24.2-1ubuntu4?arch=amd64&distro=ubuntu-24.04"
+      - "pkg:deb/ubuntu/libgstreamer-plugins-bad1.0-0@1.24.2-1ubuntu4?arch=amd64&distro=ubuntu-24.04"
+    statement: >-
+      The Playwright Chromium booking path does not use the affected GStreamer
+      plugins. This exception is limited to the two unfixed Ubuntu packages and
+      must be removed or re-reviewed when Ubuntu publishes a fix.
+    expired_at: 2026-09-30
+  - id: GHSA-6v7p-g79w-8964
+    purls:
+      - "pkg:pypi/msgpack@1.1.2"
+    statement: >-
+      Build-only Python tooling was removed from the final image, and the
+      runtime smoke test verifies msgpack is absent. This finding persists only
+      in base-layer catalog metadata.
+    expired_at: 2026-09-30
+  - id: CVE-2025-47273
+    purls:
+      - "pkg:pypi/setuptools@70.3.0"
+    statement: >-
+      Build-only Python tooling was removed from the final image, and the
+      runtime smoke test verifies setuptools is absent. This finding persists
+      only in base-layer catalog metadata.
+    expired_at: 2026-09-30

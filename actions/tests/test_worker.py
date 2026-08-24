@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -138,6 +139,36 @@ class WorkerTests(unittest.TestCase):
                     "args", []
                 ),
             )
+
+    def test_insecure_tls_test_seam_is_explicit_and_loopback_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = Context()
+            config = replace(
+                make_config(Path(directory) / "profile"),
+                login_probe_url="https://127.0.0.1:8443/login",
+                allowed_yodel_origins=frozenset({"https://127.0.0.1:8443"}),
+            )
+            playwright = Playwright(context)
+            with patch.dict(
+                "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
+            ):
+                from buntzen_actions.worker import _open_context
+
+                _open_context(playwright, config)
+            self.assertIs(playwright.chromium.launch_options["ignore_https_errors"], True)
+
+            context = Context()
+            playwright = Playwright(context)
+            remote = replace(
+                config,
+                login_probe_url="https://example.test/login",
+                allowed_yodel_origins=frozenset({"https://example.test"}),
+            )
+            with patch.dict(
+                "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
+            ):
+                _open_context(playwright, remote)
+            self.assertNotIn("ignore_https_errors", playwright.chromium.launch_options)
 
 
 if __name__ == "__main__":

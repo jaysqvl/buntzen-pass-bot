@@ -5,16 +5,55 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+permissions: {}
+
+concurrency:
+  group: release-please-main
+  cancel-in-progress: false
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - name: Open or publish the release
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish-image:
+    needs: release-please
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      startsWith(needs.release-please.outputs.tag_name, 'v')
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/release-image.yml
+    with:
+      expected_sha: ${{ needs.release-please.outputs.sha }}
+      tag: ${{ needs.release-please.outputs.tag_name }}
+
+  deploy:
+    needs: publish-image
+    if: needs.publish-image.result == 'success'
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy-portainer.yml
+    with:
+      image_digest: ${{ needs.publish-image.outputs.image_digest }}
+    secrets: inherit

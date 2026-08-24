@@ -79,7 +79,7 @@ Leave `SCHEDULES_ENABLED=false` while onboarding.
 4. Choose **Pair with Yodel** on the BlueBubbles source. The bot snapshots the inbox before Python triggers a code, shows only new bounded candidates with a temporary code and masked sender, and waits for your selection. Only the selected chat/sender/service fingerprint is saved.
 5. Run **Auth check**, then **Dry run** from the booking card.
 6. Queue a manual booking and test both approval and cancellation. There is no application approval timeout; a lost browser/session or restart ends the wait without confirming.
-7. Verify one automatic canary before setting `SCHEDULES_ENABLED=true` and restarting the container.
+7. Verify one explicitly initiated automatic booking before enabling unattended schedules.
 
 BlueBubbles can read the OTP only if the SMS reaches Messages on the Mac through Apple’s Messages/iCloud or text-message-forwarding setup. Keep the Mac awake and its configured network adapter connected.
 
@@ -149,15 +149,18 @@ Only one control plane can own an appdata directory; an advisory lock prevents a
 ## Verification
 
 ```bash
-gofmt -w cmd internal
+gofmt -w cmd internal integration
 go vet ./...
 go test -race ./...
 
-uvx --from ruff==0.12.10 ruff check actions
+uvx --from ruff==0.12.10 ruff check actions scripts/deploy/tests
 uv run --project actions python -m unittest discover -s actions/tests
 uv run --project actions python -m compileall -q actions/src
+bash scripts/deploy/tests/test_portainer.sh
+BUNTZEN_E2E_PYTHON="$PWD/actions/.venv/bin/python" go test -race -tags=integration ./integration/...
 ```
 
-CI runs Go formatting/vetting/race tests, the Python protocol/action tests and dependency audit, Compose validation, and a Linux `amd64` image build. Dependabot covers Go modules, Python, Docker, and GitHub Actions.
+CI also runs the real Go/Python/Playwright/BlueBubbles OTP integration, the Portainer rollback suite, a Linux `amd64` container setup/login/restart smoke test, and the strict Trivy image gate. Dependabot covers Go modules, Python, Docker, and GitHub Actions.
 
 See [`actions/README.md`](actions/README.md) for the exact protocol and sensitive-artifact rules.
+See [`docs/release-and-deployment.md`](docs/release-and-deployment.md) for the GHCR release gate and protected in-place Portainer workflow.

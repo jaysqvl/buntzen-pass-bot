@@ -1,0 +1,285 @@
+name: Publish release image
+
+on:
+  workflow_call:
+    inputs:
+      expected_sha:
+        description: Commit SHA reported by Release Please
+        required: true
+        type: string
+      tag:
+        description: Existing Release Please v* tag
+        required: true
+        type: string
+    outputs:
+      image_digest:
+        description: Published and verified GHCR image digest
+        value: ${{ jobs.publish.outputs.image_digest }}
+
+permissions:
+  attestations: write
+  contents: read
+  id-token: write
+  packages: write
+
+concurrency:
+  group: release-image-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, scan, attest, and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Resolve and validate the release
+        id: release
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Release images may only be published from the main workflow." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "tag must be a v-prefixed semantic version" >&2
+            exit 1
+          fi
+
+          release_json="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName,targetCommitish)"
+          if [[ "$(jq -r '.tagName' <<<"$release_json")" != "$RELEASE_TAG" ]] ||
+             [[ "$(jq -r '.isDraft' <<<"$release_json")" != "false" ]]; then
+            echo "tag must identify a published, non-draft GitHub release" >&2
+            exit 1
+          fi
+
+          release_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          object_type="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type')"
+          if [[ "$object_type" == "tag" ]]; then
+            release_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$release_sha" --jq '.object.sha')"
+          elif [[ "$object_type" != "commit" ]]; then
+            echo "release tag does not resolve to a commit" >&2
+            exit 1
+          fi
+          if [[ -n "$EXPECTED_SHA" && "$release_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Release Please output does not match the release tag commit." >&2
+            exit 1
+          fi
+
+          compare_status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$release_sha...main" --jq '.status')"
+          if [[ "$compare_status" != "ahead" && "$compare_status" != "identical" ]]; then
+            echo "release commit is not an ancestor of main" >&2
+            exit 1
+          fi
+
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "image=$image"
+            echo "sha=$release_sha"
+            echo "tag=$RELEASE_TAG"
+            echo "version=${RELEASE_TAG#v}"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Check out the immutable release commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ steps.release.outputs.sha }}
+
+      - name: Confirm checked-out source
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Generate immutable image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.release.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{raw}},value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{version}},value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.tag }}
+            type=raw,value=sha-${{ steps.release.outputs.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+
+      - name: Build once and push the amd64 image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          context: .
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          provenance: mode=max
+          pull: true
+          push: true
+          sbom: true
+          tags: ${{ steps.release.outputs.image }}:sha-${{ steps.release.outputs.sha }}
+
+      - name: Verify the registry digest and BuildKit attestations
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.release.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" >/dev/null
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .SBOM}}' > /tmp/buildkit-sbom.json
+          jq -e '
+            (.SPDX // .["linux/amd64"].SPDX)
+            | select(
+                .spdxVersion == "SPDX-2.3" and
+                .SPDXID == "SPDXRef-DOCUMENT" and
+                ((.packages // []) | length > 0)
+              )
+          ' /tmp/buildkit-sbom.json > /tmp/spdx.json
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Provenance}}' > /tmp/provenance.json
+          jq -e '(.SLSA // .["linux/amd64"].SLSA) as $p | ($p.buildType | type == "string") and ($p.builder | type == "object")' /tmp/provenance.json >/dev/null
+
+      - name: Reject high and critical image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          exit-code: "1"
+          format: table
+          hide-progress: true
+          image-ref: ${{ steps.release.outputs.image }}@${{ steps.build.outputs.digest }}
+          ignore-unfixed: false
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          timeout: 15m
+          trivyignores: .trivyignore.yaml
+          vuln-type: os,library
+
+      - name: Sign the SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          create-storage-record: false
+          subject-name: ${{ steps.release.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: /tmp/spdx.json
+          push-to-registry: true
+
+      - name: Sign the passed vulnerability gate
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          create-storage-record: false
+          subject-name: ${{ steps.release.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          predicate-type: https://github.com/${{ github.repository }}/attestations/trivy/v1
+          predicate: >-
+            {"scanner":"Trivy","severity":["HIGH","CRITICAL"],"ignore_unfixed":false,"exceptions":[{"id":"CVE-2025-3887","purls":["pkg:deb/ubuntu/gstreamer1.0-plugins-bad@1.24.2-1ubuntu4?arch=amd64&distro=ubuntu-24.04","pkg:deb/ubuntu/libgstreamer-plugins-bad1.0-0@1.24.2-1ubuntu4?arch=amd64&distro=ubuntu-24.04"],"expires":"2026-09-30","statement":"The Playwright Chromium booking path does not use the affected GStreamer plugins."},{"id":"GHSA-6v7p-g79w-8964","purls":["pkg:pypi/msgpack@1.1.2"],"expires":"2026-09-30","statement":"Build-only Python tooling was removed, and runtime smoke verifies msgpack is absent from the final image."},{"id":"CVE-2025-47273","purls":["pkg:pypi/setuptools@70.3.0"],"expires":"2026-09-30","statement":"Build-only Python tooling was removed, and runtime smoke verifies setuptools is absent from the final image."}],"result":"passed"}
+          push-to-registry: true
+
+      - name: Sign GitHub build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          create-storage-record: false
+          subject-name: ${{ steps.release.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify signed provenance
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ steps.release.outputs.image }}
+          PROVENANCE_PREDICATE: https://slsa.dev/provenance/v1
+          SBOM_PREDICATE: https://spdx.dev/Document/v2.3
+          VULNERABILITY_PREDICATE: https://github.com/${{ github.repository }}/attestations/trivy/v1
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-image.yml" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners \
+            --predicate-type "$PROVENANCE_PREDICATE" \
+            --format json >/dev/null
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-image.yml" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners \
+            --predicate-type "$SBOM_PREDICATE" \
+            --format json >/dev/null
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-image.yml" \
+            --source-ref refs/heads/main \
+            --deny-self-hosted-runners \
+            --predicate-type "$VULNERABILITY_PREDICATE" \
+            --format json >/dev/null
+
+      - name: Promote the accepted digest to release tags
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.release.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -a tag_args=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && tag_args+=(--tag "$tag")
+          done <<<"$TAGS"
+          ((${#tag_args[@]} >= 3)) || {
+            echo "expected semantic-version and commit tags" >&2
+            exit 1
+          }
+          docker buildx imagetools create "${tag_args[@]}" "$IMAGE@$DIGEST"
+
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            resolved="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r '.digest')"
+            if [[ "$resolved" != "$DIGEST" ]]; then
+              echo "release tag did not resolve to the accepted digest" >&2
+              exit 1
+            fi
+          done <<<"$TAGS"
+
+      - name: Publish immutable deployment coordinates
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.release.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        shell: bash
+        run: |
+          {
+            echo "## Published container"
+            echo
+            echo "\`$IMAGE@$DIGEST\`"
+            echo
+            echo "Tags:"
+            while IFS= read -r tag; do
+              echo "- \`$tag\`"
+            done <<<"$TAGS"
+            echo
+            echo "The digest passed the HIGH/CRITICAL Trivy gate, signed SPDX SBOM verification, and both BuildKit and GitHub provenance checks."
+          } >>"$GITHUB_STEP_SUMMARY"
