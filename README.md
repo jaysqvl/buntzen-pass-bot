@@ -149,15 +149,18 @@ Only one control plane can own an appdata directory; an advisory lock prevents a
 ## Verification
 
 ```bash
-gofmt -w cmd internal
+gofmt -w cmd internal integration
 go vet ./...
 go test -race ./...
 
-uvx --from ruff==0.12.10 ruff check actions
+uvx --from ruff==0.12.10 ruff check actions scripts/deploy/tests
 uv run --project actions python -m unittest discover -s actions/tests
 uv run --project actions python -m compileall -q actions/src
+bash scripts/deploy/tests/test_portainer_canary.sh
+BUNTZEN_E2E_PYTHON="$PWD/actions/.venv/bin/python" go test -race -tags=integration ./integration/...
 ```
 
-CI runs Go formatting/vetting/race tests, the Python protocol/action tests and dependency audit, Compose validation, and a Linux `amd64` image build. Dependabot covers Go modules, Python, Docker, and GitHub Actions.
+CI also runs the real Go/Python/Playwright/BlueBubbles OTP integration, the Portainer rollback suite, a Linux `amd64` container setup/login/restart smoke test, and the strict Trivy image gate. Dependabot covers Go modules, Python, Docker, and GitHub Actions.
 
 See [`actions/README.md`](actions/README.md) for the exact protocol and sensitive-artifact rules.
+See [`docs/release-and-deployment.md`](docs/release-and-deployment.md) for the GHCR release gate and protected Portainer canary workflow.

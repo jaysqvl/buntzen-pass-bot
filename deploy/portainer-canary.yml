@@ -1,0 +1,24 @@
+services:
+  buntzen-pass-bot:
+    image: "${BUNTZEN_IMAGE:?set BUNTZEN_IMAGE to a GHCR sha256 digest}"
+    container_name: buntzen-pass-bot-canary
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${BUNTZEN_WEB_PORT:?set a dedicated canary port}:8080"
+    environment:
+      APPDATA_DIR: /appdata
+      BLUEBUBBLES_URL: "${BLUEBUBBLES_URL:?set the LAN BlueBubbles URL in Portainer}"
+      BUNTZEN_YODEL_ORIGINS: "${BUNTZEN_YODEL_ORIGINS:-https://yodelportal.com}"
+      BUNTZEN_ALLOWED_HOSTS: "${BUNTZEN_ALLOWED_HOSTS:?set the exact canary authorities}"
+      BUNTZEN_ALLOWED_ORIGINS: "${BUNTZEN_ALLOWED_ORIGINS:-}"
+      BUNTZEN_SETUP_TOKEN: "${BUNTZEN_SETUP_TOKEN:-}"
+      MAX_CONCURRENT_JOBS: "${MAX_CONCURRENT_JOBS:-2}"
+      # This release gate is deliberately not configurable from GitHub or Portainer.
+      SCHEDULES_ENABLED: "false"
+    volumes:
+      - "${BUNTZEN_APPDATA_PATH:?set a dedicated absolute canary appdata path}:/appdata"
+    shm_size: "1gb"
+    security_opt:
+      - "seccomp=${BUNTZEN_SECCOMP_PROFILE_PATH:?install and reference the Playwright seccomp profile on the Docker host}"
+    stop_grace_period: 45s
