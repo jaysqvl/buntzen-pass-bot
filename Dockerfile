@@ -18,11 +18,15 @@ ENV APPDATA_DIR=/appdata \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
-COPY actions ./actions
-RUN python -m pip install --no-cache-dir ./actions \
-    && rm -rf /app/actions \
+COPY actions/requirements.lock /tmp/buntzen-actions-requirements.txt
+RUN python -m pip install --no-cache-dir --require-hashes --requirement /tmp/buntzen-actions-requirements.txt \
+    && python -m pip check \
+    && python -m pip uninstall --yes virtualenv \
+    && python -m pip uninstall --yes pip \
+    && rm /tmp/buntzen-actions-requirements.txt \
     && mkdir -p /appdata \
     && chown -R pwuser:pwuser /app /appdata
+COPY actions/src/buntzen_actions /usr/local/lib/python3.12/dist-packages/buntzen_actions
 COPY --from=go-build /out/buntzen /usr/local/bin/buntzen
 
 USER pwuser
