@@ -1,8 +1,18 @@
-name: Deploy Portainer canary
+name: Deploy Buntzen
 
-run-name: Deploy canary ${{ inputs.image_digest }}
+run-name: Deploy Buntzen ${{ inputs.image_digest }}
 
 on:
+  workflow_call:
+    inputs:
+      image_digest:
+        description: Published GHCR digest (sha256:...)
+        required: true
+        type: string
+      confirm_stack:
+        description: Exact existing Buntzen stack name; defaults to the protected environment value
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       image_digest:
@@ -10,14 +20,14 @@ on:
         required: true
         type: string
       confirm_stack:
-        description: Exact protected canary stack name
+        description: Exact existing Buntzen stack name
         required: true
         type: string
 
 permissions: {}
 
 concurrency:
-  group: portainer-canary
+  group: portainer-buntzen
   cancel-in-progress: false
 
 jobs:
@@ -40,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Canary deployments may only be dispatched from main." >&2
+            echo "Buntzen deployments may only be dispatched from main." >&2
             exit 1
           fi
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
@@ -120,7 +130,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, buntzen-deploy]
     timeout-minutes: 10
     environment:
-      name: portainer-canary
+      name: portainer-buntzen
     permissions:
       contents: read
     steps:
@@ -131,15 +141,15 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Deploy and verify the canary
+      - name: Deploy and verify Buntzen
         env:
-          BUNTZEN_CANARY_HEALTH_URL: ${{ secrets.BUNTZEN_CANARY_HEALTH_URL }}
+          BUNTZEN_CONFIRM_STACK: ${{ inputs.confirm_stack || vars.PORTAINER_STACK_NAME }}
+          BUNTZEN_HEALTH_URL: ${{ secrets.BUNTZEN_HEALTH_URL }}
           BUNTZEN_IMAGE: ${{ needs.verify-image.outputs.image }}@${{ inputs.image_digest }}
-          CANARY_CONFIRM_STACK: ${{ inputs.confirm_stack }}
           PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
           PORTAINER_ENDPOINT_ID: ${{ vars.PORTAINER_ENDPOINT_ID }}
           PORTAINER_STACK_ID: ${{ vars.PORTAINER_STACK_ID }}
           PORTAINER_STACK_NAME: ${{ vars.PORTAINER_STACK_NAME }}
           PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
         shell: bash
-        run: ./scripts/deploy/portainer_canary.sh deploy/portainer-canary.yml
+        run: ./scripts/deploy/portainer.sh deploy/portainer.yml

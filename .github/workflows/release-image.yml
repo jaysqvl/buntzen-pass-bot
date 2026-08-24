@@ -11,6 +11,10 @@ on:
         description: Existing Release Please v* tag
         required: true
         type: string
+    outputs:
+      image_digest:
+        description: Published and verified GHCR image digest
+        value: ${{ jobs.publish.outputs.image_digest }}
 
 permissions:
   attestations: write
@@ -27,6 +31,8 @@ jobs:
     name: Build, scan, attest, and publish
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      image_digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Resolve and validate the release
         id: release

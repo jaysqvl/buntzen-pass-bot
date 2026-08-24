@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 die() {
-  printf 'canary deployment refused: %s\n' "$1" >&2
+  printf 'Buntzen deployment refused: %s\n' "$1" >&2
   exit 1
 }
 
@@ -18,9 +18,9 @@ for command in curl jq; do
 done
 
 for name in \
-  BUNTZEN_CANARY_HEALTH_URL \
+  BUNTZEN_HEALTH_URL \
+  BUNTZEN_CONFIRM_STACK \
   BUNTZEN_IMAGE \
-  CANARY_CONFIRM_STACK \
   PORTAINER_API_KEY \
   PORTAINER_ENDPOINT_ID \
   PORTAINER_STACK_ID \
@@ -32,25 +32,25 @@ done
 [[ "$PORTAINER_ENDPOINT_ID" =~ ^[1-9][0-9]*$ ]] || die "PORTAINER_ENDPOINT_ID must be a positive integer"
 [[ "$PORTAINER_STACK_ID" =~ ^[1-9][0-9]*$ ]] || die "PORTAINER_STACK_ID must be a positive integer"
 [[ "$PORTAINER_STACK_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "PORTAINER_STACK_NAME has an invalid format"
-[[ "$CANARY_CONFIRM_STACK" == "$PORTAINER_STACK_NAME" ]] || die "confirmation does not exactly match the canary stack name"
+[[ "$BUNTZEN_CONFIRM_STACK" == "$PORTAINER_STACK_NAME" ]] || die "confirmation does not exactly match the protected stack name"
 authority='([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?'
 [[ "$PORTAINER_URL" =~ ^https?://$authority$ ]] || die "PORTAINER_URL must be an exact HTTP(S) origin with no path, credentials, query, or fragment"
-[[ "$BUNTZEN_CANARY_HEALTH_URL" =~ ^https?://$authority/healthz$ ]] || die "BUNTZEN_CANARY_HEALTH_URL must be an exact HTTP(S) /healthz URL"
+[[ "$BUNTZEN_HEALTH_URL" =~ ^https?://$authority/healthz$ ]] || die "BUNTZEN_HEALTH_URL must be an exact HTTP(S) /healthz URL"
 [[ "$BUNTZEN_IMAGE" =~ ^ghcr\.io/[a-z0-9._-]+/[a-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] || die "BUNTZEN_IMAGE must be a lowercase GHCR image pinned by sha256 digest"
 
-health_attempts="${CANARY_HEALTH_ATTEMPTS:-30}"
-health_interval="${CANARY_HEALTH_INTERVAL_SECONDS:-4}"
-[[ "$health_attempts" =~ ^[1-9][0-9]*$ ]] && ((health_attempts <= 60)) || die "CANARY_HEALTH_ATTEMPTS must be between 1 and 60"
-[[ "$health_interval" =~ ^(0|[1-9][0-9]*)$ ]] && ((health_interval <= 30)) || die "CANARY_HEALTH_INTERVAL_SECONDS must be between 0 and 30"
+health_attempts="${BUNTZEN_HEALTH_ATTEMPTS:-30}"
+health_interval="${BUNTZEN_HEALTH_INTERVAL_SECONDS:-4}"
+[[ "$health_attempts" =~ ^[1-9][0-9]*$ ]] && ((health_attempts <= 60)) || die "BUNTZEN_HEALTH_ATTEMPTS must be between 1 and 60"
+[[ "$health_interval" =~ ^(0|[1-9][0-9]*)$ ]] && ((health_interval <= 30)) || die "BUNTZEN_HEALTH_INTERVAL_SECONDS must be between 0 and 30"
 
-compose_file="${1:-deploy/portainer-canary.yml}"
-[[ -f "$compose_file" ]] || die "canary Compose file is missing"
+compose_file="${1:-deploy/portainer.yml}"
+[[ -f "$compose_file" ]] || die "deployment Compose file is missing"
 schedule_lines="$(grep -Ec '^[[:space:]]+SCHEDULES_ENABLED:[[:space:]]*"false"[[:space:]]*$' "$compose_file" || true)"
 schedule_mentions="$(grep -Ev '^[[:space:]]*#' "$compose_file" | grep -Ec 'SCHEDULES_ENABLED' || true)"
-[[ "$schedule_lines" == "1" && "$schedule_mentions" == "1" ]] || die "canary Compose file does not hard-disable schedules exactly once"
+[[ "$schedule_lines" == "1" && "$schedule_mentions" == "1" ]] || die "deployment Compose file does not hard-disable schedules exactly once"
 image_lines="$(grep -Ec '^[[:space:]]+image:[[:space:]]*"[$][{]BUNTZEN_IMAGE:[?][^}]+}"[[:space:]]*$' "$compose_file" || true)"
 image_mentions="$(grep -Ev '^[[:space:]]*#' "$compose_file" | grep -Ec 'BUNTZEN_IMAGE' || true)"
-[[ "$image_lines" == "1" && "$image_mentions" == "1" ]] || die "canary Compose file does not require exactly one digest-pinned image variable"
+[[ "$image_lines" == "1" && "$image_mentions" == "1" ]] || die "deployment Compose file does not require exactly one digest-pinned image variable"
 
 deploy_tmp="$(mktemp -d)"
 cleanup() {
@@ -111,7 +111,7 @@ health_request() {
     --max-filesize 64 \
     --output "$output" \
     --fail \
-    "$BUNTZEN_CANARY_HEALTH_URL" 2>/dev/null &&
+    "$BUNTZEN_HEALTH_URL" 2>/dev/null &&
     [[ "$(tr -d '\r\n' <"$output")" == "ok" ]]
 }
 
@@ -128,11 +128,11 @@ jq -e --argjson id "$PORTAINER_STACK_ID" --argjson endpoint "$PORTAINER_ENDPOINT
 ' "$deploy_tmp/stack.json" >/dev/null || die "Portainer stack identity, source, or environment shape did not match"
 
 initial_status="$(read_stack_status "$deploy_tmp/stack.json")"
-[[ "$initial_status" == "1" ]] || die "the selected canary stack is not active"
-health_request "$deploy_tmp/pre-deploy-health.txt" || die "the selected canary was not healthy before deployment"
+[[ "$initial_status" == "1" ]] || die "the selected Buntzen stack is not active"
+health_request "$deploy_tmp/pre-deploy-health.txt" || die "the selected Buntzen stack was not healthy before deployment"
 
 schedule_gate="$(jq -r '[.Env[]? | select(.name == "SCHEDULES_ENABLED") | .value] | if length == 1 then .[0] else "" end' "$deploy_tmp/stack.json")"
-[[ "$schedule_gate" == "false" ]] || die "the selected stack is not an initialized schedules-disabled canary"
+[[ "$schedule_gate" == "false" ]] || die "the selected stack is not initialized with schedules disabled"
 
 api_request GET "/api/stacks/$PORTAINER_STACK_ID/file" "$deploy_tmp/stack-file.json"
 jq -e '.StackFileContent | type == "string" and length > 0' "$deploy_tmp/stack-file.json" >/dev/null || die "Portainer did not return a rollback stack file"
@@ -201,7 +201,7 @@ rollback_and_fail() {
   die "$cause and the rollback did not become healthy"
 }
 
-printf 'Updating the protected canary stack with an immutable image digest.\n'
+printf 'Updating the protected Buntzen stack in place with an immutable image digest.\n'
 if ! api_request_raw PUT "/api/stacks/$PORTAINER_STACK_ID?endpointId=$PORTAINER_ENDPOINT_ID" "$deploy_tmp/update-response.json" "$deploy_tmp/update.json"; then
   rollback_and_fail "stack update failed: $api_request_error"
 fi
@@ -231,4 +231,4 @@ if [[ "$health_ok" != "true" ]]; then
   rollback_and_fail "health check failed after deployment"
 fi
 
-printf 'Canary deployment is healthy and schedules remain disabled.\n'
+printf 'Buntzen deployment is healthy and schedules remain disabled.\n'

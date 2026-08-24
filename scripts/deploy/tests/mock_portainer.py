@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small stateful HTTP double for portainer_canary.sh."""
+"""Small stateful HTTP double for portainer.sh."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ ORIGINAL_ENV = [
     {"name": "SCHEDULES_ENABLED", "value": "false"},
     {"name": "BUNTZEN_IMAGE", "value": OLD_IMAGE},
     {"name": "BUNTZEN_WEB_PORT", "value": "18091"},
+    {"name": "BUNTZEN_APPDATA_PATH", "value": "/srv/appdata/buntzen-pass-bot"},
     {"name": "PRESERVED_VALUE", "value": "preserve-me"},
 ]
 ROLLBACK_COMPOSE = (
@@ -142,7 +143,7 @@ class Handler(BaseHTTPRequestHandler):
         name = (
             "wrong-stack"
             if self.server.state.scenario == "identity-mismatch"
-            else "buntzen-canary"
+            else "buntzen-pass-bot"
         )
         git_config = (
             {"URL": "https://example.invalid/repository.git"}

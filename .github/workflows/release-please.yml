@@ -45,3 +45,15 @@ jobs:
     with:
       expected_sha: ${{ needs.release-please.outputs.sha }}
       tag: ${{ needs.release-please.outputs.tag_name }}
+
+  deploy:
+    needs: publish-image
+    if: needs.publish-image.result == 'success'
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy-portainer.yml
+    with:
+      image_digest: ${{ needs.publish-image.outputs.image_digest }}
+    secrets: inherit

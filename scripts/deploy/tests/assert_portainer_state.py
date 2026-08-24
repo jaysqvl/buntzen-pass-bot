@@ -25,6 +25,10 @@ def check_update(payload: dict[str, Any], compose: str, image: str) -> None:
         == 1
     )
     assert {"name": "BUNTZEN_WEB_PORT", "value": "18091"} in env
+    assert {
+        "name": "BUNTZEN_APPDATA_PATH",
+        "value": "/srv/appdata/buntzen-pass-bot",
+    } in env
     assert {"name": "PRESERVED_VALUE", "value": "preserve-me"} in env
 
 

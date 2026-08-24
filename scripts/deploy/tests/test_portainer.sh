@@ -16,7 +16,35 @@ cleanup() {
 trap cleanup EXIT
 
 new_image="ghcr.io/example/buntzen-pass-bot@sha256:$(printf 'b%.0s' {1..64})"
-compose_file="$repo_root/deploy/portainer-canary.yml"
+compose_file="$repo_root/deploy/portainer.yml"
+release_image_workflow="$repo_root/.github/workflows/release-image.yml"
+release_workflow="$repo_root/.github/workflows/release-please.yml"
+deploy_workflow="$repo_root/.github/workflows/deploy-portainer.yml"
+
+grep -Fq 'value: ${{ jobs.publish.outputs.image_digest }}' "$release_image_workflow" || {
+  printf 'release image workflow does not export its verified digest\n' >&2
+  exit 1
+}
+grep -Fq 'image_digest: ${{ steps.build.outputs.digest }}' "$release_image_workflow" || {
+  printf 'release image job does not publish the built digest\n' >&2
+  exit 1
+}
+grep -Fq 'uses: ./.github/workflows/deploy-portainer.yml' "$release_workflow" || {
+  printf 'Release Please does not invoke the in-place deployment workflow\n' >&2
+  exit 1
+}
+grep -Fq 'image_digest: ${{ needs.publish-image.outputs.image_digest }}' "$release_workflow" || {
+  printf 'Release Please does not pass the published digest to deployment\n' >&2
+  exit 1
+}
+grep -Fq 'workflow_call:' "$deploy_workflow" || {
+  printf 'deployment workflow is not reusable from the release workflow\n' >&2
+  exit 1
+}
+[[ "$(grep -Ec '^[[:space:]]+container_name:[[:space:]]+buntzen-pass-bot[[:space:]]*$' "$compose_file")" == "1" ]] || {
+  printf 'deployment Compose file must name the existing buntzen-pass-bot container\n' >&2
+  exit 1
+}
 
 start_mock() {
   local scenario="$1"
@@ -53,15 +81,15 @@ run_compose_refusal() {
   local status=0
 
   env \
-    BUNTZEN_CANARY_HEALTH_URL=http://127.0.0.1:9/healthz \
+    BUNTZEN_CONFIRM_STACK=buntzen-pass-bot \
+    BUNTZEN_HEALTH_URL=http://127.0.0.1:9/healthz \
     BUNTZEN_IMAGE="$new_image" \
-    CANARY_CONFIRM_STACK=buntzen-canary \
     PORTAINER_API_KEY=test-api-key \
     PORTAINER_ENDPOINT_ID=1 \
     PORTAINER_STACK_ID=2 \
-    PORTAINER_STACK_NAME=buntzen-canary \
+    PORTAINER_STACK_NAME=buntzen-pass-bot \
     PORTAINER_URL=http://127.0.0.1:9 \
-    "$repo_root/scripts/deploy/portainer_canary.sh" "$candidate" \
+    "$repo_root/scripts/deploy/portainer.sh" "$candidate" \
     >"$output" 2>&1 || status=$?
 
   [[ "$status" != 0 ]] || {
@@ -71,6 +99,33 @@ run_compose_refusal() {
   grep -Fq "$expected_log" "$output" || {
     sed -n '1,160p' "$output" >&2
     printf 'tampered Compose file did not emit the expected refusal\n' >&2
+    return 1
+  }
+}
+
+run_confirmation_refusal() {
+  local output="$test_tmp/confirmation-mismatch.log"
+  local status=0
+
+  env \
+    BUNTZEN_CONFIRM_STACK=wrong-stack \
+    BUNTZEN_HEALTH_URL=http://127.0.0.1:9/healthz \
+    BUNTZEN_IMAGE="$new_image" \
+    PORTAINER_API_KEY=test-api-key \
+    PORTAINER_ENDPOINT_ID=1 \
+    PORTAINER_STACK_ID=2 \
+    PORTAINER_STACK_NAME=buntzen-pass-bot \
+    PORTAINER_URL=http://127.0.0.1:9 \
+    "$repo_root/scripts/deploy/portainer.sh" "$compose_file" \
+    >"$output" 2>&1 || status=$?
+
+  [[ "$status" != 0 ]] || {
+    printf 'mismatched stack confirmation unexpectedly passed preflight\n' >&2
+    return 1
+  }
+  grep -Fq 'confirmation does not exactly match the protected stack name' "$output" || {
+    sed -n '1,160p' "$output" >&2
+    printf 'mismatched stack confirmation did not emit the expected refusal\n' >&2
     return 1
   }
 }
@@ -87,17 +142,17 @@ run_case() {
   port="$(<"$case_dir/port")"
 
   env \
-    BUNTZEN_CANARY_HEALTH_URL="http://127.0.0.1:$port/healthz" \
+    BUNTZEN_CONFIRM_STACK=buntzen-pass-bot \
+    BUNTZEN_HEALTH_ATTEMPTS=3 \
+    BUNTZEN_HEALTH_INTERVAL_SECONDS=0 \
+    BUNTZEN_HEALTH_URL="http://127.0.0.1:$port/healthz" \
     BUNTZEN_IMAGE="$new_image" \
-    CANARY_CONFIRM_STACK=buntzen-canary \
-    CANARY_HEALTH_ATTEMPTS=3 \
-    CANARY_HEALTH_INTERVAL_SECONDS=0 \
     PORTAINER_API_KEY=test-api-key \
     PORTAINER_ENDPOINT_ID=1 \
     PORTAINER_STACK_ID=2 \
-    PORTAINER_STACK_NAME=buntzen-canary \
+    PORTAINER_STACK_NAME=buntzen-pass-bot \
     PORTAINER_URL="http://127.0.0.1:$port" \
-    "$repo_root/scripts/deploy/portainer_canary.sh" "$compose_file" \
+    "$repo_root/scripts/deploy/portainer.sh" "$compose_file" \
     >"$case_dir/output.log" 2>&1 || status=$?
 
   if [[ "$expected_result" == "success" ]]; then
@@ -123,7 +178,7 @@ run_case() {
   stop_mock
 }
 
-run_case success success 'Canary deployment is healthy and schedules remain disabled.'
+run_case success success 'Buntzen deployment is healthy and schedules remain disabled.'
 run_case rollback failure 'rollback was verified healthy'
 run_case rollback-failure failure 'rollback did not become healthy'
 run_case update-rejected failure 'stack update failed: Portainer API returned HTTP 500; rollback was verified healthy'
@@ -131,16 +186,17 @@ run_case status-query-failure failure 'stack status verification failed: Portain
 run_case status-query-malformed failure 'stack status verification returned a malformed response; rollback was verified healthy'
 run_case identity-mismatch failure 'Portainer stack identity, source, or environment shape did not match'
 run_case git-backed failure 'Portainer stack identity, source, or environment shape did not match'
-run_case preflight-unhealthy failure 'the selected canary was not healthy before deployment'
+run_case preflight-unhealthy failure 'the selected Buntzen stack was not healthy before deployment'
+run_confirmation_refusal
 
 schedule_spoof="$test_tmp/schedule-spoof.yml"
 sed 's/^      SCHEDULES_ENABLED: "false"$/      SCHEDULES_ENABLED: "true"/' "$compose_file" >"$schedule_spoof"
 printf '\n# SCHEDULES_ENABLED: "false"\n' >>"$schedule_spoof"
-run_compose_refusal "$schedule_spoof" 'canary Compose file does not hard-disable schedules exactly once'
+run_compose_refusal "$schedule_spoof" 'deployment Compose file does not hard-disable schedules exactly once'
 
 image_spoof="$test_tmp/image-spoof.yml"
 sed 's|^    image:.*$|    image: "ghcr.io/example/buntzen-pass-bot:latest"|' "$compose_file" >"$image_spoof"
 printf '\n# image: "${BUNTZEN_IMAGE:?comment spoof}"\n' >>"$image_spoof"
-run_compose_refusal "$image_spoof" 'canary Compose file does not require exactly one digest-pinned image variable'
+run_compose_refusal "$image_spoof" 'deployment Compose file does not require exactly one digest-pinned image variable'
 
-printf 'Portainer canary deployment tests passed.\n'
+printf 'Portainer deployment tests passed.\n'

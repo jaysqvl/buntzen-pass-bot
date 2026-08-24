@@ -1,11 +1,11 @@
-# Release and canary deployment
+# Release and Portainer deployment
 
 The release path has two deliberately separate trust boundaries:
 
 1. GitHub-hosted runners build and verify a release image.
-2. A protected, manually approved environment may deploy an already verified image digest to a LAN canary.
+2. A protected, manually approved environment may deploy an already verified image digest to the existing LAN Buntzen stack.
 
-No pull-request workflow targets the LAN runner, and a canary deployment never accepts a branch, tag, image name, or Compose file from the operator. It accepts only an immutable digest and an exact stack-name confirmation.
+No pull-request workflow targets the LAN runner, and a deployment never accepts a branch, tag, image name, or Compose file from the operator. It accepts only an immutable digest and an exact stack-name confirmation.
 
 ## Release image
 
@@ -64,16 +64,16 @@ gh attestation verify \
 
 If the repository is private, ensure the Portainer Docker environment can pull the inherited private GHCR package. Use a read-only package credential; no registry write credential belongs on the Docker host.
 
-## Protected canary environment
+## Protected Buntzen environment
 
-Create a GitHub Environment named `portainer-canary` with:
+Create a GitHub Environment named `portainer-buntzen` with:
 
 - required reviewers;
 - deployment branches restricted to `main`;
 - environment secrets:
   - `PORTAINER_URL`: exact Portainer HTTP(S) origin, with no path;
-  - `PORTAINER_API_KEY`: a dedicated API token with access only to the canary stack where the Portainer edition permits that restriction;
-  - `BUNTZEN_CANARY_HEALTH_URL`: exact canary URL ending in `/healthz`;
+  - `PORTAINER_API_KEY`: a dedicated API token with access only to the Buntzen stack where the Portainer edition permits that restriction;
+  - `BUNTZEN_HEALTH_URL`: exact Buntzen URL ending in `/healthz`;
 - environment variables:
   - `PORTAINER_ENDPOINT_ID`;
   - `PORTAINER_STACK_ID`;
@@ -83,37 +83,39 @@ Keep endpoint addresses and tokens in the protected environment, not in reposito
 
 Protect `main` with required pull-request review and passing CI checks before attaching a LAN runner. Disable force pushes and branch deletion. Environment approval is a second gate, not a substitute for protecting the code that the runner will execute.
 
-Register one isolated runner with all four labels `self-hosted`, `linux`, `x64`, and `buntzen-deploy`. It needs outbound GitHub access, LAN access to Portainer and the canary health endpoint, plus `bash`, `curl`, and `jq`. It does not need a Docker socket. Use a dedicated low-privilege host or VM and do not assign the `buntzen-deploy` label to a general-purpose runner.
+Register one isolated runner with all four labels `self-hosted`, `linux`, `x64`, and `buntzen-deploy`. It needs outbound GitHub access, LAN access to Portainer and the Buntzen health endpoint, plus `bash`, `curl`, and `jq`. It does not need a Docker socket. Use a dedicated low-privilege host or VM and do not assign the `buntzen-deploy` label to a general-purpose runner.
 
-The LAN job is available only through `workflow_dispatch`. A GitHub-hosted job first verifies the digest, signed release provenance, signed SPDX SBOM, and signed Trivy-gate attestation, then re-runs the strict Trivy scan against the current vulnerability database and the reviewed, expiring exception file. GitHub applies the environment approval only after those checks pass, before scheduling the LAN job. The LAN job checks out the exact `main` commit recorded when the dispatch began; pull-request code is never executed on that runner.
+Every version published by Release Please passes its verified image digest directly to the protected deployment workflow. A GitHub-hosted job verifies the digest, signed release provenance, signed SPDX SBOM, and signed Trivy-gate attestation, then re-runs the strict Trivy scan against the current vulnerability database and the reviewed, expiring exception file. GitHub applies the environment approval only after those checks pass, before scheduling the LAN job. The LAN job checks out the exact `main` commit recorded for the release; pull-request code is never executed on that runner. `workflow_dispatch` remains available for an explicit redeploy of an already published digest.
 
-## One-time Portainer canary setup
+## Existing Portainer stack setup
 
-Create a separate standalone Docker Compose stack from `deploy/portainer-canary.yml` using Portainer's Web Editor, not from the production appdata or browser profile. The deployment guard requires this existing stack to be file-based, with no Git configuration or automatic-update configuration, and already active with an exact `ok` response from `/healthz` before it will change anything. Configure these stack environment values in Portainer:
+The workflow updates the existing `buntzen-pass-bot` standalone Docker Compose stack in place from `deploy/portainer.yml`. Do not create a second rollout stack or allocate another port or appdata directory. The deployment guard requires the selected stack to be file-based, with no Git configuration or automatic-update configuration, and already active with an exact `ok` response from `/healthz` before it will change anything. Confirm these environment values on the existing stack in Portainer:
 
 - `BUNTZEN_IMAGE`: an initial `ghcr.io/<owner>/<repository>@sha256:<digest>` release coordinate;
-- `BUNTZEN_WEB_PORT`: a dedicated unused host port;
-- `BUNTZEN_APPDATA_PATH`: a dedicated absolute host directory owned by UID/GID 1001;
+- `BUNTZEN_WEB_PORT`: the configured host port already used by Buntzen;
+- `BUNTZEN_APPDATA_PATH`: the configured absolute Buntzen appdata directory, owned by UID/GID 1001;
 - `BUNTZEN_SECCOMP_PROFILE_PATH`: absolute Docker-host path to this repository's `docker/seccomp_profile.json`;
 - `BLUEBUBBLES_URL`;
 - `BUNTZEN_ALLOWED_HOSTS` and, only when required, `BUNTZEN_ALLOWED_ORIGINS`;
 - optional `BUNTZEN_SETUP_TOKEN`, `BUNTZEN_YODEL_ORIGINS`, and `MAX_CONCURRENT_JOBS`;
 - `SCHEDULES_ENABLED=false`.
 
-The checked-in canary Compose file hard-codes `SCHEDULES_ENABLED: "false"`; neither a workflow input nor a Portainer environment value can enable it. The deployment script also refuses an inactive or unhealthy stack, a Git-backed or auto-updated stack, an unexpected environment shape, or any existing stack whose Portainer environment does not contain exactly one false schedule gate. Use an exact stack ID, endpoint ID, and name so a configuration mistake cannot silently target a different stack.
+The checked-in deployment Compose file hard-codes `SCHEDULES_ENABLED: "false"`; neither a workflow input nor a Portainer environment value can enable it during a rollout. The deployment script also refuses an inactive or unhealthy stack, a Git-backed or auto-updated stack, an unexpected environment shape, or any existing stack whose Portainer environment does not contain exactly one false schedule gate. Use the existing stack's exact ID, endpoint ID, and name so a configuration mistake cannot silently target a different stack.
 
-Never share appdata with another container or native macOS run, and never exercise the same Yodel identity concurrently from the canary and another installation.
+Never share this appdata with another container or native macOS run, and never exercise the same Yodel identity concurrently from two installations.
 
 ## Deploy and observe
 
-From **Actions → Deploy Portainer canary → Run workflow** on `main`:
+For a normal release:
 
-1. Paste the immutable `sha256:<digest>` from the release workflow.
-2. Type the exact protected canary stack name.
-3. Approve the `portainer-canary` environment deployment.
+1. Merge the Release Please pull request.
+2. Release Please publishes and verifies the immutable image.
+3. Approve the `portainer-buntzen` environment deployment.
+
+The approved deployment replaces the existing `buntzen-pass-bot` container in the same stack, on the same port and appdata path. It never creates a version-specific or parallel rollout container. For a manual redeploy, use **Actions → Deploy Buntzen → Run workflow**, paste the immutable `sha256:<digest>`, and type the exact protected stack name.
 
 The script validates the stack identity and current health, preserves its Portainer-managed environment, replaces only the Compose revision and image digest, reasserts the false schedule gate, and asks Portainer to pull the image. It checks `/healthz` for up to two minutes. If the update API fails or the new revision never returns the exact `ok` response, it restores the prior Compose file and environment. The workflow reports a successful rollback only after Portainer again reports the stack active and `/healthz` returns exact `ok`; an unverified rollback is reported as a failure.
 
-Portainer 2.39.6 does not expose an ETag or compare-and-swap guard for stack updates. Do not edit the canary stack in Portainer while a deployment is running: workflow concurrency serializes workflow runs, but it cannot serialize an operator's direct Portainer edits.
+Portainer 2.39.6 does not expose an ETag or compare-and-swap guard for stack updates. Do not edit the Buntzen stack in Portainer while a deployment is running: workflow concurrency serializes workflow runs, but it cannot serialize an operator's direct Portainer edits.
 
-A healthy canary is still not promoted automatically. Complete setup/login, BlueBubbles connection, pairing, `auth-check`, dry-run, manual approval/cancellation, and one explicitly initiated automatic booking before considering a separate production rollout. Enabling schedules remains a human-controlled Portainer change outside this workflow.
+A healthy deployment still leaves schedules disabled. Complete setup/login, BlueBubbles connection, pairing, `auth-check`, dry-run, manual approval/cancellation, and one explicitly initiated automatic booking before enabling unattended schedules. Enabling schedules remains a deliberate Portainer change outside this workflow. Disable schedules again before every later rollout; the deployment preflight refuses a stack whose Portainer schedule gate is not exactly `false`.
