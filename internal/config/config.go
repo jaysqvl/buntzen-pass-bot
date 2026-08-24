@@ -34,6 +34,7 @@ type Config struct {
 	AllowedOrigins    []string
 	AllowedHosts      []string
 	SetupToken        string
+	LogLevel          string
 }
 
 func Load() (Config, error) {
@@ -55,6 +56,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	schedules, err := boolValue("SCHEDULES_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	debug, err := boolValue("BUNTZEN_DEBUG", false)
+	if err != nil {
+		return Config{}, err
+	}
+	logLevel, err := logLevelValue(os.Getenv("BUNTZEN_LOG_LEVEL"), debug)
 	if err != nil {
 		return Config{}, err
 	}
@@ -113,7 +122,38 @@ func Load() (Config, error) {
 		AllowedOrigins:    allowedOrigins,
 		AllowedHosts:      allowedHosts,
 		SetupToken:        strings.TrimSpace(os.Getenv("BUNTZEN_SETUP_TOKEN")),
+		LogLevel:          logLevel,
 	}, nil
+}
+
+// EffectiveLogLevel returns the validated level used by both the Go control
+// plane and its isolated Python workers. Config values assembled directly in
+// tests retain the production-safe info default.
+func (c Config) EffectiveLogLevel() string {
+	level, err := logLevelValue(c.LogLevel, false)
+	if err != nil {
+		return "info"
+	}
+	return level
+}
+
+func logLevelValue(raw string, debug bool) (string, error) {
+	if debug {
+		return "debug", nil
+	}
+	level := strings.ToLower(strings.TrimSpace(raw))
+	if level == "" {
+		return "info", nil
+	}
+	if level == "warning" {
+		level = "warn"
+	}
+	switch level {
+	case "debug", "info", "warn", "error":
+		return level, nil
+	default:
+		return "", errors.New("BUNTZEN_LOG_LEVEL must be debug, info, warn, or error")
+	}
 }
 
 // yodelOriginList returns the exact HTTPS origins that may receive Yodel

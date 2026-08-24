@@ -10,6 +10,13 @@ bytes) on stdin/stdout. All frames contain `{"v":1,"type":"..."}`. Logs go only
 to stderr. Unknown object fields are ignored, but unknown frame types and invalid
 state transitions fail the run.
 
+The control plane passes its validated log threshold to each worker through
+`BUNTZEN_ACTION_LOG_LEVEL`; operators should configure `BUNTZEN_LOG_LEVEL` or
+the `BUNTZEN_DEBUG` convenience toggle rather than setting this internal
+variable directly. Worker stderr is redacted and bounded again by Go before it
+is written to the container log with a durable job ID. Protocol payloads are
+never logged.
+
 ## Start and completion
 
 The child first emits:

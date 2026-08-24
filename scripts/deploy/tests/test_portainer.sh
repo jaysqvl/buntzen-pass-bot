@@ -45,6 +45,14 @@ grep -Fq 'workflow_call:' "$deploy_workflow" || {
   printf 'deployment Compose file must name the existing buntzen-pass-bot container\n' >&2
   exit 1
 }
+grep -Fq 'BUNTZEN_LOG_LEVEL: "${BUNTZEN_LOG_LEVEL:-info}"' "$compose_file" || {
+  printf 'deployment Compose file does not pass through the control-plane log level\n' >&2
+  exit 1
+}
+grep -Fq 'BUNTZEN_DEBUG: "${BUNTZEN_DEBUG:-false}"' "$compose_file" || {
+  printf 'deployment Compose file does not pass through the development debug toggle\n' >&2
+  exit 1
+}
 
 start_mock() {
   local scenario="$1"

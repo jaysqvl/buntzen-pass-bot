@@ -131,6 +131,11 @@ class YodelAction:
         self.page.route("**/*", self._guard_navigation)
 
     def execute(self) -> BookingResult:
+        logger.debug(
+            "Beginning Yodel action command=%s mode=%s",
+            self.config.command,
+            self.config.mode,
+        )
         if self.config.command == "auth-check":
             if not self.ensure_authenticated():
                 return BookingResult(False, "Yodel authentication did not complete.")
@@ -151,14 +156,16 @@ class YodelAction:
         return self.poll_for_booking(mode=self.config.mode)
 
     def ensure_authenticated(self, auth_deadline_at: Optional[datetime] = None) -> bool:
+        logger.debug("Beginning bounded authentication state inspection")
         self.diagnostics.pause_for_auth()
         self.control.status("auth", "Checking Yodel authentication state.")
         self._goto_allowed(self.config.login_probe_url)
         self._settle_page()
 
-        for _attempt in range(8):
+        for attempt in range(8):
             self.control.inbox.check_cancelled()
             if self._is_authenticated():
+                logger.debug("Authentication confirmed step=%d", attempt + 1)
                 self.diagnostics.authenticated()
                 self.control.status("authenticated", "Yodel session is authenticated.")
                 return True
@@ -171,11 +178,13 @@ class YodelAction:
                 return False
 
             if self._has_otp_challenge():
+                logger.debug("Existing OTP challenge detected step=%d", attempt + 1)
                 self._complete_existing_otp_challenge(auth_deadline_at=auth_deadline_at)
                 self._settle_page()
                 continue
 
             if self._has_login_form():
+                logger.debug("Login form detected step=%d", attempt + 1)
                 self._complete_login_form(auth_deadline_at=auth_deadline_at)
                 self._settle_page()
                 continue
@@ -194,6 +203,7 @@ class YodelAction:
         email_input = self._visible_locator(LOGIN_EMAIL_SELECTORS, timeout_ms=500)
         password_input = self._visible_locator(LOGIN_PASSWORD_SELECTORS, timeout_ms=500)
         credentials = self.control.request_credentials()
+        logger.debug("Received just-in-time credentials for an approved origin")
         try:
             if not credentials.email or not credentials.password:
                 raise ActionError(
@@ -222,6 +232,7 @@ class YodelAction:
                 self.control.otp_failed(challenge_id, "trigger_failed")
                 raise ActionError("Yodel login submit could not be clicked") from exc
             self.control.otp_triggered(challenge_id)
+            logger.debug("Login submitted after provider cursor was armed")
         finally:
             credentials.clear()
 
@@ -262,6 +273,7 @@ class YodelAction:
             self.control.otp_failed(challenge_id, "trigger_failed")
             raise ActionError("Yodel OTP resend could not be clicked") from exc
         self.control.otp_triggered(challenge_id)
+        logger.debug("OTP resend triggered after provider cursor was armed")
         self._settle_page(timeout_ms=5_000)
         self._fill_and_submit_otp(challenge_id, auth_deadline_at=auth_deadline_at)
 
@@ -272,6 +284,7 @@ class YodelAction:
     ) -> None:
         self._assert_page_origin()
         value = self.control.wait_for_otp(challenge_id, deadline_at=auth_deadline_at)
+        logger.debug("Fresh OTP received through the control pipe")
         try:
             self._assert_page_origin()
             inputs = self._otp_inputs()
@@ -299,6 +312,7 @@ class YodelAction:
             else:
                 self.page.keyboard.press("Enter")
             self.control.otp_submitted(challenge_id)
+            logger.debug("OTP submitted and transient challenge cleared")
         finally:
             value = ""
 
@@ -328,6 +342,7 @@ class YodelAction:
         waiting_for_future_release = datetime.now(release_at.tzinfo) < release_at
         if waiting_for_future_release:
             self.diagnostics.suspend_trace()
+            logger.debug("Safe tracing suspended during release wait")
         # Trigger both maintenance actions on the first loop iteration without
         # assuming the host has been up for at least 45 seconds. Fresh CI
         # runners and newly booted machines can have a smaller monotonic clock.
@@ -372,6 +387,7 @@ class YodelAction:
         if waiting_for_future_release:
             self.diagnostics.authenticated()
         self.control.emit("release.ready")
+        logger.debug("Booking release boundary reached")
 
     def keep_session_warm(self, auth_deadline_at: Optional[datetime] = None) -> None:
         try:
@@ -415,6 +431,7 @@ class YodelAction:
         while time.monotonic() < deadline:
             self.control.inbox.check_cancelled()
             attempt += 1
+            logger.debug("Beginning booking poll attempt=%d", attempt)
             self.control.emit("booking.poll", attempt=attempt)
             result = self.try_booking_once(mode=mode)
             last_message = result.message
@@ -436,6 +453,7 @@ class YodelAction:
         )
 
     def _try_pass(self, preference: PassPreference, mode: str) -> BookingResult:
+        logger.debug("Checking pass pass_key=%s mode=%s", preference.key, mode)
         url = self._url_for(preference)
         self.control.status(
             "checking_pass", f"Checking {preference.label} pass availability."
@@ -505,6 +523,7 @@ class YodelAction:
             )
 
         if mode == "manual":
+            logger.debug("Manual confirmation wait started pass_key=%s", preference.key)
             self._capture_failure(f"{preference.key}-manual-confirm-ready")
             self.diagnostics.suspend_trace()
             self.control.wait_for_approval(
@@ -514,6 +533,7 @@ class YodelAction:
                     final_confirm
                 ),
             )
+            logger.debug("Manual confirmation approved pass_key=%s", preference.key)
             self.diagnostics.authenticated()
         elif mode != "auto":
             raise ActionError("Unsupported booking mode")
@@ -532,6 +552,7 @@ class YodelAction:
         confirmation_id = self.control.await_confirmation_ready(
             preference.key, preference.label
         )
+        logger.debug("Durable final-confirmation barrier recorded pass_key=%s", preference.key)
         try:
             locator.click(timeout=30_000)
         except Exception as exc:

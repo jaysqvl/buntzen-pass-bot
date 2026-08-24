@@ -381,6 +381,52 @@ func TestEncryptedSecretsAreNeverRendered(t *testing.T) {
 	}
 }
 
+func TestNewBookingFormUsesLocalSafeDefaults(t *testing.T) {
+	fixture := newWebFixture(t)
+	cookies := loginCookies(t, fixture)
+	request := authenticatedRequest(http.MethodGet, "http://example.test/bookings/new", cookies, nil)
+	recorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("new booking form = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`name="timezone" value="America/Vancouver"`,
+		`name="release_time" value="07:00"`,
+		`name="login_probe_url" value="https://example.test/buntzen-lake"`,
+		`name="all_day_pass_url" value="https://example.test/buntzen-lake"`,
+		`name="half_day_pass_url" value="https://example.test/buntzen-lake"`,
+		`value="manual" selected`,
+		`name="check_all_day" value="1" checked`,
+		`name="check_afternoon" value="1" checked`,
+		`name="check_morning" value="1" checked`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("new booking form missing safe default %q", expected)
+		}
+	}
+}
+
+func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
+	fixture := newWebFixture(t)
+	resources := fixture.store.ForUser(fixture.admin.ID)
+	source, err := resources.CreateOTPSource(context.Background(), store.OTPSourceInput{
+		Name: "Unassigned Messages", Provider: model.OTPProviderBlueBubbles,
+		Identity:       "http://127.0.0.1:2234",
+		ProviderConfig: bluebubbles.Config{BaseURL: "http://127.0.0.1:2234", Password: "synthetic-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := loginCookies(t, fixture)
+	form := url.Values{"csrf_token": {csrfFrom(cookies)}}
+	recorder := serveForm(fixture, http.MethodPost, fmt.Sprintf("/sources/%d/pair", source.ID), cookies, form)
+	if recorder.Code != http.StatusConflict || recorder.Body.String() != "assign this source to an enabled Yodel profile before pairing\n" {
+		t.Fatalf("pair without profile = %d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestBookingRunReturnsBoundedConflictForPendingDuplicate(t *testing.T) {
 	fixture := newWebFixture(t)
 	resources := fixture.store.ForUser(fixture.admin.ID)

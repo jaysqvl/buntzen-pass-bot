@@ -139,12 +139,27 @@ Important environment settings:
 | `BUNTZEN_ALLOWED_HOSTS` | loopback only | Comma-separated exact browser Host authorities; required for LAN IP/port and reverse-proxy access |
 | `BUNTZEN_ALLOWED_ORIGINS` | empty | Comma-separated trusted browser origins for a reverse proxy that rewrites `Host` |
 | `BUNTZEN_SETUP_TOKEN` | generated on an empty database | Optional one-time first-run setup token; ignored after the administrator exists |
+| `BUNTZEN_LOG_LEVEL` | `info` | Container log threshold: `debug`, `info`, `warn`, or `error`; applies to Go and Python |
+| `BUNTZEN_DEBUG` | `false` | Convenience toggle; `true` overrides `BUNTZEN_LOG_LEVEL` with `debug` for both runtimes |
 | `MAX_CONCURRENT_JOBS` | `2` | Worker limit (1–8) |
 | `SCHEDULES_ENABLED` | `false` | Global schedule gate |
 | `BUNTZEN_PYTHON` | `python3` | Python 3.12 executable |
 | `BUNTZEN_ACTIONS_MODULE` | `buntzen_actions` | Fixed action worker module |
 
 Only one control plane can own an appdata directory; an advisory lock prevents a second `serve` from interrupting the first.
+
+### Development logging
+
+Set `BUNTZEN_DEBUG=true` in the Compose stack while reproducing a problem, then recreate the container and follow its logs:
+
+```bash
+docker compose up -d --force-recreate
+docker compose logs --follow --tail=300 buntzen-pass-bot
+```
+
+Logs are newline-delimited JSON with job IDs on scheduler, provider, Go/Python protocol, browser-process, approval, and final-state lifecycle records. HTTP debug records contain only the method and URL path—not query strings, request bodies, cookies, or form values. Python stderr is capped per line and per job before it reaches the container log. Credentials, known secret values, OTP-shaped child diagnostics, and URL user-info/query strings are redacted even in debug mode. Debug logging does not enable Playwright screenshots or traces during credential or OTP entry; the existing safe diagnostics policy still begins only after authentication and pauses during unbounded waits.
+
+Return `BUNTZEN_DEBUG=false` (or remove it) after the reproduction. `BUNTZEN_LOG_LEVEL=info` retains starts, stops, job claims/results, warnings, and failures without the detailed HTTP/action lifecycle stream.
 
 ## Verification
 

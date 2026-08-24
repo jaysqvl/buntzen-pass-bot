@@ -27,13 +27,21 @@ EXIT_PROTOCOL = 64
 def configure_logging(redactor: SecretRedactor) -> None:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        logging.Formatter("%(levelname)s %(name)s: %(message)s")
     )
     handler.addFilter(RedactingLogFilter(redactor))
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
-    root.setLevel(logging.INFO)
+    level_name = os.environ.get("BUNTZEN_ACTION_LOG_LEVEL", "info").strip().lower()
+    levels = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warn": logging.WARNING,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+    }
+    root.setLevel(levels.get(level_name, logging.INFO))
 
 
 def _open_context(playwright: Any, config: ActionConfig) -> Any:
@@ -80,9 +88,17 @@ def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optiona
     config.profile_dir.mkdir(parents=True, exist_ok=True)
     diagnostics: Optional[SafeDiagnostics] = None
     context = None
+    logger.debug(
+        "Launching persistent Chromium context run_id=%s command=%s mode=%s headless=%s",
+        config.run_id,
+        config.command,
+        config.mode,
+        config.headless,
+    )
     with sync_playwright() as playwright:
         try:
             context = _open_context(playwright, config)
+            logger.debug("Chromium context launched run_id=%s", config.run_id)
             context.set_default_timeout(config.default_timeout_ms)
             context.set_default_navigation_timeout(config.default_timeout_ms)
             diagnostics = SafeDiagnostics(
@@ -106,6 +122,7 @@ def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optiona
             if context is not None:
                 try:
                     context.close()
+                    logger.debug("Chromium context closed run_id=%s", config.run_id)
                 except Exception:
                     logger.warning("Browser context did not close cleanly")
 
@@ -135,10 +152,21 @@ def main() -> int:
         )
         start = stream.read()
         config = ActionConfig.from_start(start)
+        logger.debug(
+            "Accepted action run run_id=%s command=%s mode=%s",
+            config.run_id,
+            config.command,
+            config.mode,
+        )
         inbox = ControlInbox(stream)
         control = ControlPort(stream=stream, inbox=inbox, redactor=redactor)
         control.status("starting", "Starting isolated Yodel browser action.")
         message, pass_key = run_action(config, control)
+        logger.info(
+            "Action completed run_id=%s command=%s status=succeeded",
+            config.run_id,
+            config.command,
+        )
         payload: dict[str, object] = {}
         if pass_key is not None:
             payload["pass_key"] = pass_key

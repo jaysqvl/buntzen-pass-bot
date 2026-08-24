@@ -14,6 +14,8 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "")
 	t.Setenv("BUNTZEN_YODEL_ORIGINS", "")
 	t.Setenv("BUNTZEN_SETUP_TOKEN", "")
+	t.Setenv("BUNTZEN_LOG_LEVEL", "")
+	t.Setenv("BUNTZEN_DEBUG", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -21,6 +23,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.MaxConcurrentJobs != 2 || cfg.ListenAddress != ":8080" || cfg.SchedulesEnabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+	if cfg.LogLevel != "info" || cfg.EffectiveLogLevel() != "info" {
+		t.Fatalf("default log level = %q", cfg.LogLevel)
 	}
 	if cfg.DatabasePath != filepath.Join(cfg.AppDataDir, "buntzen.db") {
 		t.Fatalf("database path was %q", cfg.DatabasePath)
@@ -30,6 +35,43 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if err := cfg.EnsureDirectories(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadLogLevelAndDebugOverride(t *testing.T) {
+	t.Setenv("APPDATA_DIR", t.TempDir())
+	t.Setenv("BUNTZEN_LOG_LEVEL", "warning")
+	t.Setenv("BUNTZEN_DEBUG", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogLevel != "warn" {
+		t.Fatalf("warning log level = %q", cfg.LogLevel)
+	}
+
+	t.Setenv("BUNTZEN_LOG_LEVEL", "error")
+	t.Setenv("BUNTZEN_DEBUG", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("debug override log level = %q", cfg.LogLevel)
+	}
+}
+
+func TestLoadRejectsInvalidLoggingConfiguration(t *testing.T) {
+	t.Setenv("APPDATA_DIR", t.TempDir())
+	t.Setenv("BUNTZEN_LOG_LEVEL", "trace")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid log level to be rejected")
+	}
+
+	t.Setenv("BUNTZEN_LOG_LEVEL", "info")
+	t.Setenv("BUNTZEN_DEBUG", "sometimes")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected invalid debug toggle to be rejected")
 	}
 }
 

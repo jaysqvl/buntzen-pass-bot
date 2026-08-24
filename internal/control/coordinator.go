@@ -48,6 +48,7 @@ type RunInput struct {
 // Implementations must never store a raw OTP or provider/credential material.
 type RunHooks struct {
 	Event                func(kind, message string)
+	Diagnostic           func(operation string, err error)
 	AwaitingApproval     func(approvalID string) error
 	ApprovalResolved     func(decision model.ApprovalDecision) error
 	ConfirmationStarting func() error
@@ -159,6 +160,7 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 					continue
 				}
 				if result.err != nil {
+					input.diagnostic("otp.wait", result.err)
 					responseKind := "otp.error"
 					message := "OTP provider failed while waiting for a fresh code."
 					if errors.Is(result.err, context.DeadlineExceeded) {
@@ -204,6 +206,9 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 				continue
 			}
 			processResult = &result
+			if result.Err != nil {
+				input.diagnostic("process.exit", result.Err)
+			}
 			doneStream = nil
 			cancelChallenges()
 			input.Hub.ClearOTP(jobKey)
@@ -237,6 +242,12 @@ func (input RunInput) EventsOrNoop() func(string, string) {
 		return input.Hooks.Event
 	}
 	return func(string, string) {}
+}
+
+func (input RunInput) diagnostic(operation string, err error) {
+	if input.Hooks.Diagnostic != nil && err != nil {
+		input.Hooks.Diagnostic(operation, err)
+	}
 }
 
 func handleFrame(
@@ -284,6 +295,7 @@ func handleFrame(
 		}
 		armed, err := input.Provider.Arm(ctx, input.OTPFilter)
 		if err != nil {
+			input.diagnostic("otp.arm", err)
 			_ = process.Send("otp.error", map[string]any{"challenge_id": challengeID})
 			events("otp.arm_failed", "OTP provider could not be armed.")
 			return nil

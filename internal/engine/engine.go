@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -19,6 +19,7 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/observability"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/twilio"
@@ -69,6 +70,10 @@ func (e *Engine) Start(parent context.Context) {
 	}
 	e.ctx, e.cancel = context.WithCancel(parent)
 	e.mu.Unlock()
+	slog.Info("job engine starting",
+		"workers", e.config.MaxConcurrentJobs,
+		"schedules_enabled", e.config.SchedulesEnabled,
+	)
 	for worker := 0; worker < e.config.MaxConcurrentJobs; worker++ {
 		e.wg.Add(1)
 		go e.worker(worker)
@@ -86,8 +91,10 @@ func (e *Engine) maintenanceLoop() {
 	ticker := time.NewTicker(maintenanceInterval)
 	defer ticker.Stop()
 	for {
-		if _, err := e.maintain(e.ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("control-plane maintenance failed: %v", err)
+		if purged, err := e.maintain(e.ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("control-plane maintenance failed", "error", err)
+		} else if err == nil {
+			slog.Debug("control-plane maintenance completed", "expired_sessions_purged", purged)
 		}
 		select {
 		case <-e.ctx.Done():
@@ -231,12 +238,14 @@ func (e *Engine) cleanupProfileEntries(ctx context.Context, snapshot []model.Pro
 }
 
 func (e *Engine) Stop() {
+	slog.Info("job engine stopping")
 	e.mu.Lock()
 	if e.cancel != nil {
 		e.cancel()
 	}
 	e.mu.Unlock()
 	e.wg.Wait()
+	slog.Info("job engine stopped")
 }
 
 func (e *Engine) Hub() *control.Hub { return e.hub }
@@ -249,6 +258,12 @@ func (e *Engine) worker(index int) {
 		job, err := e.store.SystemClaimNextDueJob(e.ctx, fmt.Sprintf("%s-%d", e.workerOwner, index))
 		switch {
 		case err == nil:
+			slog.Info("job claimed",
+				"job_id", job.ID,
+				"worker_index", index,
+				"command", job.Command,
+				"mode", job.RunMode,
+			)
 			e.runClaimed(job)
 		case errors.Is(err, store.ErrNotFound):
 			select {
@@ -257,7 +272,7 @@ func (e *Engine) worker(index int) {
 			case <-ticker.C:
 			}
 		default:
-			log.Printf("job queue claim failed: %v", err)
+			slog.Error("job queue claim failed", "worker_index", index, "error", err)
 			select {
 			case <-e.ctx.Done():
 				return
@@ -268,6 +283,7 @@ func (e *Engine) worker(index int) {
 }
 
 func (e *Engine) runClaimed(job model.Job) {
+	startedAt := time.Now()
 	jobCtx, cancel := context.WithCancelCause(e.ctx)
 	monitorCtx, stopMonitor := context.WithCancel(e.ctx)
 	e.mu.Lock()
@@ -279,17 +295,26 @@ func (e *Engine) runClaimed(job model.Job) {
 		e.mu.Lock()
 		delete(e.active, job.ID)
 		e.mu.Unlock()
+		slog.Debug("job worker released",
+			"job_id", job.ID,
+			"duration", time.Since(startedAt).Round(time.Millisecond),
+		)
 	}()
 	go e.monitorCancellation(monitorCtx, job.ID, cancel)
 	go e.monitorArtifacts(monitorCtx, job.ID, cancel)
 	defer func() {
 		if err := e.enforceArtifactLimit(job.ID); err != nil {
-			log.Printf("job artifact cleanup failed: %v", err)
+			slog.Error("job artifact cleanup failed", "job_id", job.ID, "error", err)
 		}
 	}()
 
 	result, runErr := e.execute(jobCtx, job)
 	if runErr != nil {
+		slog.Error("job execution failed",
+			"job_id", job.ID,
+			"command", job.Command,
+			"error", runErr,
+		)
 		current, _ := e.store.SystemGetJob(context.Background(), job.ID)
 		status := model.JobFailed
 		message := "The control plane could not run the isolated action."
@@ -338,7 +363,7 @@ func (e *Engine) monitorArtifacts(ctx context.Context, jobID int64, cancel conte
 	for {
 		exceeded, err := artifactLimitExceeded(artifactDir)
 		if err != nil {
-			log.Printf("job artifact inspection failed: %v", err)
+			slog.Error("job artifact inspection failed", "job_id", jobID, "error", err)
 			cancel(ErrArtifactLimit)
 			return
 		}
@@ -393,6 +418,7 @@ func (e *Engine) monitorCancellation(ctx context.Context, jobID int64, cancel co
 }
 
 func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult, error) {
+	slog.Debug("loading job execution inputs", "job_id", job.ID)
 	profile, err := e.store.SystemGetProfile(ctx, job.ProfileID)
 	if err != nil {
 		return control.RunResult{}, err
@@ -442,9 +468,16 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		}
 		provider = &supervisedProvider{PairingProvider: pairingProvider, hub: e.hub, store: e.store, jobID: job.ID, sourceID: source.ID, jobKey: strconv.FormatInt(job.ID, 10)}
 	}
+	slog.Debug("checking selected OTP provider",
+		"job_id", job.ID,
+		"source_id", source.ID,
+		"provider", source.Provider,
+		"pairing", pairing,
+	)
 	if err := provider.Health(ctx); err != nil {
 		return control.RunResult{}, fmt.Errorf("selected OTP provider is unavailable: %w", err)
 	}
+	slog.Debug("selected OTP provider is healthy", "job_id", job.ID, "source_id", source.ID, "provider", source.Provider)
 
 	if err := e.cleanupProfiles(ctx); err != nil {
 		return control.RunResult{}, err
@@ -513,6 +546,15 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 	}
 	jobKey := strconv.FormatInt(job.ID, 10)
 	e.event(job.ID, "job.started", "The isolated Yodel action started.")
+	slog.Info("isolated browser action starting",
+		"job_id", job.ID,
+		"profile_id", profile.ID,
+		"source_id", source.ID,
+		"provider", source.Provider,
+		"command", job.Command,
+		"mode", job.RunMode,
+		"headless", profile.Headless,
+	)
 	return control.Run(ctx, control.RunInput{
 		JobID: job.ID, Command: job.Command, Mode: job.RunMode,
 		StartConfig: startConfig, Credentials: credentials,
@@ -520,19 +562,32 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		OTPTimeout:  time.Duration(booking.PollDeadlineSeconds) * time.Second,
 		CancelGrace: cancelGrace, Hub: e.hub,
 		NewProcess: func(processCtx context.Context) (control.ActionProcess, error) {
-			return actionproc.Start(processCtx, actionproc.Config{
+			session, err := actionproc.Start(processCtx, actionproc.Config{
 				Executable: e.config.PythonExecutable,
 				Args:       []string{"-m", e.config.PythonModule},
 				Environment: []string{
 					"PYTHONUNBUFFERED=1",
+					"BUNTZEN_ACTION_LOG_LEVEL=" + e.config.EffectiveLogLevel(),
 				},
 				CancelGrace: cancelGrace,
+				OnStderr: func(line string) {
+					observability.LogActionDiagnostic(processCtx, jobKey, line, credentials.Email, credentials.Password)
+				},
 			})
+			if err != nil {
+				return nil, err
+			}
+			slog.Debug("python action process started", "job_id", job.ID)
+			return session, nil
 		},
 		Hooks: control.RunHooks{
 			Event: func(kind, message string) {
+				slog.Debug("job lifecycle event", "job_id", job.ID, "event", kind, "detail", message)
 				e.event(job.ID, kind, message)
 				e.hub.Publish(jobKey, control.LiveEvent{Kind: "event", Data: map[string]any{"type": kind, "message": message}})
+			},
+			Diagnostic: func(operation string, err error) {
+				slog.Warn("isolated action diagnostic", "job_id", job.ID, "operation", operation, "error", err)
 			},
 			AwaitingApproval: func(string) error {
 				_, err := e.store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning}, model.JobAwaitingApproval, store.JobTransition{Message: "Waiting immediately before final confirmation."})
@@ -582,9 +637,10 @@ func (e *Engine) finish(jobID int64, status model.JobStatus, message string, exi
 	finished, err := e.store.SystemTransitionJob(ctx, jobID, expected, status,
 		store.JobTransition{Message: message, ExitCode: exitCode})
 	if err != nil {
-		log.Printf("job %d final transition failed: %v", jobID, err)
+		slog.Error("job final transition failed", "job_id", jobID, "status", status, "error", err)
 		return
 	}
+	slog.Info("job finished", "job_id", jobID, "status", finished.Status, "exit_code", exitCodeValue(exitCode))
 	e.event(jobID, "job."+string(finished.Status), finished.Message)
 	e.hub.Publish(strconv.FormatInt(jobID, 10), control.LiveEvent{Kind: "complete", Data: map[string]any{"status": finished.Status, "message": finished.Message}})
 }
@@ -595,7 +651,7 @@ func (e *Engine) event(jobID int64, kind, message string) {
 	if _, err := e.store.SystemAppendJobEvent(ctx, store.JobEventInput{
 		JobID: jobID, Level: "info", Kind: kind, Message: message,
 	}); err != nil {
-		log.Printf("job %d event persistence failed", jobID)
+		slog.Error("job event persistence failed", "job_id", jobID, "event", kind)
 	}
 }
 
@@ -608,6 +664,7 @@ func (e *Engine) CancelJob(ctx context.Context, userID, jobID int64) error {
 	if err := resources.RequestJobCancellation(ctx, jobID); err != nil {
 		return err
 	}
+	slog.Info("job cancellation requested", "job_id", jobID, "status", job.Status)
 	if job.Status == model.JobQueued {
 		return nil
 	}
@@ -628,6 +685,7 @@ func (e *Engine) Decide(ctx context.Context, userID, jobID int64, decision model
 	if _, err := e.store.ForUser(userID).RecordJobDecision(ctx, jobID, decision); err != nil {
 		return err
 	}
+	slog.Info("manual job decision recorded", "job_id", jobID, "decision", decision)
 	err := e.hub.Decide(strconv.FormatInt(jobID, 10), string(decision))
 	if errors.Is(err, control.ErrDecisionAlreadySet) || errors.Is(err, control.ErrDecisionNotPending) {
 		return nil
@@ -689,11 +747,15 @@ func (e *Engine) QueuePairing(ctx context.Context, userID, sourceID int64) (mode
 			return model.Job{}, store.ErrConflict
 		}
 	}
-	return resources.EnqueueJob(ctx, store.EnqueueJobParams{
+	job, err := resources.EnqueueJob(ctx, store.EnqueueJobParams{
 		BookingRequestID: &bookingID, Command: model.CommandAuthCheck,
 		RunMode: model.RunModeManual, DueAt: time.Now().UTC(),
 		DedupKey: prefix + strconv.FormatInt(time.Now().UnixNano(), 10),
 	})
+	if err == nil {
+		slog.Info("supervised pairing job queued", "job_id", job.ID, "source_id", sourceID, "profile_id", profile.ID)
+	}
+	return job, err
 }
 
 func (e *Engine) QueueBooking(ctx context.Context, userID, bookingID int64, command model.JobCommand, mode model.RunMode) (model.Job, error) {
@@ -817,12 +879,12 @@ func (e *Engine) scheduleLoop() {
 func (e *Engine) queueScheduled(ctx context.Context, now time.Time) {
 	requests, err := e.store.SystemListScheduledBookingRequests(ctx)
 	if err != nil {
-		log.Printf("scheduled booking scan failed: %v", err)
+		slog.Error("scheduled booking scan failed", "error", err)
 		return
 	}
 	for _, request := range requests {
 		if err := request.ValidateForOrigins(e.config.YodelOrigins); err != nil {
-			log.Printf("scheduled booking %d has an invalid Yodel origin policy", request.ID)
+			slog.Warn("scheduled booking has an invalid Yodel origin policy", "booking_id", request.ID)
 			continue
 		}
 		window, err := scheduler.WindowFor(request)
@@ -835,9 +897,18 @@ func (e *Engine) queueScheduled(ctx context.Context, now time.Time) {
 			DedupKey: scheduler.DedupKey(request),
 		})
 		if err != nil && !errors.Is(err, store.ErrConflict) {
-			log.Printf("scheduled booking %d could not be queued: %v", request.ID, err)
+			slog.Error("scheduled booking could not be queued", "booking_id", request.ID, "error", err)
+		} else if err == nil {
+			slog.Info("scheduled booking queued", "booking_id", request.ID)
 		}
 	}
+}
+
+func exitCodeValue(exitCode *int) any {
+	if exitCode == nil {
+		return nil
+	}
+	return *exitCode
 }
 
 func ProviderForSource(ctx context.Context, database *store.Store, source model.OTPSource) (otp.Provider, error) {

@@ -97,7 +97,7 @@ The workflow updates the existing `buntzen-pass-bot` standalone Docker Compose s
 - `BUNTZEN_SECCOMP_PROFILE_PATH`: absolute Docker-host path to this repository's `docker/seccomp_profile.json`;
 - `BLUEBUBBLES_URL`;
 - `BUNTZEN_ALLOWED_HOSTS` and, only when required, `BUNTZEN_ALLOWED_ORIGINS`;
-- optional `BUNTZEN_SETUP_TOKEN`, `BUNTZEN_YODEL_ORIGINS`, and `MAX_CONCURRENT_JOBS`;
+- optional `BUNTZEN_SETUP_TOKEN`, `BUNTZEN_YODEL_ORIGINS`, `BUNTZEN_LOG_LEVEL`, `BUNTZEN_DEBUG`, and `MAX_CONCURRENT_JOBS`;
 - `SCHEDULES_ENABLED=false`.
 
 The checked-in deployment Compose file hard-codes `SCHEDULES_ENABLED: "false"`; neither a workflow input nor a Portainer environment value can enable it during a rollout. The deployment script also refuses an inactive or unhealthy stack, a Git-backed or auto-updated stack, an unexpected environment shape, or any existing stack whose Portainer environment does not contain exactly one false schedule gate. Use the existing stack's exact ID, endpoint ID, and name so a configuration mistake cannot silently target a different stack.

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -24,13 +25,14 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/lockfile"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/observability"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/web"
 )
 
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
-		log.Printf("error: %v", err)
+		slog.Error("command failed", "error", err)
 		os.Exit(1)
 	}
 }
@@ -43,6 +45,14 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := observability.Configure(cfg.EffectiveLogLevel()); err != nil {
+		return fmt.Errorf("configure logging: %w", err)
+	}
+	slog.Debug("runtime configuration loaded",
+		"command", args[0],
+		"log_level", cfg.EffectiveLogLevel(),
+		"appdata_dir", cfg.AppDataDir,
+	)
 	if err := cfg.EnsureDirectories(); err != nil {
 		return err
 	}
@@ -78,6 +88,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func runDoctor(ctx context.Context, cfg config.Config, database *store.Store) error {
+	slog.Debug("doctor checks started")
 	if err := database.Ping(ctx); err != nil {
 		return err
 	}
@@ -101,8 +112,10 @@ func runDoctor(ctx context.Context, cfg config.Config, database *store.Store) er
 		}
 		if providerErr == nil {
 			entry["ok"] = true
+			slog.Debug("OTP provider health check succeeded", "source_id", source.ID, "provider", source.Provider)
 		} else {
 			entry["error"] = providerErr.Error()
+			slog.Warn("OTP provider health check failed", "source_id", source.ID, "provider", source.Provider, "error", providerErr)
 		}
 		providerReports = append(providerReports, entry)
 	}
@@ -143,7 +156,10 @@ func doctorPython(ctx context.Context, cfg config.Config) (bool, string) {
 	defer cancel()
 	session, err := actionproc.Start(checkCtx, actionproc.Config{
 		Executable: cfg.PythonExecutable, Args: []string{"-m", cfg.PythonModule},
-		Environment: []string{"PYTHONUNBUFFERED=1"}, CancelGrace: 2 * time.Second,
+		Environment: []string{"PYTHONUNBUFFERED=1", "BUNTZEN_ACTION_LOG_LEVEL=" + cfg.EffectiveLogLevel()}, CancelGrace: 2 * time.Second,
+		OnStderr: func(line string) {
+			observability.LogActionDiagnostic(checkCtx, "doctor", line)
+		},
 	})
 	if err != nil {
 		return false, "Python action worker could not start"
@@ -169,6 +185,12 @@ func doctorPython(ctx context.Context, cfg config.Config) (bool, string) {
 // runServe provides the process lifecycle and health endpoint. The composed
 // UI/job handler replaces the fallback root response during application wiring.
 func runServe(parent context.Context, cfg config.Config, database *store.Store) error {
+	slog.Info("control plane starting",
+		"listen", cfg.ListenAddress,
+		"schedules_enabled", cfg.SchedulesEnabled,
+		"max_concurrent_jobs", cfg.MaxConcurrentJobs,
+		"log_level", cfg.EffectiveLogLevel(),
+	)
 	instanceLock, err := lockfile.TryAcquire(cfg.AppDataDir + "/control-plane.lock")
 	if err != nil {
 		if errors.Is(err, lockfile.ErrLocked) {
@@ -200,7 +222,7 @@ func runServe(parent context.Context, cfg config.Config, database *store.Store) 
 		return err
 	}
 	if recovered > 0 {
-		log.Printf("recovered %d interrupted job(s)", recovered)
+		slog.Warn("recovered interrupted jobs", "count", recovered)
 	}
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
@@ -224,13 +246,15 @@ func runServe(parent context.Context, cfg config.Config, database *store.Store) 
 	}
 	go func() {
 		<-ctx.Done()
+		slog.Info("control plane shutdown requested")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	log.Printf("Buntzen control plane listening on %s", listener.Addr())
+	slog.Info("control plane listening", "address", listener.Addr().String())
 	err = server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
+		slog.Info("control plane stopped")
 		return nil
 	}
 	return err
@@ -300,6 +324,7 @@ func runJobCommand(parent context.Context, cfg config.Config, database *store.St
 		return err
 	}
 	fmt.Printf("queued job %d\n", job.ID)
+	slog.Info("one-shot command queued job", "job_id", job.ID, "command", command, "mode", runMode)
 	finished, err := jobEngine.SystemWait(ctx, job.ID)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -311,6 +336,7 @@ func runJobCommand(parent context.Context, cfg config.Config, database *store.St
 		return err
 	}
 	fmt.Printf("job %d finished: %s\n", finished.ID, finished.Status)
+	slog.Info("one-shot command finished", "job_id", finished.ID, "status", finished.Status)
 	if finished.Status != model.JobSucceeded {
 		return fmt.Errorf("job %d did not succeed: %s", finished.ID, finished.Message)
 	}

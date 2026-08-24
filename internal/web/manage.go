@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -173,9 +175,11 @@ func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
 		err = provider.Health(ctx)
 	}
 	if err != nil {
+		slog.Warn("OTP provider health check failed", "source_id", source.ID, "provider", source.Provider, "error", err)
 		http.Error(w, "provider health check failed", http.StatusBadGateway)
 		return
 	}
+	slog.Info("OTP provider health check succeeded", "source_id", source.ID, "provider", source.Provider)
 	http.Redirect(w, r, "/sources?ok=healthy", http.StatusSeeOther)
 }
 
@@ -190,7 +194,8 @@ func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.engine.QueuePairing(r.Context(), requestAuth(r).Authenticated.User.ID, id)
 	if err != nil {
-		http.Error(w, "pairing could not be started; assign the source to an enabled profile and booking first", http.StatusConflict)
+		slog.Warn("supervised pairing could not be queued", "source_id", id, "error", err)
+		http.Error(w, safeFormError(err), http.StatusConflict)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d?ok=queued", job.ID), http.StatusSeeOther)
@@ -580,6 +585,7 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.engine.QueueBooking(r.Context(), requestAuth(r).Authenticated.User.ID, id, command, mode)
 	if err != nil {
+		slog.Warn("booking job could not be queued", "booking_id", id, "command", command, "error", err)
 		http.Error(w, "job could not be queued", http.StatusConflict)
 		return
 	}
@@ -620,7 +626,16 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		return
 	}
 	creating := booking == nil
-	value := model.BookingRequest{Enabled: true, TargetDate: time.Now().In(time.Local).AddDate(0, 0, 1).Format(time.DateOnly), Timezone: "UTC", ReleaseTime: "07:00", PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120, PollMinSeconds: 1.4, PollMaxSeconds: 3.6, ConfirmationMode: model.RunModeManual, CheckAllDay: true}
+	defaultYodelOrigin := config.DefaultYodelOrigin
+	if len(s.config.YodelOrigins) > 0 {
+		defaultYodelOrigin = s.config.YodelOrigins[0]
+	}
+	defaultYodelURL := strings.TrimRight(defaultYodelOrigin, "/") + "/buntzen-lake"
+	localTimezone, err := time.LoadLocation("America/Vancouver")
+	if err != nil {
+		localTimezone = time.Local
+	}
+	value := model.BookingRequest{Enabled: true, TargetDate: time.Now().In(localTimezone).AddDate(0, 0, 1).Format(time.DateOnly), Timezone: "America/Vancouver", ReleaseTime: "07:00", PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120, PollMinSeconds: 1.4, PollMaxSeconds: 3.6, ConfirmationMode: model.RunModeManual, LoginProbeURL: defaultYodelURL, AllDayPassURL: defaultYodelURL, HalfDayPassURL: defaultYodelURL, CheckAllDay: true, CheckAfternoon: true, CheckMorning: true}
 	if booking != nil {
 		value = *booking
 	}
