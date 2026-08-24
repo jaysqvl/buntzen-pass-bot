@@ -1,10 +1,14 @@
 .git
 .venv
+**/.venv
 env
 __pycache__
+**/__pycache__
+**/*.egg-info
 *.pyc
 .env
 appdata
+.native-appdata
 artifacts
 playwright-profile
 chrome-profile
