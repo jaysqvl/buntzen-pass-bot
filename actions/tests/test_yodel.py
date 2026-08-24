@@ -429,8 +429,8 @@ class YodelTests(unittest.TestCase):
         )
 
         with patch("buntzen_actions.yodel.datetime", clock), patch(
-            "buntzen_actions.yodel.time.sleep"
-        ):
+            "buntzen_actions.yodel.time.monotonic", return_value=1.0
+        ), patch("buntzen_actions.yodel.time.sleep"):
             action.wait_for_release_if_needed()
 
         trace_events = [event for event in events if event[0] == "trace"]
@@ -496,9 +496,9 @@ class YodelTests(unittest.TestCase):
         action = ReleaseAction(events, release_at, ActionError("keepalive failed"))
         clock = SimpleNamespace(now=Mock(side_effect=[before_release, before_release]))
 
-        with patch("buntzen_actions.yodel.datetime", clock), self.assertRaises(
-            ActionError
-        ):
+        with patch("buntzen_actions.yodel.datetime", clock), patch(
+            "buntzen_actions.yodel.time.monotonic", return_value=1.0
+        ), self.assertRaises(ActionError):
             action.wait_for_release_if_needed()
 
         self.assertEqual(
