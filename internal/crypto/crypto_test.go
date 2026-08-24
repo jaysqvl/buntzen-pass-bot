@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,12 +47,16 @@ func TestDecryptRejectsTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := ciphertext[len(ciphertext)-1]
-	replacement := byte('A')
-	if last == replacement {
-		replacement = 'B'
+	_, encoded, ok := strings.Cut(ciphertext, ":")
+	if !ok {
+		t.Fatal("ciphertext is missing its version prefix")
 	}
-	ciphertext = ciphertext[:len(ciphertext)-1] + string(replacement)
+	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload[len(payload)-1] ^= 1
+	ciphertext = envelopeV1 + ":" + base64.RawURLEncoding.EncodeToString(payload)
 	if _, err := box.Decrypt(ciphertext); err == nil {
 		t.Fatal("expected authenticated decryption to fail")
 	}
