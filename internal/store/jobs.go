@@ -24,7 +24,24 @@ type EnqueueJobParams struct {
 	DedupKey         string
 }
 
-func (s *Store) EnqueueJob(ctx context.Context, params EnqueueJobParams) (model.Job, error) {
+type jobHistoryExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (s *Store) EnqueueJob(ctx context.Context, userID int64, params EnqueueJobParams) (model.Job, error) {
+	if userID <= 0 {
+		return model.Job{}, ErrUserRequired
+	}
+	return s.enqueueJob(ctx, userID, params)
+}
+
+// SystemEnqueueJob is used by the scheduler. Ownership is always derived from
+// the selected booking/profile; callers cannot supply a job owner.
+func (s *Store) SystemEnqueueJob(ctx context.Context, params EnqueueJobParams) (model.Job, error) {
+	return s.enqueueJob(ctx, 0, params)
+}
+
+func (s *Store) enqueueJob(ctx context.Context, actorUserID int64, params EnqueueJobParams) (model.Job, error) {
 	if !params.Command.Valid() {
 		return model.Job{}, fmt.Errorf("invalid job command %q", params.Command)
 	}
@@ -57,12 +74,18 @@ func (s *Store) EnqueueJob(ctx context.Context, params EnqueueJobParams) (model.
 	defer tx.Rollback()
 
 	profileID := params.ProfileID
+	var jobUserID int64
 	if params.BookingRequestID != nil {
 		var bookingProfileID int64
+		var bookingUserID int64
 		var bookingEnabled bool
-		if err := tx.QueryRowContext(ctx,
-			"SELECT profile_id, enabled FROM booking_requests WHERE id = ?", *params.BookingRequestID,
-		).Scan(&bookingProfileID, &bookingEnabled); errors.Is(err, sql.ErrNoRows) {
+		query := "SELECT profile_id, user_id, enabled FROM booking_requests WHERE id = ?"
+		args := []any{*params.BookingRequestID}
+		if actorUserID > 0 {
+			query += " AND user_id = ?"
+			args = append(args, actorUserID)
+		}
+		if err := tx.QueryRowContext(ctx, query, args...).Scan(&bookingProfileID, &bookingUserID, &bookingEnabled); errors.Is(err, sql.ErrNoRows) {
 			return model.Job{}, ErrNotFound
 		} else if err != nil {
 			return model.Job{}, fmt.Errorf("read booking request profile: %w", err)
@@ -74,29 +97,80 @@ func (s *Store) EnqueueJob(ctx context.Context, params EnqueueJobParams) (model.
 			return model.Job{}, errors.New("booking request does not belong to the selected profile")
 		}
 		profileID = bookingProfileID
+		jobUserID = bookingUserID
 	}
 	if profileID <= 0 {
 		return model.Job{}, errors.New("profile is required")
 	}
-	var sourceID int64
-	if err := tx.QueryRowContext(ctx,
-		"SELECT otp_source_id FROM profiles WHERE id = ? AND enabled = 1", profileID,
-	).Scan(&sourceID); errors.Is(err, sql.ErrNoRows) {
+	var sourceID, profileUserID int64
+	profileQuery := "SELECT otp_source_id, user_id FROM profiles WHERE id = ? AND enabled = 1"
+	profileArgs := []any{profileID}
+	if actorUserID > 0 {
+		profileQuery += " AND user_id = ?"
+		profileArgs = append(profileArgs, actorUserID)
+	}
+	if err := tx.QueryRowContext(ctx, profileQuery, profileArgs...).Scan(&sourceID, &profileUserID); errors.Is(err, sql.ErrNoRows) {
+		if actorUserID > 0 {
+			return model.Job{}, ErrNotFound
+		}
 		return model.Job{}, errors.New("profile does not exist or is disabled")
 	} else if err != nil {
 		return model.Job{}, fmt.Errorf("read profile OTP source: %w", err)
 	}
+	if jobUserID != 0 && jobUserID != profileUserID {
+		return model.Job{}, fmt.Errorf("%w: booking request and profile owners differ", ErrConflict)
+	}
+	jobUserID = profileUserID
 	now := s.now()
+	if _, err := pruneJobHistory(ctx, tx, jobUserID, now); err != nil {
+		return model.Job{}, fmt.Errorf("prune job history before enqueue: %w", err)
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO jobs(
-			booking_request_id, profile_id, otp_source_id, command, run_mode, status,
+			user_id, booking_request_id, profile_id, otp_source_id, command, run_mode, status,
 			due_at, expires_at, dedup_key, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
-	`, params.BookingRequestID, profileID, sourceID, params.Command, params.RunMode,
+		)
+		SELECT ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?
+		FROM users AS account
+		WHERE account.id = ? AND account.status = 'active'
+		AND (
+			SELECT count(*) FROM jobs AS pending
+			WHERE pending.user_id = account.id
+			AND pending.status IN ('queued', 'running', 'awaiting_approval')
+		) < ?
+		AND (SELECT count(*) FROM jobs AS retained WHERE retained.user_id = account.id) < ?
+	`, jobUserID, params.BookingRequestID, profileID, sourceID, params.Command, params.RunMode,
 		formatTime(params.DueAt), optionalTimeValue(params.ExpiresAt), strings.TrimSpace(params.DedupKey),
-		formatTime(now), formatTime(now))
+		formatTime(now), formatTime(now), jobUserID, MaxPendingJobsPerUser, MaxRetainedJobsPerUser)
 	if err != nil {
 		return model.Job{}, mapWriteError(err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return model.Job{}, fmt.Errorf("read enqueue result: %w", err)
+	}
+	if count == 0 {
+		var active int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT count(*) FROM users WHERE id = ? AND status = 'active'", jobUserID,
+		).Scan(&active); err != nil {
+			return model.Job{}, fmt.Errorf("classify job admission: %w", err)
+		}
+		if active == 0 {
+			return model.Job{}, ErrNotFound
+		}
+		var pending, retained int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT
+				(SELECT count(*) FROM jobs WHERE user_id = ? AND status IN ('queued', 'running', 'awaiting_approval')),
+				(SELECT count(*) FROM jobs WHERE user_id = ?)
+		`, jobUserID, jobUserID).Scan(&pending, &retained); err != nil {
+			return model.Job{}, fmt.Errorf("classify job admission limit: %w", err)
+		}
+		if retained >= MaxRetainedJobsPerUser {
+			return model.Job{}, fmt.Errorf("%w: retained job history limit reached", ErrResourceLimit)
+		}
+		return model.Job{}, fmt.Errorf("%w: pending job limit reached (%d/%d)", ErrResourceLimit, pending, MaxPendingJobsPerUser)
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
@@ -105,27 +179,31 @@ func (s *Store) EnqueueJob(ctx context.Context, params EnqueueJobParams) (model.
 	if err := tx.Commit(); err != nil {
 		return model.Job{}, fmt.Errorf("commit enqueue transaction: %w", err)
 	}
-	return s.GetJob(ctx, id)
-}
-
-func (s *Store) ClaimNextDueJob(ctx context.Context, owner string) (model.Job, error) {
-	return s.ClaimNextDueJobAt(ctx, owner, s.now())
-}
-
-// ClaimNextDueJobAt atomically selects one due job whose profile and OTP source
-// are not in use, then leases both by moving the job to running.
-func (s *Store) ClaimNextDueJobAt(ctx context.Context, owner string, now time.Time) (model.Job, error) {
-	owner = strings.TrimSpace(owner)
-	if owner == "" {
-		return model.Job{}, errors.New("job owner is required")
+	if actorUserID > 0 {
+		return s.GetJob(ctx, actorUserID, id)
 	}
-	if _, err := s.ExpireStaleJobs(ctx, now); err != nil {
+	return s.SystemGetJob(ctx, id)
+}
+
+func (s *Store) SystemClaimNextDueJob(ctx context.Context, workerOwner string) (model.Job, error) {
+	return s.SystemClaimNextDueJobAt(ctx, workerOwner, s.now())
+}
+
+// SystemClaimNextDueJobAt atomically selects one due job whose profile and OTP source
+// are not in use, then leases both by moving the job to running.
+func (s *Store) SystemClaimNextDueJobAt(ctx context.Context, workerOwner string, now time.Time) (model.Job, error) {
+	workerOwner = strings.TrimSpace(workerOwner)
+	if workerOwner == "" {
+		return model.Job{}, errors.New("job worker owner is required")
+	}
+	if _, err := s.SystemExpireStaleJobs(ctx, now); err != nil {
 		return model.Job{}, err
 	}
 	row := s.db.QueryRowContext(ctx, `
 		WITH candidate AS (
 			SELECT candidate.id
 			FROM jobs AS candidate
+			JOIN users AS account ON account.id = candidate.user_id AND account.status = 'active'
 			JOIN profiles AS profile ON profile.id = candidate.profile_id
 			LEFT JOIN booking_requests AS booking ON booking.id = candidate.booking_request_id
 			WHERE candidate.status = 'queued' AND candidate.cancel_requested = 0 AND candidate.due_at <= ?
@@ -143,9 +221,9 @@ func (s *Store) ClaimNextDueJobAt(ctx context.Context, owner string, now time.Ti
 			ORDER BY candidate.due_at, candidate.id
 			LIMIT 1
 		)
-		UPDATE jobs SET status = 'running', owner = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+		UPDATE jobs SET status = 'running', worker_owner = ?, started_at = COALESCE(started_at, ?), updated_at = ?
 		WHERE id = (SELECT id FROM candidate) AND status = 'queued'
-		RETURNING `+jobColumns, formatTime(now), formatTime(now), owner, formatTime(now), formatTime(now))
+		RETURNING `+jobColumns, formatTime(now), formatTime(now), workerOwner, formatTime(now), formatTime(now))
 	job, err := scanJob(row)
 	if errors.Is(err, ErrNotFound) {
 		return model.Job{}, ErrNotFound
@@ -159,7 +237,7 @@ type JobTransition struct {
 	ConfirmationStarted bool
 }
 
-func (s *Store) TransitionJob(
+func (s *Store) SystemTransitionJob(
 	ctx context.Context,
 	id int64,
 	expected []model.JobStatus,
@@ -174,7 +252,7 @@ func (s *Store) TransitionJob(
 			return model.Job{}, fmt.Errorf("invalid job transition %s -> %s", from, to)
 		}
 	}
-	current, err := s.GetJob(ctx, id)
+	current, err := s.SystemGetJob(ctx, id)
 	if err != nil {
 		return model.Job{}, err
 	}
@@ -183,8 +261,57 @@ func (s *Store) TransitionJob(
 	}
 
 	now := s.now()
-	sets := []string{"status = ?", "message = ?", "exit_code = ?", "updated_at = ?"}
-	args := []any{to, truncate(sanitizeText(update.Message), 1000), update.ExitCode, formatTime(now)}
+	message := truncate(sanitizeText(update.Message), 1000)
+	sets := make([]string, 0, 8)
+	args := make([]any, 0, 24)
+	if to.Terminal() {
+		// Resolve cancellation/disable races inside the same write that records
+		// completion. If final confirmation has not started, a committed revoke
+		// wins over a late worker result. Once confirmation may have been clicked,
+		// a confirmed success remains success and every other result is unknown.
+		const resolution = `CASE
+			WHEN (confirmation_started_at IS NOT NULL OR ? = 1) AND ? <> 'succeeded' THEN %s
+			WHEN confirmation_started_at IS NULL AND ? = 0 AND (
+				cancel_requested = 1 OR NOT EXISTS (
+					SELECT 1 FROM users WHERE users.id = jobs.user_id AND users.status = 'active'
+				)
+			) THEN %s
+			ELSE %s END`
+		confirmationStarting := 0
+		if update.ConfirmationStarted {
+			confirmationStarting = 1
+		}
+		appendResolution := func(column, unknownSQL, cancelledSQL, fallbackSQL string, unknown, cancelled, fallback any) {
+			sets = append(sets, column+" = "+fmt.Sprintf(resolution, unknownSQL, cancelledSQL, fallbackSQL))
+			args = append(args, confirmationStarting, to)
+			if unknownSQL == "?" {
+				args = append(args, unknown)
+			}
+			args = append(args, confirmationStarting)
+			if cancelledSQL == "?" {
+				args = append(args, cancelled)
+			}
+			if fallbackSQL == "?" {
+				args = append(args, fallback)
+			}
+		}
+		appendResolution(
+			"status", "?", "?", "?",
+			model.JobOutcomeUnknown, model.JobCancelled, to,
+		)
+		appendResolution(
+			"message", "?", "?", "?",
+			"The action ended after final confirmation may have started; booking outcome is unknown.",
+			"Cancelled because cancellation was requested or the account was disabled.",
+			message,
+		)
+		appendResolution("exit_code", "NULL", "NULL", "?", nil, nil, update.ExitCode)
+	} else {
+		sets = append(sets, "status = ?", "message = ?", "exit_code = ?")
+		args = append(args, to, message, update.ExitCode)
+	}
+	sets = append(sets, "updated_at = ?")
+	args = append(args, formatTime(now))
 	if update.ConfirmationStarted {
 		sets = append(sets, "confirmation_started_at = COALESCE(confirmation_started_at, ?)")
 		args = append(args, formatTime(now))
@@ -194,7 +321,7 @@ func (s *Store) TransitionJob(
 		args = append(args, formatTime(now))
 	}
 	if to.Terminal() {
-		sets = append(sets, "finished_at = ?", "owner = ''")
+		sets = append(sets, "finished_at = ?", "worker_owner = ''")
 		args = append(args, formatTime(now))
 	}
 	placeholders := make([]string, len(expected))
@@ -204,6 +331,10 @@ func (s *Store) TransitionJob(
 	}
 	query := "UPDATE jobs SET " + strings.Join(sets, ", ") +
 		" WHERE id = ? AND status IN (" + strings.Join(placeholders, ",") + ")"
+	if to == model.JobRunning || to == model.JobAwaitingApproval {
+		query += " AND cancel_requested = 0" +
+			" AND EXISTS (SELECT 1 FROM users WHERE users.id = jobs.user_id AND users.status = 'active')"
+	}
 	// The job id belongs before the expected-state values in the WHERE clause.
 	stateArgs := append([]any(nil), args[len(args)-len(expected):]...)
 	args = append(args[:len(args)-len(expected)], id)
@@ -219,14 +350,15 @@ func (s *Store) TransitionJob(
 	if count == 0 {
 		return model.Job{}, ErrTransitionConflict
 	}
-	return s.GetJob(ctx, id)
+	return s.SystemGetJob(ctx, id)
 }
 
-func (s *Store) MarkConfirmationStarted(ctx context.Context, id int64) error {
+func (s *Store) SystemMarkConfirmationStarted(ctx context.Context, id int64) error {
 	now := formatTime(s.now())
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE jobs SET confirmation_started_at = COALESCE(confirmation_started_at, ?), updated_at = ?
-		WHERE id = ? AND status IN ('running', 'awaiting_approval')
+		WHERE id = ? AND status IN ('running', 'awaiting_approval') AND cancel_requested = 0
+		AND EXISTS (SELECT 1 FROM users WHERE users.id = jobs.user_id AND users.status = 'active')
 	`, now, now, id)
 	if err != nil {
 		return fmt.Errorf("mark final confirmation: %w", err)
@@ -242,21 +374,39 @@ func (s *Store) MarkConfirmationStarted(ctx context.Context, id int64) error {
 }
 
 // RequestJobCancellation is the durable cross-process cancellation signal.
-// Queued work is cancelled immediately; an active owner observes the flag and
+// Queued work is cancelled immediately; an active worker observes the flag and
 // cooperatively stops its Python/browser process.
-func (s *Store) RequestJobCancellation(ctx context.Context, id int64) error {
+func (s *Store) RequestJobCancellation(ctx context.Context, userID, id int64) error {
+	if userID <= 0 {
+		return ErrUserRequired
+	}
+	return s.requestJobCancellation(ctx, userID, id)
+}
+
+func (s *Store) SystemRequestJobCancellation(ctx context.Context, id int64) error {
+	return s.requestJobCancellation(ctx, 0, id)
+}
+
+func (s *Store) requestJobCancellation(ctx context.Context, actorUserID, id int64) error {
 	now := formatTime(s.now())
 	var status model.JobStatus
-	err := s.db.QueryRowContext(ctx, `
+	query := `
 		UPDATE jobs SET
 			cancel_requested = 1,
 			status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
 			message = CASE WHEN status = 'queued' THEN 'Cancelled before execution.' ELSE message END,
 			finished_at = CASE WHEN status = 'queued' THEN ? ELSE finished_at END,
 			updated_at = ?
-		WHERE id = ? AND status IN ('queued', 'running', 'awaiting_approval', 'cancelled')
+		WHERE id = ?`
+	args := []any{now, now, id}
+	if actorUserID > 0 {
+		query += " AND user_id = ?"
+		args = append(args, actorUserID)
+	}
+	query += ` AND status IN ('queued', 'running', 'awaiting_approval', 'cancelled')
 		RETURNING status
-	`, now, now, id).Scan(&status)
+	`
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&status)
 	if err == nil {
 		return nil
 	}
@@ -266,7 +416,13 @@ func (s *Store) RequestJobCancellation(ctx context.Context, id int64) error {
 	// Distinguish a missing job from an existing terminal job. The update itself
 	// remains a single compare-and-set statement, so a concurrent claim or
 	// completion cannot be overwritten based on a stale status read.
-	if err := s.db.QueryRowContext(ctx, "SELECT status FROM jobs WHERE id = ?", id).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+	readQuery := "SELECT status FROM jobs WHERE id = ?"
+	readArgs := []any{id}
+	if actorUserID > 0 {
+		readQuery += " AND user_id = ?"
+		readArgs = append(readArgs, actorUserID)
+	}
+	if err := s.db.QueryRowContext(ctx, readQuery, readArgs...).Scan(&status); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return fmt.Errorf("read cancellation target: %w", err)
@@ -274,9 +430,12 @@ func (s *Store) RequestJobCancellation(ctx context.Context, id int64) error {
 	return ErrTransitionConflict
 }
 
-func (s *Store) JobCancellationRequested(ctx context.Context, id int64) (bool, error) {
+func (s *Store) SystemJobCancellationRequested(ctx context.Context, id int64) (bool, error) {
 	var requested bool
-	if err := s.db.QueryRowContext(ctx, "SELECT cancel_requested FROM jobs WHERE id = ?", id).Scan(&requested); errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT jobs.cancel_requested OR users.status <> 'active'
+		FROM jobs JOIN users ON users.id = jobs.user_id WHERE jobs.id = ?
+	`, id).Scan(&requested); errors.Is(err, sql.ErrNoRows) {
 		return false, ErrNotFound
 	} else if err != nil {
 		return false, fmt.Errorf("read cancellation request: %w", err)
@@ -284,16 +443,22 @@ func (s *Store) JobCancellationRequested(ctx context.Context, id int64) (bool, e
 	return requested, nil
 }
 
-func (s *Store) GetJob(ctx context.Context, id int64) (model.Job, error) {
-	return scanJob(s.db.QueryRowContext(ctx, "SELECT "+jobColumns+" FROM jobs WHERE id = ?", id))
+func (s *Store) GetJob(ctx context.Context, userID, id int64) (model.Job, error) {
+	if userID <= 0 {
+		return model.Job{}, ErrUserRequired
+	}
+	return scanJob(s.db.QueryRowContext(ctx, "SELECT "+jobColumns+" FROM jobs WHERE id = ? AND user_id = ?", id, userID))
 }
 
-func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.Job, error) {
+func (s *Store) ListJobs(ctx context.Context, userID int64, limit int) ([]model.Job, error) {
+	if userID <= 0 {
+		return nil, ErrUserRequired
+	}
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT "+jobColumns+" FROM jobs ORDER BY id DESC LIMIT ?", limit)
+		"SELECT "+jobColumns+" FROM jobs WHERE user_id = ? ORDER BY id DESC LIMIT ?", userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
@@ -309,7 +474,32 @@ func (s *Store) ListJobs(ctx context.Context, limit int) ([]model.Job, error) {
 	return result, rows.Err()
 }
 
-func (s *Store) RecoverInterruptedJobs(ctx context.Context) (int64, error) {
+func (s *Store) SystemGetJob(ctx context.Context, id int64) (model.Job, error) {
+	return scanJob(s.db.QueryRowContext(ctx, "SELECT "+jobColumns+" FROM jobs WHERE id = ?", id))
+}
+
+func (s *Store) SystemListJobs(ctx context.Context, limit int) ([]model.Job, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT "+jobColumns+" FROM jobs ORDER BY id DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, fmt.Errorf("system list jobs: %w", err)
+	}
+	defer rows.Close()
+	var result []model.Job
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, job)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) SystemRecoverInterruptedJobs(ctx context.Context) (int64, error) {
 	now := formatTime(s.now())
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE jobs SET
@@ -317,7 +507,7 @@ func (s *Store) RecoverInterruptedJobs(ctx context.Context) (int64, error) {
 			message = CASE WHEN confirmation_started_at IS NULL
 				THEN 'Interrupted by control-plane restart.'
 				ELSE 'Control plane restarted after final confirmation began; outcome requires review.' END,
-			owner = '', finished_at = ?, updated_at = ?
+			worker_owner = '', finished_at = ?, updated_at = ?
 		WHERE status IN ('running', 'awaiting_approval')
 	`, now, now)
 	if err != nil {
@@ -330,11 +520,11 @@ func (s *Store) RecoverInterruptedJobs(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-func (s *Store) ExpireStaleJobs(ctx context.Context, now time.Time) (int64, error) {
+func (s *Store) SystemExpireStaleJobs(ctx context.Context, now time.Time) (int64, error) {
 	formatted := formatTime(now)
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE jobs SET status = 'failed', message = 'The booking window expired before this job could start.',
-			owner = '', finished_at = ?, updated_at = ?
+			worker_owner = '', finished_at = ?, updated_at = ?
 		WHERE status = 'queued' AND expires_at IS NOT NULL AND expires_at <= ?
 	`, formatted, formatted, formatted)
 	if err != nil {
@@ -347,8 +537,48 @@ func (s *Store) ExpireStaleJobs(ctx context.Context, now time.Time) (int64, erro
 	return count, nil
 }
 
-const jobColumns = `id, booking_request_id, profile_id, otp_source_id, command, run_mode,
-	status, due_at, expires_at, dedup_key, owner, cancel_requested, message, exit_code, confirmation_started_at,
+// SystemPruneTerminalJobs removes terminal history that has become eligible for
+// retention since its last status transition. In particular, scheduler rows
+// become prunable only after their deduplication window expires.
+func (s *Store) SystemPruneTerminalJobs(ctx context.Context, now time.Time) (int64, error) {
+	count, err := pruneJobHistory(ctx, s.db, 0, now)
+	if err != nil {
+		return 0, fmt.Errorf("prune job history: %w", err)
+	}
+	return count, nil
+}
+
+func pruneJobHistory(
+	ctx context.Context,
+	executor jobHistoryExecer,
+	userID int64,
+	now time.Time,
+) (int64, error) {
+	result, err := executor.ExecContext(ctx, `
+		DELETE FROM jobs WHERE id IN (
+			SELECT id FROM (
+				SELECT id, row_number() OVER (
+					PARTITION BY user_id ORDER BY updated_at DESC, id DESC
+				) AS retention_rank
+				FROM jobs
+				WHERE status IN ('succeeded', 'failed', 'cancelled', 'interrupted')
+				AND (
+					dedup_key = '' OR dedup_key GLOB 'pairing:*' OR
+					(expires_at IS NOT NULL AND expires_at <= ?)
+				)
+				AND (? = 0 OR user_id = ?)
+			) AS ranked_terminal_history
+			WHERE retention_rank > ?
+		)
+	`, formatTime(now), userID, userID, MaxTerminalJobHistoryPerUser)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const jobColumns = `id, user_id, booking_request_id, profile_id, otp_source_id, command, run_mode,
+	status, due_at, expires_at, dedup_key, worker_owner, cancel_requested, message, exit_code, confirmation_started_at,
 	created_at, updated_at, started_at, finished_at`
 
 func scanJob(scanner rowScanner) (model.Job, error) {
@@ -357,8 +587,8 @@ func scanJob(scanner rowScanner) (model.Job, error) {
 	var exitCode sql.NullInt64
 	var dueAt, createdAt, updatedAt string
 	var expiresAt, confirmationAt, startedAt, finishedAt sql.NullString
-	if err := scanner.Scan(&job.ID, &bookingID, &job.ProfileID, &job.OTPSourceID,
-		&job.Command, &job.RunMode, &job.Status, &dueAt, &expiresAt, &job.DedupKey, &job.Owner,
+	if err := scanner.Scan(&job.ID, &job.UserID, &bookingID, &job.ProfileID, &job.OTPSourceID,
+		&job.Command, &job.RunMode, &job.Status, &dueAt, &expiresAt, &job.DedupKey, &job.WorkerOwner,
 		&job.CancelRequested, &job.Message, &exitCode, &confirmationAt, &createdAt, &updatedAt,
 		&startedAt, &finishedAt); errors.Is(err, sql.ErrNoRows) {
 		return model.Job{}, ErrNotFound
@@ -405,7 +635,7 @@ type JobEventInput struct {
 	Data    map[string]any
 }
 
-func (s *Store) AppendJobEvent(ctx context.Context, input JobEventInput) (model.JobEvent, error) {
+func (s *Store) SystemAppendJobEvent(ctx context.Context, input JobEventInput) (model.JobEvent, error) {
 	level := strings.ToLower(strings.TrimSpace(input.Level))
 	if level == "" {
 		level = "info"
@@ -437,28 +667,60 @@ func (s *Store) AppendJobEvent(ctx context.Context, input JobEventInput) (model.
 	message := truncate(redactKnownText(sanitizeText(input.Message), knownSecrets), 2000)
 	kind = truncate(redactKnownText(kind, knownSecrets), 80)
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO job_events(job_id, level, kind, message, data_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, input.JobID, level, kind, message, string(encoded), formatTime(now))
+		INSERT INTO job_events(user_id, job_id, level, kind, message, data_json, created_at)
+		SELECT user_id, id, ?, ?, ?, ?, ? FROM jobs WHERE id = ?
+	`, level, kind, message, string(encoded), formatTime(now), input.JobID)
 	if err != nil {
 		return model.JobEvent{}, fmt.Errorf("append job event: %w", err)
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return model.JobEvent{}, fmt.Errorf("read job event result: %w", err)
+	} else if count == 0 {
+		return model.JobEvent{}, ErrNotFound
 	}
 	id, err := result.LastInsertId()
 	if err != nil {
 		return model.JobEvent{}, fmt.Errorf("read job event id: %w", err)
 	}
-	return model.JobEvent{ID: id, JobID: input.JobID, Level: level, Kind: kind,
+	job, err := s.SystemGetJob(ctx, input.JobID)
+	if err != nil {
+		return model.JobEvent{}, err
+	}
+	return model.JobEvent{ID: id, UserID: job.UserID, JobID: input.JobID, Level: level, Kind: kind,
 		Message: message, DataJSON: string(encoded), CreatedAt: now}, nil
 }
 
-func (s *Store) ListJobEvents(ctx context.Context, jobID int64, afterID int64, limit int) ([]model.JobEvent, error) {
+func (s *Store) ListJobEvents(ctx context.Context, userID, jobID int64, afterID int64, limit int) ([]model.JobEvent, error) {
+	if userID <= 0 {
+		return nil, ErrUserRequired
+	}
+	if _, err := s.GetJob(ctx, userID, jobID); err != nil {
+		return nil, err
+	}
+	return s.listJobEvents(ctx, userID, jobID, afterID, limit)
+}
+
+func (s *Store) SystemListJobEvents(ctx context.Context, jobID int64, afterID int64, limit int) ([]model.JobEvent, error) {
+	if _, err := s.SystemGetJob(ctx, jobID); err != nil {
+		return nil, err
+	}
+	return s.listJobEvents(ctx, 0, jobID, afterID, limit)
+}
+
+func (s *Store) listJobEvents(ctx context.Context, userID, jobID int64, afterID int64, limit int) ([]model.JobEvent, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, job_id, level, kind, message, data_json, created_at
-		FROM job_events WHERE job_id = ? AND id > ? ORDER BY id LIMIT ?
-	`, jobID, afterID, limit)
+	query := `SELECT id, user_id, job_id, level, kind, message, data_json, created_at
+		FROM job_events WHERE job_id = ? AND id > ?`
+	args := []any{jobID, afterID}
+	if userID > 0 {
+		query += " AND user_id = ?"
+		args = append(args, userID)
+	}
+	query += " ORDER BY id LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list job events: %w", err)
 	}
@@ -467,7 +729,7 @@ func (s *Store) ListJobEvents(ctx context.Context, jobID int64, afterID int64, l
 	for rows.Next() {
 		var event model.JobEvent
 		var created string
-		if err := rows.Scan(&event.ID, &event.JobID, &event.Level, &event.Kind,
+		if err := rows.Scan(&event.ID, &event.UserID, &event.JobID, &event.Level, &event.Kind,
 			&event.Message, &event.DataJSON, &created); err != nil {
 			return nil, fmt.Errorf("scan job event: %w", err)
 		}
@@ -480,7 +742,10 @@ func (s *Store) ListJobEvents(ctx context.Context, jobID int64, afterID int64, l
 	return result, rows.Err()
 }
 
-func (s *Store) RecordJobDecision(ctx context.Context, jobID int64, decision model.ApprovalDecision) (model.JobDecision, error) {
+func (s *Store) RecordJobDecision(ctx context.Context, userID, jobID int64, decision model.ApprovalDecision) (model.JobDecision, error) {
+	if userID <= 0 {
+		return model.JobDecision{}, ErrUserRequired
+	}
 	if !decision.Valid() {
 		return model.JobDecision{}, errors.New("invalid job decision")
 	}
@@ -489,16 +754,15 @@ func (s *Store) RecordJobDecision(ctx context.Context, jobID int64, decision mod
 	// durable winner instead of racing through separate reads in deferred
 	// transactions.
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO job_decisions(job_id, decision, created_at)
-		SELECT ?, ?, ?
-		WHERE EXISTS (
-			SELECT 1 FROM jobs WHERE id = ? AND status = 'awaiting_approval'
-		)
+		INSERT INTO job_decisions(job_id, user_id, decision, created_at)
+		SELECT jobs.id, jobs.user_id, ?, ? FROM jobs
+		JOIN users ON users.id = jobs.user_id AND users.status = 'active'
+		WHERE jobs.id = ? AND jobs.user_id = ? AND jobs.status = 'awaiting_approval'
 		ON CONFLICT(job_id) DO NOTHING
-	`, jobID, decision, formatTime(s.now()), jobID); err != nil {
+	`, decision, formatTime(s.now()), jobID, userID); err != nil {
 		return model.JobDecision{}, fmt.Errorf("record job decision: %w", err)
 	}
-	recorded, err := s.GetJobDecision(ctx, jobID)
+	recorded, err := s.GetJobDecision(ctx, userID, jobID)
 	if err == nil && recorded.Decision != decision {
 		return model.JobDecision{}, ErrDecisionConflict
 	}
@@ -509,7 +773,7 @@ func (s *Store) RecordJobDecision(ctx context.Context, jobID int64, decision mod
 		return model.JobDecision{}, err
 	}
 	var status model.JobStatus
-	if err := s.db.QueryRowContext(ctx, "SELECT status FROM jobs WHERE id = ?", jobID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRowContext(ctx, "SELECT status FROM jobs WHERE id = ? AND user_id = ?", jobID, userID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
 		return model.JobDecision{}, ErrNotFound
 	} else if err != nil {
 		return model.JobDecision{}, fmt.Errorf("read decision job: %w", err)
@@ -517,12 +781,30 @@ func (s *Store) RecordJobDecision(ctx context.Context, jobID int64, decision mod
 	return model.JobDecision{}, ErrTransitionConflict
 }
 
-func (s *Store) GetJobDecision(ctx context.Context, jobID int64) (model.JobDecision, error) {
+func (s *Store) GetJobDecision(ctx context.Context, userID, jobID int64) (model.JobDecision, error) {
+	if userID <= 0 {
+		return model.JobDecision{}, ErrUserRequired
+	}
 	var decision model.JobDecision
 	var created string
 	if err := s.db.QueryRowContext(ctx,
-		"SELECT job_id, decision, created_at FROM job_decisions WHERE job_id = ?", jobID,
-	).Scan(&decision.JobID, &decision.Decision, &created); errors.Is(err, sql.ErrNoRows) {
+		"SELECT job_id, user_id, decision, created_at FROM job_decisions WHERE job_id = ? AND user_id = ?", jobID, userID,
+	).Scan(&decision.JobID, &decision.UserID, &decision.Decision, &created); errors.Is(err, sql.ErrNoRows) {
+		return model.JobDecision{}, ErrNotFound
+	} else if err != nil {
+		return model.JobDecision{}, fmt.Errorf("read job decision: %w", err)
+	}
+	var err error
+	decision.CreatedAt, err = parseTime(created)
+	return decision, err
+}
+
+func (s *Store) SystemGetJobDecision(ctx context.Context, jobID int64) (model.JobDecision, error) {
+	var decision model.JobDecision
+	var created string
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT job_id, user_id, decision, created_at FROM job_decisions WHERE job_id = ?", jobID,
+	).Scan(&decision.JobID, &decision.UserID, &decision.Decision, &created); errors.Is(err, sql.ErrNoRows) {
 		return model.JobDecision{}, ErrNotFound
 	} else if err != nil {
 		return model.JobDecision{}, fmt.Errorf("read job decision: %w", err)

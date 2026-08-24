@@ -17,6 +17,7 @@
   source.addEventListener('auth_expired', () => {
     clearSensitive(); source.close(); window.location.replace('/login');
   });
+  source.addEventListener('error', clearSensitive);
   source.addEventListener('state', event => {
     const data = JSON.parse(event.data);
     document.getElementById('job-message').textContent = data.message || '';
@@ -24,7 +25,7 @@
     pill.textContent = data.label;
     pill.className = `pill ${data.class_name || ''}`;
     document.getElementById('approval-panel').hidden = !data.awaiting_approval;
-    if (data.terminal) source.close();
+    if (data.terminal) { clearSensitive(); source.close(); }
   });
   source.addEventListener('otp', event => {
     const data = JSON.parse(event.data);

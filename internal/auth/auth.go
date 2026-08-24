@@ -1,4 +1,4 @@
-// Package auth implements local administrator password and session primitives.
+// Package auth implements local account password and session primitives.
 package auth
 
 import (
@@ -24,6 +24,16 @@ const (
 	tokenBytes   = 32
 )
 
+// Argon2id intentionally uses 64 MiB per operation. Keep process-wide memory
+// bounded even if several account, login, and recovery paths are exercised at
+// once. Web handlers add stricter per-account admission and rate controls.
+var passwordWork = make(chan struct{}, 2)
+
+func beginPasswordWork() func() {
+	passwordWork <- struct{}{}
+	return func() { <-passwordWork }
+}
+
 func HashPassword(password string) (string, error) {
 	if err := validatePassword(password); err != nil {
 		return "", err
@@ -32,6 +42,8 @@ func HashPassword(password string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", fmt.Errorf("generate password salt: %w", err)
 	}
+	release := beginPasswordWork()
+	defer release()
 	hash := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	b64 := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
@@ -66,6 +78,8 @@ func VerifyPassword(encoded, password string) (bool, error) {
 	if err != nil || len(expected) < 16 || len(expected) > 64 {
 		return false, errors.New("password hash is malformed")
 	}
+	release := beginPasswordWork()
+	defer release()
 	actual := argon2.IDKey([]byte(password), salt, iterations, memory, threads, uint32(len(expected)))
 	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
 }
@@ -83,18 +97,43 @@ func HashToken(token string) string {
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
+// NormalizeUsername returns the stable login key for a display username.
+// Usernames are deliberately restricted to a small ASCII set so case folding
+// cannot vary across Go, SQLite, browsers, or future operating systems.
+func NormalizeUsername(username string) (string, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", errors.New("username is required")
+	}
+	if len(username) > 128 {
+		return "", errors.New("username is too long")
+	}
+	for _, character := range username {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			strings.ContainsRune("._@+-", character) {
+			continue
+		}
+		return "", errors.New("username may use only letters, digits, dot, underscore, at, plus, and hyphen")
+	}
+	return strings.ToLower(username), nil
+}
+
 // EqualizePasswordCheck performs the same Argon2 work as one password
 // verification without requiring a real account hash.
 func EqualizePasswordCheck(password string) {
+	release := beginPasswordWork()
+	defer release()
 	_ = argon2.IDKey([]byte(password), []byte("buntzen-dummy-v1"), argonTime, argonMemory, argonThreads, argonKeyLen)
 }
 
 func validatePassword(password string) error {
 	if len(strings.TrimSpace(password)) < 12 {
-		return errors.New("administrator password must be at least 12 characters")
+		return errors.New("password must be at least 12 characters")
 	}
 	if len(password) > 1024 {
-		return errors.New("administrator password is too long")
+		return errors.New("password is too long")
 	}
 	return nil
 }

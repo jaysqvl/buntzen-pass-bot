@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,11 +24,21 @@ import (
 
 type webFixture struct {
 	handler http.Handler
+	server  *Server
 	store   *store.Store
 	cfg     config.Config
+	admin   model.User
 }
 
 func newWebFixture(t *testing.T) webFixture {
+	return newWebFixtureWithSetup(t, true)
+}
+
+func newUninitializedWebFixture(t *testing.T) webFixture {
+	return newWebFixtureWithSetup(t, false)
+}
+
+func newWebFixtureWithSetup(t *testing.T, setup bool) webFixture {
 	t.Helper()
 	directory := t.TempDir()
 	box, err := secretcrypto.LoadOrCreate(filepath.Join(directory, "master.key"))
@@ -39,19 +50,41 @@ func newWebFixture(t *testing.T) webFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	if _, created, err := database.BootstrapAdmin(context.Background(), "admin", "long-test-password"); err != nil || !created {
-		t.Fatalf("bootstrap: created=%v err=%v", created, err)
+	var admin model.User
+	if setup {
+		admin, err = database.SetupAdmin(context.Background(), "admin", "long-test-password")
+		if err != nil {
+			t.Fatalf("setup administrator: %v", err)
+		}
 	}
-	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), AdminUsername: "admin", MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "buntzen_actions", BlueBubblesURL: "http://127.0.0.1:1234"}
+	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "buntzen_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: "test-only-setup-token"}
 	runner := engine.New(cfg, database, control.NewHub())
 	server, err := NewServer(cfg, database, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return webFixture{handler: server.Handler(), store: database, cfg: cfg}
+	return webFixture{handler: server.Handler(), server: server, store: database, cfg: cfg, admin: admin}
+}
+
+type blockingFormReader struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (r *blockingFormReader) Read([]byte) (int, error) {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-r.release
+	return 0, io.EOF
 }
 
 func loginCookies(t *testing.T, fixture webFixture) []*http.Cookie {
+	return loginCookiesAs(t, fixture, "admin", "long-test-password")
+}
+
+func loginCookiesAs(t *testing.T, fixture webFixture, username, password string) []*http.Cookie {
 	t.Helper()
 	get := httptest.NewRequest(http.MethodGet, "http://example.test/login", nil)
 	getRecorder := httptest.NewRecorder()
@@ -68,7 +101,7 @@ func loginCookies(t *testing.T, fixture webFixture) []*http.Cookie {
 	if loginCSRF == nil {
 		t.Fatal("login CSRF cookie missing")
 	}
-	form := url.Values{"csrf_token": {loginCSRF.Value}, "password": {"long-test-password"}}
+	form := url.Values{"csrf_token": {loginCSRF.Value}, "username": {username}, "password": {password}}
 	post := httptest.NewRequest(http.MethodPost, "http://example.test/login", strings.NewReader(form.Encode()))
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	post.Header.Set("Origin", "http://example.test")
@@ -165,6 +198,70 @@ func TestLoginCookiesCSRFOriginAndNoStore(t *testing.T) {
 	}
 }
 
+func TestSlowInvalidBodyDoesNotHoldPublicAuthMutex(t *testing.T) {
+	testRequest := func(t *testing.T, fixture webFixture, target string, form url.Values, csrfCookie *http.Cookie, wantLocation string) {
+		t.Helper()
+		started := make(chan struct{}, 1)
+		release := make(chan struct{})
+		slow := httptest.NewRequest(http.MethodPost, "http://example.test"+target,
+			&blockingFormReader{started: started, release: release})
+		slow.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		slow.Header.Set("Origin", "http://example.test")
+		slowDone := make(chan struct{})
+		go func() {
+			fixture.handler.ServeHTTP(httptest.NewRecorder(), slow)
+			close(slowDone)
+		}()
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("slow request never began reading its body")
+		}
+
+		goodDone := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			goodDone <- serveForm(fixture, http.MethodPost, target, []*http.Cookie{csrfCookie}, form)
+		}()
+		var recorder *httptest.ResponseRecorder
+		select {
+		case recorder = <-goodDone:
+		case <-time.After(4 * time.Second):
+			close(release)
+			<-slowDone
+			t.Fatal("a slow unauthenticated body blocked a valid auth request")
+		}
+		close(release)
+		select {
+		case <-slowDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("slow request did not finish after its body was released")
+		}
+		if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != wantLocation {
+			t.Fatalf("valid %s request = %d location=%q body=%s", target, recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+		}
+	}
+
+	t.Run("login", func(t *testing.T) {
+		fixture := newWebFixture(t)
+		cookie, _ := publicFormCookie(t, fixture, "/login")
+		form := url.Values{
+			"csrf_token": {cookie.Value}, "username": {"admin"}, "password": {"long-test-password"},
+		}
+		testRequest(t, fixture, "/login", form, cookie, "/")
+	})
+	t.Run("setup", func(t *testing.T) {
+		fixture := newUninitializedWebFixture(t)
+		cookie, _ := publicFormCookie(t, fixture, "/setup")
+		form := url.Values{
+			"csrf_token": {cookie.Value}, "setup_token": {fixture.cfg.SetupToken},
+			"username": {"owner"}, "password": {"initial owner password"},
+			"password_confirm": {"initial owner password"},
+		}
+		testRequest(t, fixture, "/setup", form, cookie, "/?ok=setup")
+	})
+}
+
 func TestOriginAllowedForConfiguredProxyOrigin(t *testing.T) {
 	fixture := newWebFixture(t)
 	fixture.cfg.AllowedOrigins = []string{"http://buntzen.example"}
@@ -258,11 +355,12 @@ func TestEncryptedSecretsAreNeverRendered(t *testing.T) {
 	const providerPassword = "synthetic-bluebubbles-password"
 	const yodelEmail = "private-yodel@example.test"
 	const yodelPassword = "synthetic-yodel-password"
-	source, err := fixture.store.CreateOTPSource(context.Background(), store.OTPSourceInput{Name: "Messages", Provider: model.OTPProviderBlueBubbles, Identity: "http://127.0.0.1:1234", ProviderConfig: bluebubbles.Config{BaseURL: "http://127.0.0.1:1234", Password: providerPassword}, PairingChatGUID: "iMessage;-;sender", PairingSender: "+15550100123", PairingService: "iMessage"})
+	userStore := fixture.store.ForUser(fixture.admin.ID)
+	source, err := userStore.CreateOTPSource(context.Background(), store.OTPSourceInput{Name: "Messages", Provider: model.OTPProviderBlueBubbles, Identity: "http://127.0.0.1:1234", ProviderConfig: bluebubbles.Config{BaseURL: "http://127.0.0.1:1234", Password: providerPassword}, PairingChatGUID: "iMessage;-;sender", PairingSender: "+15550100123", PairingService: "iMessage"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := fixture.store.CreateProfile(context.Background(), store.ProfileInput{Name: "Example", BrowserProfile: "example", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15000, Enabled: true, Credentials: &model.ProfileCredentials{Email: yodelEmail, Password: yodelPassword}})
+	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15000, Enabled: true, Credentials: &model.ProfileCredentials{Email: yodelEmail, Password: yodelPassword}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,9 +381,63 @@ func TestEncryptedSecretsAreNeverRendered(t *testing.T) {
 	}
 }
 
+func TestBookingRunReturnsBoundedConflictForPendingDuplicate(t *testing.T) {
+	fixture := newWebFixture(t)
+	resources := fixture.store.ForUser(fixture.admin.ID)
+	source, err := resources.CreateOTPSource(context.Background(), store.OTPSourceInput{
+		Name: "Queue test inbox", Provider: model.OTPProviderTwilio,
+		Identity: "twilio:queue-web-test", ProviderConfig: map[string]string{"auth_token": "synthetic-secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{
+		Name: "Queue test profile", DefaultVehicle: "Example Vehicle",
+		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
+		Credentials: &model.ProfileCredentials{Email: "queue@example.test", Password: "synthetic-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	booking, err := resources.CreateBookingRequest(context.Background(), model.BookingRequest{
+		Name: "Queue test booking", ProfileID: profile.ID, Enabled: true,
+		TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
+		PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120,
+		PollMinSeconds: 1, PollMaxSeconds: 2, ConfirmationMode: model.RunModeManual,
+		LoginProbeURL: "https://example.test/login", AllDayPassURL: "https://example.test/all",
+		CheckAllDay: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := loginCookies(t, fixture)
+	form := url.Values{
+		"csrf_token": {csrfFrom(cookies)},
+		"command":    {string(model.CommandDryRun)},
+	}
+	recorder := serveForm(fixture, http.MethodPost,
+		fmt.Sprintf("/bookings/%d/run", booking.ID), cookies, form)
+	if recorder.Code != http.StatusSeeOther || !strings.HasPrefix(recorder.Header().Get("Location"), "/jobs/") {
+		t.Fatalf("first run = %d location=%q body=%q", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+	}
+	recorder = serveForm(fixture, http.MethodPost,
+		fmt.Sprintf("/bookings/%d/run", booking.ID), cookies, form)
+	if recorder.Code != http.StatusConflict || recorder.Body.String() != "job could not be queued\n" {
+		t.Fatalf("duplicate run = %d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if len(recorder.Body.Bytes()) > 64 {
+		t.Fatalf("duplicate response was not bounded: %d bytes", len(recorder.Body.Bytes()))
+	}
+	jobs, err := resources.ListJobs(context.Background(), 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs after duplicate POST=%+v err=%v", jobs, err)
+	}
+}
+
 func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
 	fixture := newWebFixture(t)
-	source, err := fixture.store.CreateOTPSource(context.Background(), store.OTPSourceInput{
+	userStore := fixture.store.ForUser(fixture.admin.ID)
+	source, err := userStore.CreateOTPSource(context.Background(), store.OTPSourceInput{
 		Name: "SSE Messages", Provider: model.OTPProviderBlueBubbles,
 		Identity:       "http://127.0.0.1:2234",
 		ProviderConfig: bluebubbles.Config{BaseURL: "http://127.0.0.1:2234", Password: "test-password"},
@@ -293,15 +445,15 @@ func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := fixture.store.CreateProfile(context.Background(), store.ProfileInput{
-		Name: "SSE profile", BrowserProfile: "sse-profile", DefaultVehicle: "Example Vehicle",
+	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{
+		Name: "SSE profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Email: "sse@example.test", Password: "password"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	booking, err := fixture.store.CreateBookingRequest(context.Background(), model.BookingRequest{
+	booking, err := userStore.CreateBookingRequest(context.Background(), model.BookingRequest{
 		Name: "SSE booking", ProfileID: profile.ID, Enabled: true,
 		TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
 		PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120,
@@ -312,7 +464,7 @@ func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := fixture.store.EnqueueJob(context.Background(), store.EnqueueJobParams{
+	job, err := userStore.EnqueueJob(context.Background(), store.EnqueueJobParams{
 		BookingRequestID: &booking.ID, Command: model.CommandDryRun,
 		RunMode: model.RunModeDryRun, DueAt: time.Now(),
 	})

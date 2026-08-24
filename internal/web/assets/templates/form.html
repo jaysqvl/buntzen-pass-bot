@@ -9,7 +9,7 @@
     {{range .Fields}}
       {{if eq .Type "checkbox"}}<label class="check"><input type="checkbox" name="{{.Name}}" value="1" {{if .Checked}}checked{{end}}><span>{{.Label}}</span></label>
       {{else if eq .Type "select"}}<label><span>{{.Label}}</span><select name="{{.Name}}" {{if .Required}}required{{end}}>{{range .Options}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}</select>{{if .Help}}<small>{{.Help}}</small>{{end}}</label>
-      {{else}}<label><span>{{.Label}}</span><input type="{{.Type}}" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}} {{if .Step}}step="{{.Step}}"{{end}}>{{if .Help}}<small>{{.Help}}</small>{{end}}</label>{{end}}
+      {{else}}<label><span>{{.Label}}</span><input type="{{.Type}}" name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}} {{if .Step}}step="{{.Step}}"{{end}} {{if .Min}}min="{{.Min}}"{{end}} {{if .Max}}max="{{.Max}}"{{end}}>{{if .Help}}<small>{{.Help}}</small>{{end}}</label>{{end}}
     {{end}}
     </div>
   </fieldset>

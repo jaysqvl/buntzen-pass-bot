@@ -1,0 +1,24 @@
+{{define "content"}}
+<section class="section-head">
+  <div><p class="eyebrow">Administrator</p><h1>User accounts</h1><p>Members have their own profiles, OTP sources, bookings, and job history.</p></div>
+  <a class="button primary" href="/admin/users/new">New user</a>
+</section>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Password</th><th>Created</th><th></th></tr></thead>
+    <tbody>
+    {{range .Users}}
+      <tr>
+        <td>{{.Username}}</td>
+        <td>{{.Role}}</td>
+        <td><span class="pill {{.StatusClass}}">{{.Status}}</span></td>
+        <td>{{.PasswordState}}</td>
+        <td>{{.CreatedLabel}}</td>
+        <td>{{if .Editable}}<a class="button" href="/admin/users/{{.ID}}">Manage</a>{{else}}<a class="button" href="/account">Your account</a>{{end}}</td>
+      </tr>
+    {{else}}<tr><td colspan="6" class="empty">No accounts exist.</td></tr>{{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{template "base" .}}

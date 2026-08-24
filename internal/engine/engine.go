@@ -26,13 +26,24 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
 
-var ErrUserCancelled = errors.New("job cancelled by operator")
+var (
+	ErrUserCancelled = errors.New("job cancelled by operator")
+	ErrArtifactLimit = errors.New("job diagnostics exceeded the storage limit")
+)
+
+const (
+	maintenanceInterval     = time.Hour
+	artifactMonitorInterval = time.Second
+	maxJobArtifactBytes     = 64 << 20
+	maxJobArtifactFiles     = 64
+	managedProfileMarker    = ".buntzen-managed"
+)
 
 type Engine struct {
-	config config.Config
-	store  *store.Store
-	hub    *control.Hub
-	owner  string
+	config      config.Config
+	store       *store.Store
+	hub         *control.Hub
+	workerOwner string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -45,8 +56,8 @@ func New(cfg config.Config, database *store.Store, hub *control.Hub) *Engine {
 	host, _ := os.Hostname()
 	return &Engine{
 		config: cfg, store: database, hub: hub,
-		owner:  fmt.Sprintf("%s-%d", host, os.Getpid()),
-		active: make(map[int64]context.CancelCauseFunc),
+		workerOwner: fmt.Sprintf("%s-%d", host, os.Getpid()),
+		active:      make(map[int64]context.CancelCauseFunc),
 	}
 }
 
@@ -62,10 +73,161 @@ func (e *Engine) Start(parent context.Context) {
 		e.wg.Add(1)
 		go e.worker(worker)
 	}
+	e.wg.Add(1)
+	go e.maintenanceLoop()
 	if e.config.SchedulesEnabled {
 		e.wg.Add(1)
 		go e.scheduleLoop()
 	}
+}
+
+func (e *Engine) maintenanceLoop() {
+	defer e.wg.Done()
+	ticker := time.NewTicker(maintenanceInterval)
+	defer ticker.Stop()
+	for {
+		if _, err := e.maintain(e.ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("control-plane maintenance failed: %v", err)
+		}
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *Engine) maintain(ctx context.Context) (int64, error) {
+	purged, err := e.store.PurgeExpiredSessions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := e.store.SystemPruneTerminalJobs(ctx, time.Now().UTC()); err != nil {
+		return purged, err
+	}
+	if err := e.cleanupArtifacts(ctx); err != nil {
+		return purged, err
+	}
+	if err := e.cleanupProfiles(ctx); err != nil {
+		return purged, err
+	}
+	return purged, nil
+}
+
+func (e *Engine) cleanupArtifacts(ctx context.Context) error {
+	entries, err := os.ReadDir(e.config.ArtifactsDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read artifact directory: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "job-") {
+			continue
+		}
+		jobID, err := strconv.ParseInt(strings.TrimPrefix(entry.Name(), "job-"), 10, 64)
+		if err != nil || jobID <= 0 || entry.Name() != fmt.Sprintf("job-%d", jobID) {
+			continue
+		}
+		path, err := safeChild(e.config.ArtifactsDir, entry.Name())
+		if err != nil {
+			return err
+		}
+		if job, err := e.store.SystemGetJob(ctx, jobID); err == nil {
+			if job.Status.Terminal() {
+				exceeded, footprintErr := artifactLimitExceeded(path)
+				if footprintErr != nil {
+					return fmt.Errorf("inspect retained job artifacts: %w", footprintErr)
+				}
+				if exceeded {
+					if err := os.RemoveAll(path); err != nil {
+						return fmt.Errorf("remove oversized job artifacts: %w", err)
+					}
+				}
+			}
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("check retained artifact job: %w", err)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove expired job artifacts: %w", err)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) cleanupProfiles(ctx context.Context) error {
+	profiles, err := e.store.SystemListProfiles(ctx)
+	if err != nil {
+		return fmt.Errorf("list retained browser profiles: %w", err)
+	}
+	return e.cleanupProfileEntries(ctx, profiles)
+}
+
+// ReconcileStorage removes managed browser and job-artifact directories whose
+// durable owners no longer exist. It is safe to call after an administrator
+// deletes a disabled member; periodic maintenance remains the retry path.
+func (e *Engine) ReconcileStorage(ctx context.Context) error {
+	if err := e.cleanupArtifacts(ctx); err != nil {
+		return err
+	}
+	return e.cleanupProfiles(ctx)
+}
+
+func (e *Engine) cleanupProfileEntries(ctx context.Context, snapshot []model.Profile) error {
+	retained := make(map[int64]model.Profile, len(snapshot))
+	for _, profile := range snapshot {
+		retained[profile.ID] = profile
+	}
+	entries, err := os.ReadDir(e.config.ProfilesDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read browser profile directory: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		profileID, ok := managedProfileID(entry.Name())
+		if !ok {
+			continue
+		}
+		path, err := safeChild(e.config.ProfilesDir, entry.Name())
+		if err != nil {
+			continue
+		}
+		markerUserID, markerProfileID, err := readManagedProfileMarker(path)
+		if err != nil || markerProfileID != profileID {
+			// Unmarked, malformed, or mismatched directories may belong to the
+			// host. Never delete them automatically.
+			continue
+		}
+		profile, retainedNow := retained[profileID]
+		if !retainedNow {
+			// The initial snapshot can miss a profile created concurrently. An
+			// exact recheck is sufficient because AUTOINCREMENT profile IDs are
+			// immutable and never reused after deletion.
+			profile, err = e.store.SystemGetProfile(ctx, profileID)
+			if err == nil {
+				retainedNow = true
+			} else if !errors.Is(err, store.ErrNotFound) {
+				return fmt.Errorf("recheck browser profile ownership: %w", err)
+			}
+		}
+		if retainedNow {
+			if profile.UserID != markerUserID {
+				return fmt.Errorf("browser profile %d has a mismatched ownership marker", profileID)
+			}
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove orphaned browser profile: %w", err)
+		}
+	}
+	return nil
 }
 
 func (e *Engine) Stop() {
@@ -84,7 +246,7 @@ func (e *Engine) worker(index int) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		job, err := e.store.ClaimNextDueJob(e.ctx, fmt.Sprintf("%s-%d", e.owner, index))
+		job, err := e.store.SystemClaimNextDueJob(e.ctx, fmt.Sprintf("%s-%d", e.workerOwner, index))
 		switch {
 		case err == nil:
 			e.runClaimed(job)
@@ -119,10 +281,16 @@ func (e *Engine) runClaimed(job model.Job) {
 		e.mu.Unlock()
 	}()
 	go e.monitorCancellation(monitorCtx, job.ID, cancel)
+	go e.monitorArtifacts(monitorCtx, job.ID, cancel)
+	defer func() {
+		if err := e.enforceArtifactLimit(job.ID); err != nil {
+			log.Printf("job artifact cleanup failed: %v", err)
+		}
+	}()
 
 	result, runErr := e.execute(jobCtx, job)
 	if runErr != nil {
-		current, _ := e.store.GetJob(context.Background(), job.ID)
+		current, _ := e.store.SystemGetJob(context.Background(), job.ID)
 		status := model.JobFailed
 		message := "The control plane could not run the isolated action."
 		if current.ConfirmationStartedAt != nil {
@@ -134,12 +302,14 @@ func (e *Engine) runClaimed(job model.Job) {
 		} else if errors.Is(context.Cause(jobCtx), ErrUserCancelled) {
 			status = model.JobCancelled
 			message = "Cancelled by the operator."
+		} else if errors.Is(context.Cause(jobCtx), ErrArtifactLimit) {
+			message = "Job diagnostics exceeded the per-job storage limit."
 		}
 		e.finish(job.ID, status, message, nil)
 		return
 	}
 
-	current, _ := e.store.GetJob(context.Background(), job.ID)
+	current, _ := e.store.SystemGetJob(context.Background(), job.ID)
 	if current.ConfirmationStartedAt != nil && result.Status != model.JobSucceeded {
 		result.Status = model.JobOutcomeUnknown
 		result.Message = "The action ended after final confirmation may have started; booking outcome is unknown."
@@ -150,8 +320,56 @@ func (e *Engine) runClaimed(job model.Job) {
 	} else if errors.Is(context.Cause(jobCtx), ErrUserCancelled) && current.ConfirmationStartedAt == nil {
 		result.Status = model.JobCancelled
 		result.Message = "Cancelled by the operator."
+	} else if errors.Is(context.Cause(jobCtx), ErrArtifactLimit) && current.ConfirmationStartedAt == nil {
+		result.Status = model.JobFailed
+		result.Message = "Job diagnostics exceeded the per-job storage limit."
 	}
 	e.finish(job.ID, result.Status, result.Message, &result.ExitCode)
+}
+
+func (e *Engine) monitorArtifacts(ctx context.Context, jobID int64, cancel context.CancelCauseFunc) {
+	ticker := time.NewTicker(artifactMonitorInterval)
+	defer ticker.Stop()
+	artifactDir, err := safeChild(e.config.ArtifactsDir, fmt.Sprintf("job-%d", jobID))
+	if err != nil {
+		cancel(ErrArtifactLimit)
+		return
+	}
+	for {
+		exceeded, err := artifactLimitExceeded(artifactDir)
+		if err != nil {
+			log.Printf("job artifact inspection failed: %v", err)
+			cancel(ErrArtifactLimit)
+			return
+		}
+		if exceeded {
+			cancel(ErrArtifactLimit)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *Engine) enforceArtifactLimit(jobID int64) error {
+	artifactDir, err := safeChild(e.config.ArtifactsDir, fmt.Sprintf("job-%d", jobID))
+	if err != nil {
+		return err
+	}
+	exceeded, err := artifactLimitExceeded(artifactDir)
+	if err != nil {
+		return err
+	}
+	if !exceeded {
+		return nil
+	}
+	if err := os.RemoveAll(artifactDir); err != nil {
+		return fmt.Errorf("remove oversized job artifacts: %w", err)
+	}
+	return nil
 }
 
 func (e *Engine) monitorCancellation(ctx context.Context, jobID int64, cancel context.CancelCauseFunc) {
@@ -163,7 +381,7 @@ func (e *Engine) monitorCancellation(ctx context.Context, jobID int64, cancel co
 			return
 		case <-ticker.C:
 			checkCtx, stop := context.WithTimeout(context.Background(), time.Second)
-			requested, err := e.store.JobCancellationRequested(checkCtx, jobID)
+			requested, err := e.store.SystemJobCancellationRequested(checkCtx, jobID)
 			stop()
 			if err == nil && requested {
 				e.hub.CancelJob(strconv.FormatInt(jobID, 10))
@@ -175,19 +393,40 @@ func (e *Engine) monitorCancellation(ctx context.Context, jobID int64, cancel co
 }
 
 func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult, error) {
-	profile, err := e.store.GetProfile(ctx, job.ProfileID)
+	profile, err := e.store.SystemGetProfile(ctx, job.ProfileID)
 	if err != nil {
 		return control.RunResult{}, err
 	}
-	source, err := e.store.GetOTPSource(ctx, job.OTPSourceID)
-	if err != nil {
-		return control.RunResult{}, err
-	}
-	credentials, err := e.store.GetProfileCredentials(ctx, profile.ID)
+	source, err := e.store.SystemGetOTPSource(ctx, job.OTPSourceID)
 	if err != nil {
 		return control.RunResult{}, err
 	}
 	booking, err := e.bookingForJob(ctx, job)
+	if err != nil {
+		return control.RunResult{}, err
+	}
+	// Validate the operator-owned origin boundary before decrypting either the
+	// Yodel credentials or provider configuration. Persisted booking URLs are
+	// never authority to choose a credential recipient.
+	if err := booking.ValidateForOrigins(e.config.YodelOrigins); err != nil {
+		return control.RunResult{}, err
+	}
+	var bookWindow *scheduler.Window
+	if job.Command == model.CommandBook {
+		window, err := scheduler.WindowFor(booking)
+		if err != nil {
+			return control.RunResult{}, err
+		}
+		now := time.Now()
+		if now.Before(window.PrepAt) {
+			return control.RunResult{}, errors.New("the booking job became runnable before its bounded preparation window")
+		}
+		if !now.Before(window.PollEndsAt) {
+			return control.RunResult{}, errors.New("the booking release window ended before the action could start")
+		}
+		bookWindow = &window
+	}
+	credentials, err := e.store.SystemGetProfileCredentials(ctx, profile.ID)
 	if err != nil {
 		return control.RunResult{}, err
 	}
@@ -201,22 +440,22 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		if !ok || source.Provider != model.OTPProviderBlueBubbles {
 			return control.RunResult{}, errors.New("only BlueBubbles supports supervised pairing")
 		}
-		provider = &supervisedProvider{PairingProvider: pairingProvider, hub: e.hub, store: e.store, sourceID: source.ID, jobKey: strconv.FormatInt(job.ID, 10)}
+		provider = &supervisedProvider{PairingProvider: pairingProvider, hub: e.hub, store: e.store, jobID: job.ID, sourceID: source.ID, jobKey: strconv.FormatInt(job.ID, 10)}
 	}
 	if err := provider.Health(ctx); err != nil {
 		return control.RunResult{}, fmt.Errorf("selected OTP provider is unavailable: %w", err)
 	}
 
-	profileDir, err := safeChild(e.config.ProfilesDir, profile.BrowserProfile)
+	if err := e.cleanupProfiles(ctx); err != nil {
+		return control.RunResult{}, err
+	}
+	profileDir, err := ensureManagedProfileDirectory(e.config.ProfilesDir, profile)
 	if err != nil {
 		return control.RunResult{}, err
 	}
 	artifactDir, err := safeChild(e.config.ArtifactsDir, fmt.Sprintf("job-%d", job.ID))
 	if err != nil {
 		return control.RunResult{}, err
-	}
-	if err := os.MkdirAll(profileDir, 0o700); err != nil {
-		return control.RunResult{}, fmt.Errorf("create browser profile: %w", err)
 	}
 	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
 		return control.RunResult{}, fmt.Errorf("create artifact directory: %w", err)
@@ -227,6 +466,7 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		"target_date":           booking.TargetDate,
 		"timezone":              booking.Timezone,
 		"login_probe_url":       booking.LoginProbeURL,
+		"allowed_yodel_origins": append([]string(nil), e.config.YodelOrigins...),
 		"all_day_pass_url":      nullable(booking.AllDayPassURL),
 		"half_day_pass_url":     nullable(booking.HalfDayPassURL),
 		"vehicle_keyword":       profile.DefaultVehicle,
@@ -241,10 +481,7 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		"artifacts_dir":         artifactDir,
 	}
 	if job.Command == model.CommandBook {
-		window, err := scheduler.WindowFor(booking)
-		if err != nil {
-			return control.RunResult{}, err
-		}
+		window := *bookWindow
 		if time.Now().Before(window.ReleaseAt) {
 			startConfig["release_at"] = window.ReleaseAt.Format(time.RFC3339)
 		}
@@ -298,18 +535,18 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 				e.hub.Publish(jobKey, control.LiveEvent{Kind: "event", Data: map[string]any{"type": kind, "message": message}})
 			},
 			AwaitingApproval: func(string) error {
-				_, err := e.store.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning}, model.JobAwaitingApproval, store.JobTransition{Message: "Waiting immediately before final confirmation."})
+				_, err := e.store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning}, model.JobAwaitingApproval, store.JobTransition{Message: "Waiting immediately before final confirmation."})
 				return err
 			},
 			ApprovalResolved: func(decision model.ApprovalDecision) error {
 				if decision != model.DecisionApprove {
 					return nil
 				}
-				_, err := e.store.TransitionJob(ctx, job.ID, []model.JobStatus{model.JobAwaitingApproval}, model.JobRunning, store.JobTransition{Message: "Approval received; final confirmation is resuming."})
+				_, err := e.store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobAwaitingApproval}, model.JobRunning, store.JobTransition{Message: "Approval received; final confirmation is resuming."})
 				return err
 			},
 			ConfirmationStarting: func() error {
-				return e.store.MarkConfirmationStarted(ctx, job.ID)
+				return e.store.SystemMarkConfirmationStarted(ctx, job.ID)
 			},
 		},
 	})
@@ -317,9 +554,9 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 
 func (e *Engine) bookingForJob(ctx context.Context, job model.Job) (model.BookingRequest, error) {
 	if job.BookingRequestID != nil {
-		return e.store.GetBookingRequest(ctx, *job.BookingRequestID)
+		return e.store.SystemGetBookingRequest(ctx, *job.BookingRequestID)
 	}
-	bookings, err := e.store.ListBookingRequests(ctx)
+	bookings, err := e.store.SystemListBookingRequests(ctx)
 	if err != nil {
 		return model.BookingRequest{}, err
 	}
@@ -334,37 +571,41 @@ func (e *Engine) bookingForJob(ctx context.Context, job model.Job) (model.Bookin
 func (e *Engine) finish(jobID int64, status model.JobStatus, message string, exitCode *int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	current, err := e.store.GetJob(ctx, jobID)
+	current, err := e.store.SystemGetJob(ctx, jobID)
 	if err != nil || current.Status.Terminal() {
 		return
 	}
-	_, err = e.store.TransitionJob(ctx, jobID,
-		[]model.JobStatus{model.JobRunning, model.JobAwaitingApproval}, status,
+	expected := []model.JobStatus{model.JobRunning}
+	if status != model.JobSucceeded {
+		expected = append(expected, model.JobAwaitingApproval)
+	}
+	finished, err := e.store.SystemTransitionJob(ctx, jobID, expected, status,
 		store.JobTransition{Message: message, ExitCode: exitCode})
 	if err != nil {
 		log.Printf("job %d final transition failed: %v", jobID, err)
 		return
 	}
-	e.event(jobID, "job."+string(status), message)
-	e.hub.Publish(strconv.FormatInt(jobID, 10), control.LiveEvent{Kind: "complete", Data: map[string]any{"status": status, "message": message}})
+	e.event(jobID, "job."+string(finished.Status), finished.Message)
+	e.hub.Publish(strconv.FormatInt(jobID, 10), control.LiveEvent{Kind: "complete", Data: map[string]any{"status": finished.Status, "message": finished.Message}})
 }
 
 func (e *Engine) event(jobID int64, kind, message string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := e.store.AppendJobEvent(ctx, store.JobEventInput{
+	if _, err := e.store.SystemAppendJobEvent(ctx, store.JobEventInput{
 		JobID: jobID, Level: "info", Kind: kind, Message: message,
 	}); err != nil {
 		log.Printf("job %d event persistence failed", jobID)
 	}
 }
 
-func (e *Engine) CancelJob(ctx context.Context, jobID int64) error {
-	job, err := e.store.GetJob(ctx, jobID)
+func (e *Engine) CancelJob(ctx context.Context, userID, jobID int64) error {
+	resources := e.store.ForUser(userID)
+	job, err := resources.GetJob(ctx, jobID)
 	if err != nil {
 		return err
 	}
-	if err := e.store.RequestJobCancellation(ctx, jobID); err != nil {
+	if err := resources.RequestJobCancellation(ctx, jobID); err != nil {
 		return err
 	}
 	if job.Status == model.JobQueued {
@@ -383,8 +624,8 @@ func (e *Engine) CancelJob(ctx context.Context, jobID int64) error {
 	return nil
 }
 
-func (e *Engine) Decide(ctx context.Context, jobID int64, decision model.ApprovalDecision) error {
-	if _, err := e.store.RecordJobDecision(ctx, jobID, decision); err != nil {
+func (e *Engine) Decide(ctx context.Context, userID, jobID int64, decision model.ApprovalDecision) error {
+	if _, err := e.store.ForUser(userID).RecordJobDecision(ctx, jobID, decision); err != nil {
 		return err
 	}
 	err := e.hub.Decide(strconv.FormatInt(jobID, 10), string(decision))
@@ -394,19 +635,23 @@ func (e *Engine) Decide(ctx context.Context, jobID int64, decision model.Approva
 	return err
 }
 
-func (e *Engine) ChoosePairing(jobID int64, messageID string) error {
+func (e *Engine) ChoosePairing(ctx context.Context, userID, jobID int64, messageID string) error {
+	if _, err := e.store.ForUser(userID).GetJob(ctx, jobID); err != nil {
+		return err
+	}
 	return e.hub.ChoosePairing(strconv.FormatInt(jobID, 10), messageID)
 }
 
-func (e *Engine) QueuePairing(ctx context.Context, sourceID int64) (model.Job, error) {
-	source, err := e.store.GetOTPSource(ctx, sourceID)
+func (e *Engine) QueuePairing(ctx context.Context, userID, sourceID int64) (model.Job, error) {
+	resources := e.store.ForUser(userID)
+	source, err := resources.GetOTPSource(ctx, sourceID)
 	if err != nil {
 		return model.Job{}, err
 	}
 	if source.Provider != model.OTPProviderBlueBubbles {
 		return model.Job{}, errors.New("only BlueBubbles sources require supervised pairing")
 	}
-	profiles, err := e.store.ListProfiles(ctx)
+	profiles, err := resources.ListProfiles(ctx)
 	if err != nil {
 		return model.Job{}, err
 	}
@@ -420,13 +665,13 @@ func (e *Engine) QueuePairing(ctx context.Context, sourceID int64) (model.Job, e
 	if profile == nil {
 		return model.Job{}, errors.New("assign this source to an enabled Yodel profile before pairing")
 	}
-	bookings, err := e.store.ListBookingRequests(ctx)
+	bookings, err := resources.ListBookingRequests(ctx)
 	if err != nil {
 		return model.Job{}, err
 	}
 	var bookingID int64
 	for _, booking := range bookings {
-		if booking.ProfileID == profile.ID && booking.Enabled {
+		if booking.ProfileID == profile.ID && booking.Enabled && booking.ValidateForOrigins(e.config.YodelOrigins) == nil {
 			bookingID = booking.ID
 			break
 		}
@@ -434,7 +679,7 @@ func (e *Engine) QueuePairing(ctx context.Context, sourceID int64) (model.Job, e
 	if bookingID == 0 {
 		return model.Job{}, errors.New("create an enabled booking request for this profile before pairing")
 	}
-	jobs, err := e.store.ListJobs(ctx, 500)
+	jobs, err := resources.ListJobs(ctx, 500)
 	if err != nil {
 		return model.Job{}, err
 	}
@@ -444,35 +689,103 @@ func (e *Engine) QueuePairing(ctx context.Context, sourceID int64) (model.Job, e
 			return model.Job{}, store.ErrConflict
 		}
 	}
-	return e.store.EnqueueJob(ctx, store.EnqueueJobParams{
+	return resources.EnqueueJob(ctx, store.EnqueueJobParams{
 		BookingRequestID: &bookingID, Command: model.CommandAuthCheck,
 		RunMode: model.RunModeManual, DueAt: time.Now().UTC(),
 		DedupKey: prefix + strconv.FormatInt(time.Now().UnixNano(), 10),
 	})
 }
 
-func (e *Engine) QueueBooking(ctx context.Context, bookingID int64, command model.JobCommand, mode model.RunMode) (model.Job, error) {
-	booking, err := e.store.GetBookingRequest(ctx, bookingID)
+func (e *Engine) QueueBooking(ctx context.Context, userID, bookingID int64, command model.JobCommand, mode model.RunMode) (model.Job, error) {
+	resources := e.store.ForUser(userID)
+	booking, err := resources.GetBookingRequest(ctx, bookingID)
 	if err != nil {
+		return model.Job{}, err
+	}
+	if err := booking.ValidateForOrigins(e.config.YodelOrigins); err != nil {
 		return model.Job{}, err
 	}
 	if command == model.CommandDryRun {
 		mode = model.RunModeDryRun
-	} else if command == model.CommandBook && !mode.Valid() {
-		mode = booking.ConfirmationMode
+	} else if command == model.CommandBook {
+		if mode == "" {
+			mode = booking.ConfirmationMode
+		} else if mode != model.RunModeManual && mode != model.RunModeAuto {
+			return model.Job{}, errors.New("book run mode must be manual or auto")
+		}
 	} else if command == model.CommandAuthCheck {
 		mode = model.RunModeManual
 	}
-	return e.store.EnqueueJob(ctx, store.EnqueueJobParams{
-		BookingRequestID: &bookingID, Command: command, RunMode: mode, DueAt: time.Now().UTC(),
-	})
+	params, err := bookingEnqueueParams(booking, command, mode, time.Now().UTC())
+	if err != nil {
+		return model.Job{}, err
+	}
+	return resources.EnqueueJob(ctx, params)
 }
 
-func (e *Engine) Wait(ctx context.Context, jobID int64) (model.Job, error) {
+// SystemQueueBooking supports the host-authorized CLI and scheduler path. The
+// persisted owner is derived from the booking request, never supplied here.
+func (e *Engine) SystemQueueBooking(ctx context.Context, bookingID int64, command model.JobCommand, mode model.RunMode) (model.Job, error) {
+	booking, err := e.store.SystemGetBookingRequest(ctx, bookingID)
+	if err != nil {
+		return model.Job{}, err
+	}
+	if err := booking.ValidateForOrigins(e.config.YodelOrigins); err != nil {
+		return model.Job{}, err
+	}
+	if command == model.CommandDryRun {
+		mode = model.RunModeDryRun
+	} else if command == model.CommandBook {
+		if mode == "" {
+			mode = booking.ConfirmationMode
+		} else if mode != model.RunModeManual && mode != model.RunModeAuto {
+			return model.Job{}, errors.New("book run mode must be manual or auto")
+		}
+	} else if command == model.CommandAuthCheck {
+		mode = model.RunModeManual
+	}
+	params, err := bookingEnqueueParams(booking, command, mode, time.Now().UTC())
+	if err != nil {
+		return model.Job{}, err
+	}
+	return e.store.SystemEnqueueJob(ctx, params)
+}
+
+func bookingEnqueueParams(
+	booking model.BookingRequest,
+	command model.JobCommand,
+	mode model.RunMode,
+	now time.Time,
+) (store.EnqueueJobParams, error) {
+	params := store.EnqueueJobParams{
+		BookingRequestID: &booking.ID,
+		Command:          command,
+		RunMode:          mode,
+		DueAt:            now.UTC(),
+	}
+	if command != model.CommandBook {
+		return params, nil
+	}
+	window, err := scheduler.WindowFor(booking)
+	if err != nil {
+		return store.EnqueueJobParams{}, err
+	}
+	if !now.Before(window.PollEndsAt) {
+		return store.EnqueueJobParams{}, errors.New("the booking release window has ended")
+	}
+	if now.Before(window.PrepAt) {
+		params.DueAt = window.PrepAt.UTC()
+	}
+	expiresAt := window.PollEndsAt.UTC()
+	params.ExpiresAt = &expiresAt
+	return params, nil
+}
+
+func (e *Engine) SystemWait(ctx context.Context, jobID int64) (model.Job, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		job, err := e.store.GetJob(ctx, jobID)
+		job, err := e.store.SystemGetJob(ctx, jobID)
 		if err != nil {
 			return model.Job{}, err
 		}
@@ -502,17 +815,21 @@ func (e *Engine) scheduleLoop() {
 }
 
 func (e *Engine) queueScheduled(ctx context.Context, now time.Time) {
-	requests, err := e.store.ListScheduledBookingRequests(ctx)
+	requests, err := e.store.SystemListScheduledBookingRequests(ctx)
 	if err != nil {
 		log.Printf("scheduled booking scan failed: %v", err)
 		return
 	}
 	for _, request := range requests {
+		if err := request.ValidateForOrigins(e.config.YodelOrigins); err != nil {
+			log.Printf("scheduled booking %d has an invalid Yodel origin policy", request.ID)
+			continue
+		}
 		window, err := scheduler.WindowFor(request)
 		if err != nil || !scheduler.ShouldQueue(now, window) {
 			continue
 		}
-		_, err = e.store.EnqueueJob(ctx, store.EnqueueJobParams{
+		_, err = e.store.SystemEnqueueJob(ctx, store.EnqueueJobParams{
 			BookingRequestID: &request.ID, Command: model.CommandBook,
 			RunMode: request.ConfirmationMode, DueAt: now.UTC(), ExpiresAt: &window.PollEndsAt,
 			DedupKey: scheduler.DedupKey(request),
@@ -527,7 +844,7 @@ func ProviderForSource(ctx context.Context, database *store.Store, source model.
 	switch source.Provider {
 	case model.OTPProviderBlueBubbles:
 		var providerConfig bluebubbles.Config
-		if err := database.GetOTPSourceConfig(ctx, source.ID, &providerConfig); err != nil {
+		if err := database.SystemGetOTPSourceConfig(ctx, source.ID, &providerConfig); err != nil {
 			return nil, err
 		}
 		providerConfig.ChatGUID = source.PairingChatGUID
@@ -536,13 +853,144 @@ func ProviderForSource(ctx context.Context, database *store.Store, source model.
 		return bluebubbles.New(providerConfig)
 	case model.OTPProviderTwilio:
 		var providerConfig twilio.Config
-		if err := database.GetOTPSourceConfig(ctx, source.ID, &providerConfig); err != nil {
+		if err := database.SystemGetOTPSourceConfig(ctx, source.ID, &providerConfig); err != nil {
 			return nil, err
 		}
 		return twilio.New(providerConfig)
 	default:
 		return nil, fmt.Errorf("unsupported OTP provider %q", source.Provider)
 	}
+}
+
+func ensureManagedProfileDirectory(parent string, profile model.Profile) (string, error) {
+	if profile.ID <= 0 || profile.UserID <= 0 {
+		return "", errors.New("browser profile identity is invalid")
+	}
+	name := fmt.Sprintf("profile-%d", profile.ID)
+	path, err := safeChild(parent, name)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return "", fmt.Errorf("create browser profile: %w", err)
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspect browser profile: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("browser profile path must be a real directory")
+	}
+
+	markerUserID, markerProfileID, err := readManagedProfileMarker(path)
+	if err == nil {
+		if markerUserID != profile.UserID || markerProfileID != profile.ID {
+			return "", errors.New("browser profile directory belongs to a different profile")
+		}
+		return path, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect unmarked browser profile: %w", err)
+	}
+	if len(entries) != 0 {
+		return "", errors.New("refusing to adopt an unmarked browser profile directory")
+	}
+	markerPath := filepath.Join(path, managedProfileMarker)
+	markerFile, err := os.OpenFile(markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create browser profile marker: %w", err)
+	}
+	_, writeErr := markerFile.WriteString(managedProfileMarkerValue(profile.UserID, profile.ID))
+	closeErr := markerFile.Close()
+	if writeErr != nil {
+		return "", fmt.Errorf("write browser profile marker: %w", writeErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("close browser profile marker: %w", closeErr)
+	}
+	return path, nil
+}
+
+func managedProfileID(name string) (int64, bool) {
+	if !strings.HasPrefix(name, "profile-") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(name, "profile-"), 10, 64)
+	if err != nil || id <= 0 || name != fmt.Sprintf("profile-%d", id) {
+		return 0, false
+	}
+	return id, true
+}
+
+func managedProfileMarkerValue(userID, profileID int64) string {
+	return fmt.Sprintf("buntzen-profile-v1:%d:%d\n", userID, profileID)
+}
+
+func readManagedProfileMarker(path string) (int64, int64, error) {
+	markerPath := filepath.Join(path, managedProfileMarker)
+	marker, err := os.Lstat(markerPath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("inspect browser profile marker: %w", err)
+	}
+	if !marker.Mode().IsRegular() {
+		return 0, 0, errors.New("browser profile marker must be a regular file")
+	}
+	raw, err := os.ReadFile(markerPath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read browser profile marker: %w", err)
+	}
+	if len(raw) > 128 {
+		return 0, 0, errors.New("browser profile marker is malformed")
+	}
+	var userID, profileID int64
+	if count, err := fmt.Sscanf(string(raw), "buntzen-profile-v1:%d:%d\n", &userID, &profileID); err != nil || count != 2 ||
+		userID <= 0 || profileID <= 0 || string(raw) != managedProfileMarkerValue(userID, profileID) {
+		return 0, 0, errors.New("browser profile marker is malformed")
+	}
+	return userID, profileID, nil
+}
+
+func artifactLimitExceeded(path string) (bool, error) {
+	var bytes int64
+	files := 0
+	err := filepath.WalkDir(path, func(_ string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		files++
+		bytes += info.Size()
+		if files > maxJobArtifactFiles || bytes > maxJobArtifactBytes {
+			return ErrArtifactLimit
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if errors.Is(err, ErrArtifactLimit) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func safeChild(parent, name string) (string, error) {
@@ -573,6 +1021,7 @@ type supervisedProvider struct {
 	otp.PairingProvider
 	hub      *control.Hub
 	store    *store.Store
+	jobID    int64
 	sourceID int64
 	jobKey   string
 }
@@ -597,7 +1046,7 @@ func (p *supervisedProvider) WaitForCode(ctx context.Context, armed otp.Armed) (
 	if err != nil {
 		return otp.Message{}, err
 	}
-	if err := p.store.UpdateOTPSourcePairing(ctx, p.sourceID, selected.ChatGUID, selected.Sender, selected.Service); err != nil {
+	if err := p.store.SystemPersistOTPSourcePairing(ctx, p.jobID, p.sourceID, selected.ChatGUID, selected.Sender, selected.Service); err != nil {
 		return otp.Message{}, err
 	}
 	return selected, nil

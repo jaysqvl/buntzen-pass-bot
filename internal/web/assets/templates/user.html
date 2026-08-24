@@ -1,0 +1,54 @@
+{{define "content"}}
+<section class="section-head">
+  <div><p class="eyebrow">Administrator</p><h1>{{.Heading}}</h1><p>{{.Description}}</p></div>
+  <a class="button" href="/admin/users">Back to users</a>
+</section>
+{{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
+{{if .Creating}}
+<form method="post" action="/admin/users/new" class="form-card account-form" autocomplete="off">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <fieldset><legend>Member details</legend><p class="field-help">The member will be required to replace this temporary password after signing in.</p>
+    <div class="form-grid">
+      <label><span>Username</span><input type="text" name="username" value="{{.FormUsername}}" required autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+      <span class="form-spacer" aria-hidden="true"></span>
+      <label><span>Temporary password</span><input type="password" name="password" required autocomplete="new-password"></label>
+      <label><span>Confirm temporary password</span><input type="password" name="password_confirm" required autocomplete="new-password"></label>
+    </div>
+  </fieldset>
+  <div class="actions"><button class="primary" type="submit">Create user</button><a class="button" href="/admin/users">Cancel</a></div>
+</form>
+{{else}}
+<div class="account-grid">
+  <form method="post" action="/admin/users/{{.UserID}}" class="form-card" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <fieldset><legend>Access</legend><p class="field-help">Disabling this account immediately revokes all of its sessions without deleting its data.</p>
+      <div class="form-grid single-column">
+        <label><span>Username</span><input type="text" name="username" value="{{.FormUsername}}" required autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        <label class="check"><input type="checkbox" name="enabled" value="1" {{if .Enabled}}checked{{end}}><span>Account enabled</span></label>
+      </div>
+    </fieldset>
+    <div class="actions"><button class="primary" type="submit">Save access</button></div>
+  </form>
+  <form method="post" action="/admin/users/{{.UserID}}/password" class="form-card" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <fieldset><legend>Reset password</legend><p class="field-help">This revokes the member's sessions. They must replace the temporary password after signing in again.</p>
+      <div class="form-grid single-column">
+        <label><span>Temporary password</span><input type="password" name="password" required autocomplete="new-password"></label>
+        <label><span>Confirm temporary password</span><input type="password" name="password_confirm" required autocomplete="new-password"></label>
+      </div>
+    </fieldset>
+    <div class="actions"><button type="submit">Reset password</button></div>
+  </form>
+  <form method="post" action="/admin/users/{{.UserID}}/delete" class="form-card" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <fieldset><legend>Delete member</legend><p class="field-help">Permanently deletes this member and all of their profiles, OTP sources, bookings, and job history from the database. Managed browser and artifact files are removed immediately when possible and retried by maintenance. Disable the account first and wait for active jobs to finish cancellation.</p>
+      <div class="form-grid single-column">
+        <label><span>Type {{.FormUsername}} to confirm</span><input type="text" name="confirm_username" required autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+      </div>
+    </fieldset>
+    <div class="actions"><button class="danger" type="submit" {{if not .DeleteAllowed}}disabled{{end}}>Delete member and data</button></div>
+  </form>
+</div>
+{{end}}
+{{end}}
+{{template "base" .}}

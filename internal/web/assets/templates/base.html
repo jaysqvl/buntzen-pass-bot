@@ -21,7 +21,9 @@
       <a href="/sources">OTP Sources</a>
       <a href="/bookings">Bookings</a>
       <a href="/jobs">Jobs</a>
+	  {{if .IsAdmin}}<a href="/admin/users">Users</a>{{end}}
     </nav>
+	<a class="account-link" href="/account" aria-label="Account settings for {{.Username}}">{{.Username}}</a>
     <form action="/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <button class="ghost" type="submit">Sign out</button>

@@ -125,6 +125,10 @@ class YodelAction:
         self.config = config
         self.control = control
         self.diagnostics = diagnostics
+        # Keep third-party subresources available to the real Yodel site, but
+        # fail closed on any top-level redirect or scripted navigation away
+        # from the operator-approved credential origin.
+        self.page.route("**/*", self._guard_navigation)
 
     def execute(self) -> BookingResult:
         if self.config.command == "auth-check":
@@ -149,7 +153,7 @@ class YodelAction:
     def ensure_authenticated(self, auth_deadline_at: Optional[datetime] = None) -> bool:
         self.diagnostics.pause_for_auth()
         self.control.status("auth", "Checking Yodel authentication state.")
-        self.page.goto(self.config.login_probe_url, wait_until="domcontentloaded")
+        self._goto_allowed(self.config.login_probe_url)
         self._settle_page()
 
         for _attempt in range(8):
@@ -186,6 +190,7 @@ class YodelAction:
         return False
 
     def _complete_login_form(self, auth_deadline_at: Optional[datetime] = None) -> None:
+        self._assert_page_origin()
         email_input = self._visible_locator(LOGIN_EMAIL_SELECTORS, timeout_ms=500)
         password_input = self._visible_locator(LOGIN_PASSWORD_SELECTORS, timeout_ms=500)
         credentials = self.control.request_credentials()
@@ -195,12 +200,15 @@ class YodelAction:
                     "Yodel requested credentials but none were configured"
                 )
             if email_input is not None:
+                self._assert_page_origin()
                 email_input.fill(credentials.email)
                 self._human_pause()
             if password_input is not None:
+                self._assert_page_origin()
                 password_input.fill(credentials.password)
                 self._human_pause()
 
+            self._assert_page_origin()
             submit = self._visible_locator(LOGIN_SUBMIT_SELECTORS, timeout_ms=5_000)
             if submit is None:
                 raise ActionError("Yodel login form had no clickable submit control")
@@ -240,6 +248,7 @@ class YodelAction:
     def _complete_existing_otp_challenge(
         self, auth_deadline_at: Optional[datetime] = None
     ) -> None:
+        self._assert_page_origin()
         resend = self._visible_locator(OTP_REQUEST_SELECTORS, timeout_ms=1_000)
         if resend is None:
             raise ActionError(
@@ -261,8 +270,10 @@ class YodelAction:
         challenge_id: str,
         auth_deadline_at: Optional[datetime] = None,
     ) -> None:
+        self._assert_page_origin()
         value = self.control.wait_for_otp(challenge_id, deadline_at=auth_deadline_at)
         try:
+            self._assert_page_origin()
             inputs = self._otp_inputs()
             if not inputs:
                 self.control.otp_failed(challenge_id, "input_missing")
@@ -314,6 +325,9 @@ class YodelAction:
         release_at = self.config.release_at
         if release_at is None:
             return
+        waiting_for_future_release = datetime.now(release_at.tzinfo) < release_at
+        if waiting_for_future_release:
+            self.diagnostics.suspend_trace()
         last_keepalive = 0.0
         last_heartbeat = 0.0
         self.control.status(
@@ -326,7 +340,13 @@ class YodelAction:
                 self.control.heartbeat("release_wait")
                 last_heartbeat = now
             if now - last_keepalive >= 45.0:
-                self.keep_session_warm(auth_deadline_at=self.config.auth_deadline_at)
+                try:
+                    self.keep_session_warm(
+                        auth_deadline_at=self.config.auth_deadline_at
+                    )
+                finally:
+                    if waiting_for_future_release:
+                        self.diagnostics.suspend_trace()
                 last_keepalive = now
             remaining = max(
                 0.0, (release_at - datetime.now(release_at.tzinfo)).total_seconds()
@@ -337,17 +357,26 @@ class YodelAction:
                 raise ActionError(
                     "Yodel session expired after the authentication deadline"
                 )
-            if not self.ensure_authenticated(
-                auth_deadline_at=self.config.auth_deadline_at
-            ):
+            try:
+                authenticated = self.ensure_authenticated(
+                    auth_deadline_at=self.config.auth_deadline_at
+                )
+            finally:
+                if waiting_for_future_release:
+                    self.diagnostics.suspend_trace()
+            if not authenticated:
                 raise ActionError("Yodel session was not ready at release time")
+        if waiting_for_future_release:
+            self.diagnostics.authenticated()
         self.control.emit("release.ready")
 
     def keep_session_warm(self, auth_deadline_at: Optional[datetime] = None) -> None:
         try:
             self.page.evaluate("() => document.title")
             if random.random() < 0.35:
+                self._assert_page_origin()
                 self.page.reload(wait_until="domcontentloaded")
+                self._assert_page_origin()
                 self._settle_page(timeout_ms=5_000)
             if not self._is_authenticated():
                 if self._auth_deadline_passed(auth_deadline_at):
@@ -408,7 +437,7 @@ class YodelAction:
         self.control.status(
             "checking_pass", f"Checking {preference.label} pass availability."
         )
-        self.page.goto(url, wait_until="domcontentloaded")
+        self._goto_allowed(url)
         self._settle_page(timeout_ms=10_000)
 
         if not self._select_target_date():
@@ -474,6 +503,7 @@ class YodelAction:
 
         if mode == "manual":
             self._capture_failure(f"{preference.key}-manual-confirm-ready")
+            self.diagnostics.suspend_trace()
             self.control.wait_for_approval(
                 pass_key=preference.key,
                 label=preference.label,
@@ -481,6 +511,7 @@ class YodelAction:
                     final_confirm
                 ),
             )
+            self.diagnostics.authenticated()
         elif mode != "auto":
             raise ActionError("Unsupported booking mode")
 
@@ -494,6 +525,7 @@ class YodelAction:
         self, locator: Any, preference: PassPreference
     ) -> None:
         self.control.inbox.check_cancelled()
+        self._assert_page_origin()
         confirmation_id = self.control.await_confirmation_ready(
             preference.key, preference.label
         )
@@ -509,6 +541,34 @@ class YodelAction:
             pass_key=preference.key,
             label=preference.label,
         )
+
+    def _goto_allowed(self, url: str) -> None:
+        if not self.config.allows_yodel_url(url):
+            raise ActionError("Refusing to navigate outside the approved Yodel origin")
+        self.page.goto(url, wait_until="domcontentloaded")
+        self._assert_page_origin()
+
+    def _assert_page_origin(self) -> None:
+        if not self.config.allows_yodel_url(str(self.page.url)):
+            raise ActionError("Yodel left the approved credential origin")
+
+    def _guard_navigation(self, route: Any, request: Any) -> None:
+        try:
+            top_level = (
+                request.is_navigation_request()
+                and request.frame == self.page.main_frame
+            )
+            if top_level and not self.config.allows_yodel_url(request.url):
+                route.abort("blockedbyclient")
+                return
+            route.continue_()
+        except Exception:
+            # A navigation whose metadata cannot be proven safe must not be
+            # allowed to proceed. Do not log the requested URL.
+            try:
+                route.abort("blockedbyclient")
+            except Exception:
+                pass
 
     def _manual_confirmation_is_ready(self, locator: Any) -> bool:
         try:

@@ -41,6 +41,7 @@ def _open_context(playwright: Any, config: ActionConfig) -> Any:
         "viewport": {"width": 1365, "height": 900},
         "locale": "en-CA",
         "timezone_id": config.timezone_name,
+        "service_workers": "block",
     }
     if config.executable_path:
         launch["executable_path"] = config.executable_path
