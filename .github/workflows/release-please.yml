@@ -35,7 +35,7 @@ jobs:
     needs: release-please
     if: >-
       needs.release-please.outputs.release_created == 'true' &&
-      startsWith(needs.release-please.outputs.tag_name, 'v')
+      startsWith(needs.release-please.outputs.tag_name, 'buntzen-pass-bot-v')
     permissions:
       attestations: write
       contents: read
