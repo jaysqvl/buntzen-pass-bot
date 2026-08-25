@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "buntzen-actions"
-version = "0.2.0"
+version = "0.3.0"
 description = "Isolated Playwright actions for the Buntzen Pass Bot control plane."
 requires-python = ">=3.12,<3.13"
 dependencies = [
