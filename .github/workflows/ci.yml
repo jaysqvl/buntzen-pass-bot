@@ -23,6 +23,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Release metadata consistency
+        run: python3 scripts/check_release_config.py
       - name: Public-tree privacy guard
         run: python3 scripts/check_public_tree.py
       - name: Formatting
@@ -34,7 +36,7 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n scripts/docker_smoke.sh scripts/deploy/portainer.sh scripts/deploy/tests/test_portainer.sh
-          python3 -m py_compile scripts/deploy/tests/*.py
+          python3 -m py_compile scripts/check_release_config.py scripts/deploy/tests/*.py
       - name: Portainer deployment integration
         run: bash scripts/deploy/tests/test_portainer.sh
       - name: Vet

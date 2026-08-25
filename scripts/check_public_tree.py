@@ -13,7 +13,12 @@ PRIVATE_NETWORKS = tuple(
     ipaddress.ip_network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
 )
 IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
-NANP_PHONE = re.compile(r"(?<!\d)(?:\+?1[\s().-]*)?(?:\d[\s().-]*){10}(?!\d)")
+NANP_PHONE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:\+?1[ \t.-]?)?"
+    r"(?:\(\d{3}\)|\d{3})[ \t.-]?\d{3}[ \t.-]?\d{4}"
+    r"(?![A-Za-z0-9])"
+)
 PRIVATE_HOME = re.compile(r"\b[a-z0-9-]+\.home\b", re.IGNORECASE)
 LOCAL_TIMEZONE = re.compile(r"\bAmerica/[A-Za-z_+-]+\b")
 ALLOWED_PRODUCT_TIMEZONES = {"America/Vancouver"}
@@ -97,6 +102,12 @@ def main() -> int:
             raise RuntimeError("privacy guard failed its bare-phone-number self-check")
     if findings_for(ROOT / "fixture", "+1 555-010-0123"):
         raise RuntimeError("privacy guard rejected its fictional phone-number self-check")
+    for sample in (
+        "release 0.3.0 (2026-08-25)",
+        "commit/0211639260c7e67ebd9fbd4b2771a1506bbe62a9",
+    ):
+        if findings_for(ROOT / "fixture", sample):
+            raise RuntimeError("privacy guard mistook release metadata for a phone number")
     if findings_for(ROOT / "fixture", "America/Vancouver"):
         raise RuntimeError("privacy guard rejected Buntzen's public local timezone")
     if "deployment-local timezone" not in findings_for(
