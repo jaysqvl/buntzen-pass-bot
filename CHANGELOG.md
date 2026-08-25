@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.3.0...buntzen-pass-bot-v0.3.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* accept SLSA v1 build provenance ([205c2aa](https://github.com/jaysqvl/buntzen-pass-bot/commit/205c2aa61f530b435097c93b4451a64ea0d9c048))
+* accept SLSA v1 build provenance ([167ecd5](https://github.com/jaysqvl/buntzen-pass-bot/commit/167ecd5037de1a5a5c478046e9a067eaf83da8fd))
+* keep draining oversized action stderr ([8b2c16c](https://github.com/jaysqvl/buntzen-pass-bot/commit/8b2c16c7cee474ecb5125e49ad062991b97aaa1d))
+* keep draining oversized action stderr ([8133aed](https://github.com/jaysqvl/buntzen-pass-bot/commit/8133aed76d9f30628acd6b3ad88990cf1030103c))
+* publish component-prefixed releases ([107cc58](https://github.com/jaysqvl/buntzen-pass-bot/commit/107cc58572a00a152ecf5c4723f7f98b653e8385))
+* publish component-prefixed releases ([1d06aaf](https://github.com/jaysqvl/buntzen-pass-bot/commit/1d06aaf5a4389906c28ff02c3cf99cdd8531af3b))
+
 ## [0.3.0](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.2.0...buntzen-pass-bot-v0.3.0) (2026-08-25)
 
 
