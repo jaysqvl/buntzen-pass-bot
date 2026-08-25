@@ -1,93 +1,73 @@
-# Buntzen Bot 0.2
+# Buntzen Bot
 
-Buntzen Bot is a personal, trusted-LAN control plane for Buntzen Lake parking passes on Yodel. One Go 1.27 process owns the admin UI, SQLite, scheduling, job state, encryption, concurrency, and OTP providers. A fresh Python 3.12 process performs the single allowlisted Playwright/Yodel action for each job.
+Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking passes through Yodel. A Go service provides the web UI, scheduling, job state, and encrypted storage; isolated Python/Playwright workers perform the browser actions.
 
-This release intentionally has no legacy FastAPI/Selenium path and no second CLI configuration system.
+> [!WARNING]
+> This application is for a trusted private LAN. Its HTTP traffic, including temporary OTPs shown in the UI, is not encrypted. Do not expose it to the public Internet. See [Security](SECURITY.md) for the full trust model.
 
-## What is implemented
+## Features
 
-- Embedded Go templates, local HTMX/JavaScript/CSS, account login, first-run administrator setup, member management, CSRF, and Origin/Host checks.
-- Clean versioned SQLite schema with durable queued jobs and encrypted provider/Yodel fields.
-- Restart recovery: running and approval jobs become `interrupted`; a run past the final-click boundary becomes `outcome_unknown` and is never retried automatically.
-- Profiles, exclusive OTP sources, separate booking requests, fixed pass order (all-day → afternoon → morning), target-minus-one-day releases, session warming, dry-run, manual approval, and automatic confirmation.
-- BlueBubbles and Twilio are explicit alternatives. There is no fallback and no outbound messaging.
-- Live SSE state. OTPs and supervised-pairing candidates are held only in memory and cleared after use/expiry.
-- One versioned, bounded JSONL Go ↔ Python protocol with just-in-time credentials and OTPs.
-- One Linux `amd64` image pinned to Python 3.12-compatible Playwright `1.62.0` and its matching Noble browser image.
+- Scheduled and on-demand bookings with dry-run, manual approval, and automatic confirmation modes.
+- Administrator and member accounts with isolated OTP sources, Yodel profiles, requests, and job history.
+- Read-only inbound OTP retrieval through either BlueBubbles or Twilio, with no provider fallback or outbound messaging.
+- Durable jobs, restart recovery, and an `outcome_unknown` state that prevents unsafe retries after an ambiguous confirmation.
 
-## Security boundary
+## Quick start with Docker Compose
 
-This is a trusted-LAN application, not an Internet-facing service. HTTP traffic—including the temporary OTP shown in the UI—is plaintext on the LAN.
+1. Create the local configuration:
 
-The first account created at `/setup` is the sole permanent administrator. It cannot be deleted, disabled, demoted, or replaced. First-run setup also requires a random host-generated token, and the HTTP server rejects browser authorities not listed in `BUNTZEN_ALLOWED_HOSTS`; together these prevent a rebound or untrusted hostname from claiming an empty installation. The administrator can create, disable, rename, reset passwords for, and permanently delete regular member accounts. Deletion requires the member to be disabled, have no active jobs, and have their exact username confirmed; it transactionally removes all of that member's database state and releases globally exclusive resources. Managed browser and artifact files are reconciled immediately, with periodic maintenance as the retry path. Passwords use Argon2id. Sessions are associated with individual users and are `HttpOnly`, `SameSite=Strict`, rate-limited, CSRF-protected, and paired with Origin/Host checks. Every HTML/SSE response is `no-store`, and HTMX history snapshots are disabled.
+   ```bash
+   cp .env.example .env
+   ```
 
-Each member owns and can access only their OTP sources, Yodel profiles, booking requests, jobs, and job events. Physical OTP inbox identities and active profile/source leases remain globally exclusive so two users cannot accidentally drive the same inbox or browser identity concurrently. Persistent browser directories are assigned from immutable profile IDs and carry owner-bound markers; members cannot choose or reuse filesystem paths. Because the allowlisted BlueBubbles API does not expose a stable, scoped server UUID, this release conservatively allows one BlueBubbles Messages source per control plane; DNS, IP, port, or proxy aliases cannot be registered as separate inboxes. Twilio identities remain exclusive by account and receiving number.
+   Edit `.env` and:
 
-Durable member-created state is bounded per account: 24 OTP sources, 16 profiles, 64 booking requests, 8 pending jobs, 200 retained jobs, 256 events per retained job, and 8 live sessions. The control plane rotates ordinary terminal history while preserving active work, `outcome_unknown`, and unexpired scheduler deduplication records. Book commands remain durably queued until their preparation window (at most 180 minutes before release) instead of occupying a browser early. Retained diagnostics have a 64-file/64-MiB per-job ceiling enforced by periodic monitoring and cleanup; this is not a hard filesystem write quota, so transient overshoot remains possible. Trace segments rotate through eight fixed names, and tracing is closed during both release and manual-approval waits. Hourly maintenance removes expired sessions, rotated-job artifacts, and marked browser-profile directories no longer referenced by a profile; unmarked operator directories are left alone.
+   - set `BUNTZEN_ALLOWED_HOSTS` to the exact host and port users will open, such as `192.168.1.20:8080`;
+   - replace `BLUEBUBBLES_URL` with the server's LAN URL if you use BlueBubbles; and
+   - leave `SCHEDULES_ENABLED=false` until onboarding is complete.
 
-On first launch, the app creates `/appdata/master.key` and encrypts each Yodel mobile number plus BlueBubbles and Twilio credentials in SQLite. This is convenience encryption: copying all of `/appdata` copies both the ciphertext and key.
+   If a reverse proxy rewrites the `Host` header, add the rewritten authority to `BUNTZEN_ALLOWED_HOSTS` and the browser-facing origin to `BUNTZEN_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`.
 
-Yodel credentials and OTPs may be entered only on the exact HTTPS origins in the host-controlled `BUNTZEN_YODEL_ORIGINS` list (default: `https://yodelportal.com`). Booking records can select paths but cannot expand that origin boundary. Go validates the persisted URLs before decrypting credentials, and Python independently blocks cross-origin top-level navigation and checks the final page origin before requesting or filling secrets.
-
-BlueBubbles exposes one unscoped server password. Buntzen Bot enforces query-only behavior in its adapter and tests: authenticated `GET /api/v1/ping` and bounded `POST /api/v1/message/query` are the only allowed operations. The client disables redirects and environment proxies, caps responses, and redacts authenticated URLs. Changing a source to a different canonical BlueBubbles server requires re-entering its write-only password, so a retained credential is never sent to a replacement host. Twilio only polls inbound messages.
-
-## Portainer / Docker deployment
-
-The supplied stack maps host port `8080` to the app’s port `8080`. Set `BLUEBUBBLES_URL` to the LAN URL of your BlueBubbles server before deployment; the repository examples use reserved `.example` hostnames and contain no private network addresses.
-
-1. Copy `.env.example` to `.env`, set the BlueBubbles LAN URL, and replace `BUNTZEN_ALLOWED_HOSTS` with the exact authorities users will open (including the external port, plus any local reverse-proxy hostname). Account credentials do not belong in this file. You may optionally set a random one-time `BUNTZEN_SETUP_TOKEN`; otherwise the service generates one at first startup.
-2. Create the bind-mounted data directory and make it writable by the image’s non-root `pwuser` (UID/GID 1001):
+2. Create the persistent data directory for the container's non-root user:
 
    ```bash
    mkdir -p appdata
    sudo chown -R 1001:1001 appdata
    ```
 
-3. Build and start with schedules disabled:
+3. Build and start the service:
 
    ```bash
    docker compose up -d --build
    ```
 
-4. Read the one-time setup token from `docker compose logs buntzen-pass-bot` unless you supplied it, then open `http://<docker-host>:8080`. An empty installation redirects to `/setup`, where you enter that token and choose the permanent administrator username and a password of at least 12 characters. Once an administrator exists, the setup token is ignored and repeated setup requests are rejected before password hashing. Later visits use the normal username-and-password login. A local reverse proxy may expose a dedicated
-   origin such as `http://buntzen.example`. It works automatically when the proxy
-   preserves `Host`. If the proxy rewrites `Host`, add the rewritten authority to
-   `BUNTZEN_ALLOWED_HOSTS` and set
-   `BUNTZEN_ALLOWED_ORIGINS=http://buntzen.example`. Allowed origins are also accepted as Host authorities. Both settings are exact trusted lists; do not use `*`.
-5. From **Users**, the administrator may create regular member accounts and later disable, rename, reset, or delete them. A reset requires the member to choose a new password at the next login. Deletion is permanent and becomes available only after the account is disabled and active jobs have finished cancellation.
+4. If you did not set `BUNTZEN_SETUP_TOKEN`, read the generated one-time token from the startup log:
 
-The Compose stack runs as a non-root user, enables Docker’s init shim, allocates 1 GiB shared memory, and installs the official Playwright seccomp profile additions required for the Chromium sandbox. The Go service supervises each Python/Chromium process group and gets a 45-second shutdown grace period.
+   ```bash
+   docker compose logs buntzen-pass-bot
+   ```
 
-Persistent layout:
+5. Open `http://<docker-host>:8080`, enter the setup token, and create the permanent administrator account. Passwords must be at least 12 characters.
 
-```text
-/appdata/buntzen.db          SQLite state
-/appdata/master.key          local encryption key
-/appdata/profiles/profile-*/ persistent Linux browser identities assigned by the app
-/appdata/artifacts/job-*/    post-authentication diagnostics only
-```
+Treat `appdata` as sensitive and back it up as a unit: it contains the database, encryption key, browser profiles, and diagnostics. The key is stored beside the encrypted data, so a copied directory contains both. Only one Buntzen instance may use an appdata directory.
 
-Do not share this browser-profile directory with native macOS, and never run the same Yodel identity from Docker and native mode at the same time.
+## Set up and test a booking
 
-## First onboarding and rollout
+Keep `SCHEDULES_ENABLED=false` while completing these steps:
 
-Leave `SCHEDULES_ENABLED=false` while onboarding.
+1. Create an OTP source. For BlueBubbles, enter its LAN URL and server password, then use **Test connection**.
+2. Create a Yodel profile with its 10-digit Canadian or US mobile number and assign the OTP source.
+3. Create and enable a booking request.
+4. For BlueBubbles, choose **Pair with Yodel** and select the new OTP candidate after Yodel sends a code.
+5. Run **Auth check**, then **Dry run**, from the booking card.
+6. Test a manual booking, including approval and cancellation, then explicitly test one automatic booking.
+7. Verify the OTP provider still works after its host restarts before enabling unattended schedules.
 
-1. Create a BlueBubbles OTP source with its LAN server URL (for example, `http://bluebubbles.example:1234`) and server password. Use **Test connection**; this performs only the authenticated ping.
-2. Create a Yodel profile with the 10-digit Canadian/US mobile number used to sign in, and assign that source exclusively. The app assigns its private persistent browser identity automatically.
-3. Create an enabled booking request. This supplies the Yodel URLs used by auth checks as well as bookings.
-4. Choose **Pair with Yodel** on the BlueBubbles source. The bot snapshots the inbox before Python triggers a code, shows only new bounded candidates with a temporary code and masked sender, and waits for your selection. Only the selected chat/sender/service fingerprint is saved.
-5. Run **Auth check**, then **Dry run** from the booking card.
-6. Queue a manual booking and test both approval and cancellation. There is no application approval timeout; a lost browser/session or restart ends the wait without confirming.
-7. Verify one explicitly initiated automatic booking before enabling unattended schedules.
+BlueBubbles can retrieve an OTP only when the SMS reaches Messages on its Mac through Messages in iCloud or text-message forwarding. Keep that Mac awake and connected to the network.
 
-BlueBubbles can read the OTP only if the SMS reaches Messages on the Mac through Apple’s Messages/iCloud or text-message-forwarding setup. Keep the Mac awake and its configured network adapter connected.
+## Native macOS development
 
-Before relying on unattended schedules, perform an approved Mac reboot/login test and verify that BlueBubbles actually restarts and answers the authenticated ping. Automatic login alone is not sufficient if the BlueBubbles LaunchAgent/app startup is unhealthy.
-
-## Native Intel macOS development
-
-Native mode uses loopback BlueBubbles and a separate appdata directory.
+Native development requires Go 1.27, Python 3.12, `uv`, and a local BlueBubbles server:
 
 ```bash
 brew install go uv
@@ -101,81 +81,46 @@ export SCHEDULES_ENABLED=false
 go run ./cmd/buntzen serve
 ```
 
-Open `http://127.0.0.1:8080`. In a native profile, use browser channel `chrome`; in Docker, leave the channel/executable fields blank to use bundled Chromium.
+Open `http://127.0.0.1:8080`. Set a native Yodel profile's browser channel to `chrome`; leave the channel and executable empty in Docker to use the bundled Chromium.
 
-## Commands
+Do not share browser profiles between Docker and macOS or run the same Yodel identity from both at once.
 
-All commands use the same database and services:
+## Common commands
+
+Run CLI commands against the same appdata used by the service. In Docker Compose:
 
 ```bash
-buntzen serve
-buntzen migrate
-buntzen doctor
-buntzen auth-check --booking 1
-buntzen dry-run --booking 1
-buntzen book --booking 1 --mode auto
-BUNTZEN_ADMIN_PASSWORD='new-long-password' buntzen admin-password reset
+docker compose exec buntzen-pass-bot buntzen doctor
+docker compose exec buntzen-pass-bot buntzen auth-check --booking 1
+docker compose exec buntzen-pass-bot buntzen dry-run --booking 1
+docker compose exec buntzen-pass-bot buntzen book --booking 1 --mode auto
 ```
 
-`BUNTZEN_ADMIN_PASSWORD` is read only by the explicit `admin-password reset` recovery command. `serve` never creates or overwrites an account from the environment. Recovery locates the permanent administrator by role, so it still works if that username was changed, and it revokes that administrator's existing sessions. For a Compose deployment, run the recovery command with a one-off environment value rather than storing it in the stack:
+Reset the permanent administrator's password without storing it in `.env`:
 
 ```bash
-docker compose exec -e BUNTZEN_ADMIN_PASSWORD='new-long-password' buntzen-pass-bot buntzen admin-password reset
+docker compose exec \
+  -e BUNTZEN_ADMIN_PASSWORD='new-long-password' \
+  buntzen-pass-bot buntzen admin-password reset
 ```
 
-Runtime commands enqueue a durable job and wait for its terminal state. If `serve` already owns `/appdata`, it executes the job. Otherwise the command temporarily owns the control plane and runs the workers itself. A standalone manual booking is rejected because there is no web UI to approve it.
+For live logs, use `docker compose logs --follow --tail=300 buntzen-pass-bot`. Set `BUNTZEN_DEBUG=true` in `.env` and recreate the container only while diagnosing a problem; return it to `false` afterward.
 
-`doctor` checks SQLite, reports the effective log level and action-protocol version, negotiates that Python protocol, and runs each configured provider’s read-only health operation. It never requests an OTP or sends a message.
-
-Important environment settings:
-
-| Variable | Default | Meaning |
-|---|---:|---|
-| `APPDATA_DIR` | `./appdata` | Database, key, profiles, and artifacts |
-| `BUNTZEN_LISTEN` | `:8080` | HTTP listen address |
-| `BUNTZEN_ADMIN_PASSWORD` | empty | Explicit `admin-password reset` command only; ignored and removed by `serve` |
-| `BLUEBUBBLES_URL` | `http://127.0.0.1:1234` | New-source form default; set the Compose value to the server's LAN URL |
-| `BUNTZEN_YODEL_ORIGINS` | `https://yodelportal.com` | Host-controlled comma-separated exact HTTPS origins allowed to receive Yodel credentials; override only for a trusted test site |
-| `BUNTZEN_ALLOWED_HOSTS` | loopback only | Comma-separated exact browser Host authorities; required for LAN IP/port and reverse-proxy access |
-| `BUNTZEN_ALLOWED_ORIGINS` | empty | Comma-separated trusted browser origins for a reverse proxy that rewrites `Host` |
-| `BUNTZEN_SETUP_TOKEN` | generated on an empty database | Optional one-time first-run setup token; ignored after the administrator exists |
-| `BUNTZEN_LOG_LEVEL` | `info` | Container log threshold: `debug`, `info`, `warn`, or `error`; applies to Go and Python |
-| `BUNTZEN_DEBUG` | `false` | Convenience toggle; `true` overrides `BUNTZEN_LOG_LEVEL` with `debug` for both runtimes |
-| `MAX_CONCURRENT_JOBS` | `2` | Worker limit (1–8) |
-| `SCHEDULES_ENABLED` | `false` | Global schedule gate |
-| `BUNTZEN_PYTHON` | `python3` | Python 3.12 executable |
-| `BUNTZEN_ACTIONS_MODULE` | `buntzen_actions` | Fixed action worker module |
-
-Only one control plane can own an appdata directory; an advisory lock prevents a second `serve` from interrupting the first.
-
-### Development logging
-
-Set `BUNTZEN_DEBUG=true` in the Compose stack while reproducing a problem, then recreate the container and follow its logs:
+## Tests
 
 ```bash
-docker compose up -d --force-recreate
-docker compose logs --follow --tail=300 buntzen-pass-bot
-```
-
-Logs are newline-delimited JSON with job IDs on scheduler, provider, Go/Python protocol, browser-process, approval, and final-state lifecycle records. HTTP debug records contain only the method and URL path—not query strings, request bodies, cookies, or form values. Python stderr is capped per line and per job before it reaches the container log; oversized raw lines are discarded whole instead of truncated. Compose also rotates the container's JSON logs at 10 MiB and retains three files. Credentials, known secret values, OTP-shaped child diagnostics, and URL user-info/query strings are redacted even in debug mode. Debug logging does not enable Playwright screenshots or traces during credential or OTP entry; the existing safe diagnostics policy still begins only after authentication and pauses during unbounded waits.
-
-Return `BUNTZEN_DEBUG=false` (or remove it) after the reproduction. `BUNTZEN_LOG_LEVEL=info` retains starts, stops, job claims/results, warnings, and failures without the detailed HTTP/action lifecycle stream.
-
-## Verification
-
-```bash
-gofmt -w cmd internal integration
 go vet ./...
 go test -race ./...
-
 uvx --from ruff==0.12.10 ruff check actions scripts/deploy/tests
-uv run --project actions python -m unittest discover -s actions/tests
-uv run --project actions python -m compileall -q actions/src
-bash scripts/deploy/tests/test_portainer.sh
-BUNTZEN_E2E_PYTHON="$PWD/actions/.venv/bin/python" go test -race -tags=integration ./integration/...
+uv run --project actions --locked python -m unittest discover -s actions/tests
 ```
 
-CI also runs real Go/Python/Playwright integrations for BlueBubbles OTP and the complete synthetic booking path (dry-run, manual approve/cancel, and automatic confirmation), the Portainer rollback suite, a Linux `amd64` container setup/login/restart smoke test, and the strict Trivy image gate. Dependabot covers Go modules, Python, Docker, and GitHub Actions.
+See [Browser integration tests](integration/README.md) for the real Go/Python/Playwright test command.
 
-See [`actions/README.md`](actions/README.md) for the exact protocol and sensitive-artifact rules.
-See [`docs/release-and-deployment.md`](docs/release-and-deployment.md) for the GHCR release gate and protected in-place Portainer workflow.
+## Documentation
+
+- [Security scope and invariants](SECURITY.md)
+- [Python action protocol and artifact rules](actions/README.md)
+- [Browser integration tests](integration/README.md)
+- [Release and Portainer deployment](docs/release-and-deployment.md)
+- [Changelog](CHANGELOG.md)
