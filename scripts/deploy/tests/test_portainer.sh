@@ -53,6 +53,14 @@ grep -Fq 'echo "version=${RELEASE_TAG#buntzen-pass-bot-v}"' "$release_image_work
   printf 'release image workflow does not extract the component version\n' >&2
   exit 1
 }
+grep -Fq '$p.buildDefinition.buildType' "$release_image_workflow" || {
+  printf 'release image workflow does not accept the current SLSA v1 provenance shape\n' >&2
+  exit 1
+}
+grep -Fq '$p.runDetails.builder' "$release_image_workflow" || {
+  printf 'release image workflow does not validate the SLSA v1 builder identity\n' >&2
+  exit 1
+}
 grep -Fq "if: github.event_name == 'workflow_dispatch'" "$release_image_workflow" || {
   printf 'manually dispatched release images are not routed to deployment\n' >&2
   exit 1
