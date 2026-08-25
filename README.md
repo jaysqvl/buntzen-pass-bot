@@ -25,7 +25,7 @@ Each member owns and can access only their OTP sources, Yodel profiles, booking 
 
 Durable member-created state is bounded per account: 24 OTP sources, 16 profiles, 64 booking requests, 8 pending jobs, 200 retained jobs, 256 events per retained job, and 8 live sessions. The control plane rotates ordinary terminal history while preserving active work, `outcome_unknown`, and unexpired scheduler deduplication records. Book commands remain durably queued until their preparation window (at most 180 minutes before release) instead of occupying a browser early. Retained diagnostics have a 64-file/64-MiB per-job ceiling enforced by periodic monitoring and cleanup; this is not a hard filesystem write quota, so transient overshoot remains possible. Trace segments rotate through eight fixed names, and tracing is closed during both release and manual-approval waits. Hourly maintenance removes expired sessions, rotated-job artifacts, and marked browser-profile directories no longer referenced by a profile; unmarked operator directories are left alone.
 
-On first launch, the app creates `/appdata/master.key` and encrypts Yodel, BlueBubbles, and Twilio credentials in SQLite. This is convenience encryption: copying all of `/appdata` copies both the ciphertext and key.
+On first launch, the app creates `/appdata/master.key` and encrypts each Yodel mobile number plus BlueBubbles and Twilio credentials in SQLite. This is convenience encryption: copying all of `/appdata` copies both the ciphertext and key.
 
 Yodel credentials and OTPs may be entered only on the exact HTTPS origins in the host-controlled `BUNTZEN_YODEL_ORIGINS` list (default: `https://yodelportal.com`). Booking records can select paths but cannot expand that origin boundary. Go validates the persisted URLs before decrypting credentials, and Python independently blocks cross-origin top-level navigation and checks the final page origin before requesting or filling secrets.
 
@@ -74,7 +74,7 @@ Do not share this browser-profile directory with native macOS, and never run the
 Leave `SCHEDULES_ENABLED=false` while onboarding.
 
 1. Create a BlueBubbles OTP source with its LAN server URL (for example, `http://bluebubbles.example:1234`) and server password. Use **Test connection**; this performs only the authenticated ping.
-2. Create a Yodel profile and assign that source exclusively. The app assigns its private persistent browser identity automatically.
+2. Create a Yodel profile with the 10-digit Canadian/US mobile number used to sign in, and assign that source exclusively. The app assigns its private persistent browser identity automatically.
 3. Create an enabled booking request. This supplies the Yodel URLs used by auth checks as well as bookings.
 4. Choose **Pair with Yodel** on the BlueBubbles source. The bot snapshots the inbox before Python triggers a code, shows only new bounded candidates with a temporary code and masked sender, and waits for your selection. Only the selected chat/sender/service fingerprint is saved.
 5. Run **Auth check**, then **Dry run** from the booking card.
@@ -125,7 +125,7 @@ docker compose exec -e BUNTZEN_ADMIN_PASSWORD='new-long-password' buntzen-pass-b
 
 Runtime commands enqueue a durable job and wait for its terminal state. If `serve` already owns `/appdata`, it executes the job. Otherwise the command temporarily owns the control plane and runs the workers itself. A standalone manual booking is rejected because there is no web UI to approve it.
 
-`doctor` checks SQLite, negotiates the Python protocol, and runs each configured provider’s read-only health operation. It never requests an OTP or sends a message.
+`doctor` checks SQLite, reports the effective log level and action-protocol version, negotiates that Python protocol, and runs each configured provider’s read-only health operation. It never requests an OTP or sends a message.
 
 Important environment settings:
 
@@ -139,12 +139,27 @@ Important environment settings:
 | `BUNTZEN_ALLOWED_HOSTS` | loopback only | Comma-separated exact browser Host authorities; required for LAN IP/port and reverse-proxy access |
 | `BUNTZEN_ALLOWED_ORIGINS` | empty | Comma-separated trusted browser origins for a reverse proxy that rewrites `Host` |
 | `BUNTZEN_SETUP_TOKEN` | generated on an empty database | Optional one-time first-run setup token; ignored after the administrator exists |
+| `BUNTZEN_LOG_LEVEL` | `info` | Container log threshold: `debug`, `info`, `warn`, or `error`; applies to Go and Python |
+| `BUNTZEN_DEBUG` | `false` | Convenience toggle; `true` overrides `BUNTZEN_LOG_LEVEL` with `debug` for both runtimes |
 | `MAX_CONCURRENT_JOBS` | `2` | Worker limit (1–8) |
 | `SCHEDULES_ENABLED` | `false` | Global schedule gate |
 | `BUNTZEN_PYTHON` | `python3` | Python 3.12 executable |
 | `BUNTZEN_ACTIONS_MODULE` | `buntzen_actions` | Fixed action worker module |
 
 Only one control plane can own an appdata directory; an advisory lock prevents a second `serve` from interrupting the first.
+
+### Development logging
+
+Set `BUNTZEN_DEBUG=true` in the Compose stack while reproducing a problem, then recreate the container and follow its logs:
+
+```bash
+docker compose up -d --force-recreate
+docker compose logs --follow --tail=300 buntzen-pass-bot
+```
+
+Logs are newline-delimited JSON with job IDs on scheduler, provider, Go/Python protocol, browser-process, approval, and final-state lifecycle records. HTTP debug records contain only the method and URL path—not query strings, request bodies, cookies, or form values. Python stderr is capped per line and per job before it reaches the container log; oversized raw lines are discarded whole instead of truncated. Compose also rotates the container's JSON logs at 10 MiB and retains three files. Credentials, known secret values, OTP-shaped child diagnostics, and URL user-info/query strings are redacted even in debug mode. Debug logging does not enable Playwright screenshots or traces during credential or OTP entry; the existing safe diagnostics policy still begins only after authentication and pauses during unbounded waits.
+
+Return `BUNTZEN_DEBUG=false` (or remove it) after the reproduction. `BUNTZEN_LOG_LEVEL=info` retains starts, stops, job claims/results, warnings, and failures without the detailed HTTP/action lifecycle stream.
 
 ## Verification
 
@@ -160,7 +175,7 @@ bash scripts/deploy/tests/test_portainer.sh
 BUNTZEN_E2E_PYTHON="$PWD/actions/.venv/bin/python" go test -race -tags=integration ./integration/...
 ```
 
-CI also runs the real Go/Python/Playwright/BlueBubbles OTP integration, the Portainer rollback suite, a Linux `amd64` container setup/login/restart smoke test, and the strict Trivy image gate. Dependabot covers Go modules, Python, Docker, and GitHub Actions.
+CI also runs real Go/Python/Playwright integrations for BlueBubbles OTP and the complete synthetic booking path (dry-run, manual approve/cancel, and automatic confirmation), the Portainer rollback suite, a Linux `amd64` container setup/login/restart smoke test, and the strict Trivy image gate. Dependabot covers Go modules, Python, Docker, and GitHub Actions.
 
 See [`actions/README.md`](actions/README.md) for the exact protocol and sensitive-artifact rules.
 See [`docs/release-and-deployment.md`](docs/release-and-deployment.md) for the GHCR release gate and protected in-place Portainer workflow.

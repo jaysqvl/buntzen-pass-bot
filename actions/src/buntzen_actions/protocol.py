@@ -9,7 +9,7 @@ from typing import Any, BinaryIO, Callable, Iterable, Mapping, Optional
 from .errors import Cancelled, ProtocolError
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_FRAME_BYTES = 64 * 1024
 
 # The child must never send any of these fields to the control plane. This is a
@@ -22,6 +22,7 @@ _FORBIDDEN_OUTPUT_KEYS = frozenset(
         "email",
         "otp",
         "password",
+        "phone",
         "secret",
         "token",
     }
@@ -39,11 +40,13 @@ _FORBIDDEN_START_KEYS = frozenset(
         "master_key",
         "otp",
         "password",
+        "phone",
         "secret",
         "token",
         "twilio_auth_token",
         "yodel_email",
         "yodel_password",
+        "yodel_phone",
     }
 )
 

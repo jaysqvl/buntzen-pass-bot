@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -70,7 +70,61 @@ func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) 
 	return server, nil
 }
 
-func (s *Server) Handler() http.Handler { return s.securityHeaders(s.mux) }
+func (s *Server) Handler() http.Handler { return s.requestLogging(s.securityHeaders(s.mux)) }
+
+type observedResponseWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *observedResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *observedResponseWriter) Write(payload []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	written, err := w.ResponseWriter.Write(payload)
+	w.bytes += written
+	return written, err
+}
+
+func (w *observedResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *observedResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (s *Server) requestLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !slog.Default().Enabled(r.Context(), slog.LevelDebug) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		started := time.Now()
+		observed := &observedResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(observed, r)
+		status := observed.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		slog.Debug("HTTP request completed",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", status,
+			"response_bytes", observed.bytes,
+			"duration", time.Since(started).Round(time.Millisecond),
+		)
+	})
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
@@ -217,7 +271,7 @@ func rejectCrossOrigin(w http.ResponseWriter, r *http.Request) {
 	default:
 		fetchSite = "<invalid>"
 	}
-	log.Printf("cross-origin request rejected host=%q origin=%q sec_fetch_site=%q", r.Host, origin, fetchSite)
+	slog.Warn("cross-origin request rejected", "host", r.Host, "origin", origin, "sec_fetch_site", fetchSite)
 	http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 }
 
@@ -805,7 +859,7 @@ func (s *Server) userDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.engine.ReconcileStorage(r.Context()); err != nil {
-		log.Printf("post-deletion managed storage reconciliation failed; periodic maintenance will retry: %v", err)
+		slog.Error("post-deletion managed storage reconciliation failed; periodic maintenance will retry", "error", err)
 		http.Redirect(w, r, "/admin/users?ok=user-deleted-cleanup", http.StatusSeeOther)
 		return
 	}
@@ -880,7 +934,7 @@ func loginRateKey(parts ...string) string {
 
 func (s *Server) render(w http.ResponseWriter, status int, name string, data any) {
 	if err := s.renderer.Render(w, status, name, data); err != nil {
-		log.Printf("render %s failed: %v", name, err)
+		slog.Error("template render failed", "template", name, "error", err)
 	}
 }
 

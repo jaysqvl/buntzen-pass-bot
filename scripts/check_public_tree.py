@@ -16,6 +16,7 @@ IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 NANP_PHONE = re.compile(r"(?<!\d)(?:\+?1[\s().-]*)?(?:\d[\s().-]*){10}(?!\d)")
 PRIVATE_HOME = re.compile(r"\b[a-z0-9-]+\.home\b", re.IGNORECASE)
 LOCAL_TIMEZONE = re.compile(r"\bAmerica/[A-Za-z_+-]+\b")
+ALLOWED_PRODUCT_TIMEZONES = {"America/Vancouver"}
 MACOS_USER_PATH = re.compile(r"/Users/[^/\s]+")
 EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b", re.IGNORECASE)
 ALLOWED_EMAIL_DOMAINS = {
@@ -73,7 +74,10 @@ def findings_for(path: Path, text: str) -> set[str]:
 
     if PRIVATE_HOME.search(text):
         findings.add("private .home hostname")
-    if LOCAL_TIMEZONE.search(text):
+    if any(
+        match.group(0) not in ALLOWED_PRODUCT_TIMEZONES
+        for match in LOCAL_TIMEZONE.finditer(text)
+    ):
         findings.add("deployment-local timezone")
     if MACOS_USER_PATH.search(text):
         findings.add("personal macOS path")
@@ -93,6 +97,12 @@ def main() -> int:
             raise RuntimeError("privacy guard failed its bare-phone-number self-check")
     if findings_for(ROOT / "fixture", "+1 555-010-0123"):
         raise RuntimeError("privacy guard rejected its fictional phone-number self-check")
+    if findings_for(ROOT / "fixture", "America/Vancouver"):
+        raise RuntimeError("privacy guard rejected Buntzen's public local timezone")
+    if "deployment-local timezone" not in findings_for(
+        ROOT / "fixture", "America/Example_City"
+    ):
+        raise RuntimeError("privacy guard failed its unrelated timezone self-check")
 
     failures: dict[str, set[str]] = {}
     for path in repository_files():

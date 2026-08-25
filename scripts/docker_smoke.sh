@@ -93,6 +93,7 @@ start_container() {
     --volume "$volume:/appdata" \
     --env APPDATA_DIR=/appdata \
     --env BLUEBUBBLES_URL=http://bluebubbles.example:1234 \
+    --env BUNTZEN_DEBUG=true \
     --env BUNTZEN_SETUP_TOKEN="$setup_token" \
     --env MAX_CONCURRENT_JOBS=2 \
     --env SCHEDULES_ENABLED=false \
@@ -116,7 +117,8 @@ validate_doctor() {
   report="$(docker exec "$container" /usr/local/bin/buntzen doctor)"
   printf '%s\n' "$report" | jq -e '
     .ok == true and
-    .schema_version == 1 and
+    .schema_version == 2 and
+    .action_protocol == 2 and
     .appdata_dir == "/appdata" and
     .database_path == "/appdata/buntzen.db" and
     .profiles_dir == "/appdata/profiles" and
@@ -124,6 +126,7 @@ validate_doctor() {
     .python_executable == "/usr/bin/python" and
     .python_module == "buntzen_actions" and
     .python_ready == true and
+    .log_level == "debug" and
     .schedules_enabled == false and
     .otp_sources == []
   ' >/dev/null || fail "doctor returned an unexpected runtime report"

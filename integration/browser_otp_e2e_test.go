@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -29,8 +30,7 @@ import (
 )
 
 const (
-	testEmail      = "browser-e2e-user@example.test"
-	testPassword   = "synthetic-yodel-password"
+	testPhone      = "5559876543"
 	testOTP        = "482913"
 	testBBPassword = "synthetic-bluebubbles-password"
 	testChatGUID   = "SMS;-;55555"
@@ -67,7 +67,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 		t.Fatalf("create BlueBubbles provider: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := provider.Health(ctx); err != nil {
 		t.Fatalf("BlueBubbles health: %v", err)
@@ -92,7 +92,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 			"profile_dir":           profileDir,
 			"target_date":           "2030-01-15",
 			"timezone":              "UTC",
-			"login_probe_url":       yodel.URL + "/login",
+			"login_probe_url":       yodel.URL + "/buntzen-lake",
 			"allowed_yodel_origins": []string{yodel.URL},
 			"all_day_pass_url":      nil,
 			"half_day_pass_url":     nil,
@@ -107,7 +107,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 			"poll_max_seconds":      0.1,
 			"artifacts_dir":         artifactDir,
 		},
-		Credentials: model.ProfileCredentials{Email: testEmail, Password: testPassword},
+		Credentials: model.ProfileCredentials{Phone: testPhone},
 		Provider:    provider,
 		OTPFilter: otp.Filter{
 			ChatGUID:     testChatGUID,
@@ -161,14 +161,15 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 	if !snapshot.armedBeforeLogin {
 		t.Error("fake Yodel generated its OTP before BlueBubbles captured a cursor")
 	}
-	if snapshot.loginEmail != testEmail || snapshot.loginPassword != testPassword {
-		t.Error("real browser did not submit the synthetic credentials")
+	if snapshot.loginPhone != testPhone {
+		t.Error("real browser did not submit the synthetic mobile number")
 	}
 	if snapshot.submittedOTP != testOTP {
 		t.Errorf("real browser submitted OTP %q, want the provider code", snapshot.submittedOTP)
 	}
-	if !strings.Contains(snapshot.userAgent, "Chrome") {
-		t.Errorf("fake Yodel did not observe a Chromium user agent: %q", snapshot.userAgent)
+	if !regexp.MustCompile(`\bChrome/\d+\.\d+\.\d+\.\d+\b`).MatchString(snapshot.userAgent) ||
+		strings.Contains(snapshot.userAgent, "HeadlessChrome") {
+		t.Errorf("fake Yodel did not observe an ordinary four-part Chrome user agent: %q", snapshot.userAgent)
 	}
 	if _, err := os.Stat(profileDir); err != nil {
 		t.Errorf("persistent browser profile was not created: %v", err)
@@ -203,8 +204,7 @@ type e2eFlow struct {
 	healthCalls      int
 	armCalls         int
 	waitCalls        int
-	loginEmail       string
-	loginPassword    string
+	loginPhone       string
 	submittedOTP     string
 	userAgent        string
 	errors           []string
@@ -215,8 +215,7 @@ type flowSnapshot struct {
 	healthCalls      int
 	armCalls         int
 	waitCalls        int
-	loginEmail       string
-	loginPassword    string
+	loginPhone       string
 	submittedOTP     string
 	userAgent        string
 	errors           []string
@@ -230,8 +229,7 @@ func (f *e2eFlow) snapshot() flowSnapshot {
 		healthCalls:      f.healthCalls,
 		armCalls:         f.armCalls,
 		waitCalls:        f.waitCalls,
-		loginEmail:       f.loginEmail,
-		loginPassword:    f.loginPassword,
+		loginPhone:       f.loginPhone,
 		submittedOTP:     f.submittedOTP,
 		userAgent:        f.userAgent,
 		errors:           append([]string(nil), f.errors...),
@@ -304,34 +302,35 @@ func (f *e2eFlow) serveYodel(response http.ResponseWriter, request *http.Request
 		f.userAgent = request.UserAgent()
 	}
 	switch {
-	case request.Method == http.MethodGet && request.URL.Path == "/login":
+	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake":
 		if cookie, err := request.Cookie("synthetic-session"); err == nil && cookie.Value == "authenticated" {
-			writeHTML(response, `<html><body><a href="/account">My Account</a></body></html>`)
+			writeHTML(response, `<html><body><script>localStorage.setItem("BearerToken", "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.")</script><a href="/account">My Account</a></body></html>`)
 			return
 		}
-		writeHTML(response, `<html><body><form method="post" action="/login"><input type="email" name="email" autocomplete="username"><input type="password" name="password" autocomplete="current-password"><button type="submit">Log in</button></form></body></html>`)
-	case request.Method == http.MethodPost && request.URL.Path == "/login":
+		writeHTML(response, `<html><body><div class="popup"><a class="popup-close" href="#passes" onclick="this.parentElement.remove(); return false">Go To Pass(es)</a></div><a aria-label="Sign in / Register" href="/buntzen-lake/login">Profile</a></body></html>`)
+	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake/login":
+		writeHTML(response, `<html><body><form method="post" action="/buntzen-lake/login"><input id="txtPhonenumber" name="number" inputmode="numeric" maxlength="10" aria-label="Mobile phone number mandatory"><a href="#" onclick="this.closest('form').requestSubmit(); return false">Next</a></form></body></html>`)
+	case request.Method == http.MethodPost && request.URL.Path == "/buntzen-lake/login":
 		if err := request.ParseForm(); err != nil {
 			f.recordError("parse fake Yodel login: %v", err)
 		}
-		f.loginEmail = request.Form.Get("email")
-		f.loginPassword = request.Form.Get("password")
+		f.loginPhone = request.Form.Get("number")
 		f.armedBeforeLogin = f.armed
 		f.triggered = true
-		http.Redirect(response, request, "/otp", http.StatusSeeOther)
-	case request.Method == http.MethodGet && request.URL.Path == "/otp":
-		writeHTML(response, `<html><body><form method="post" action="/otp"><input name="code" autocomplete="one-time-code" inputmode="numeric"><button type="submit">Verify</button></form></body></html>`)
-	case request.Method == http.MethodPost && request.URL.Path == "/otp":
+		http.Redirect(response, request, "/buntzen-lake/otp", http.StatusSeeOther)
+	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake/otp":
+		writeHTML(response, `<html><body><form method="post" action="/buntzen-lake/otp"><input class="otpFocusInput" type="tel" name="code" maxlength="1" aria-label="verification code"><input class="otpFocusInput" type="tel" name="code" maxlength="1" aria-label="Digit 2"><input class="otpFocusInput" type="tel" name="code" maxlength="1" aria-label="Digit 3"><input class="otpFocusInput" type="tel" name="code" maxlength="1" aria-label="Digit 4"><input class="otpFocusInput" type="tel" name="code" maxlength="1" aria-label="Digit 5"><input class="otpFocusInput" type="tel" name="code" maxlength="1" aria-label="Digit 6"><a href="#" onclick="this.closest('form').requestSubmit(); return false">Verify</a></form></body></html>`)
+	case request.Method == http.MethodPost && request.URL.Path == "/buntzen-lake/otp":
 		if err := request.ParseForm(); err != nil {
 			f.recordError("parse fake Yodel OTP: %v", err)
 		}
-		f.submittedOTP = request.Form.Get("code")
+		f.submittedOTP = strings.Join(request.Form["code"], "")
 		if f.submittedOTP != testOTP {
 			writeHTMLStatus(response, http.StatusUnauthorized, `<html><body>Invalid code</body></html>`)
 			return
 		}
 		http.SetCookie(response, &http.Cookie{Name: "synthetic-session", Value: "authenticated", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		http.Redirect(response, request, "/login", http.StatusSeeOther)
+		http.Redirect(response, request, "/buntzen-lake", http.StatusSeeOther)
 	default:
 		http.NotFound(response, request)
 	}
@@ -470,7 +469,7 @@ func assertTreeExcludesSecrets(t *testing.T, root string) {
 
 func assertExcludesSecrets(t *testing.T, contents []byte, label string) {
 	t.Helper()
-	secrets := []string{testEmail, testPassword, testOTP, testBBPassword}
+	secrets := []string{testPhone, testOTP, testBBPassword}
 	sort.Strings(secrets)
 	for _, secret := range secrets {
 		if strings.Contains(string(contents), secret) {

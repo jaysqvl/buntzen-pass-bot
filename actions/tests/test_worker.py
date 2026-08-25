@@ -6,11 +6,12 @@ import types
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from buntzen_actions.config import ActionConfig
 from buntzen_actions.errors import ActionError
-from buntzen_actions.worker import run_action
+from buntzen_actions.worker import _open_context, _read_start_or_cancel, run_action
 
 
 class Tracing:
@@ -48,6 +49,7 @@ class Chromium:
     def __init__(self, context) -> None:
         self.context = context
         self.launch_options = None
+        self.executable_path = "/synthetic/chromium"
 
     def launch_persistent_context(self, **kwargs):
         self.launch_options = kwargs
@@ -101,6 +103,10 @@ def make_config(profile_dir: Path) -> ActionConfig:
 
 
 class WorkerTests(unittest.TestCase):
+    def test_pre_start_cancel_completes_readiness_probe_cleanly(self) -> None:
+        stream = SimpleNamespace(read=lambda: {"v": 2, "type": "control.cancel"})
+        self.assertIsNone(_read_start_or_cancel(stream))
+
     def test_browser_context_closes_when_action_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = Context()
@@ -114,6 +120,14 @@ class WorkerTests(unittest.TestCase):
                 patch(
                     "buntzen_actions.worker.YodelAction.execute",
                     side_effect=ActionError("synthetic failure"),
+                ),
+                patch(
+                    "buntzen_actions.worker.subprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout="Chromium 1.55.5010.0123",
+                        stderr="",
+                    ),
                 ),
             ):
                 with self.assertRaises(ActionError):
@@ -131,7 +145,19 @@ class WorkerTests(unittest.TestCase):
                 PlaywrightManager.last_playwright.chromium.launch_options[
                     "service_workers"
                 ],
-                "block",
+                "allow",
+            )
+            self.assertIn(
+                "Chrome/1.55.5010.0123",
+                PlaywrightManager.last_playwright.chromium.launch_options[
+                    "user_agent"
+                ],
+            )
+            self.assertNotIn(
+                "HeadlessChrome",
+                PlaywrightManager.last_playwright.chromium.launch_options[
+                    "user_agent"
+                ],
             )
             self.assertNotIn(
                 "--no-sandbox",
@@ -139,6 +165,36 @@ class WorkerTests(unittest.TestCase):
                     "args", []
                 ),
             )
+
+    def test_explicit_chrome_uses_its_exact_version_without_headless_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = Context()
+            playwright = Playwright(context)
+            executable = "/synthetic/google-chrome"
+            config = replace(
+                make_config(Path(directory) / "profile"),
+                executable_path=executable,
+            )
+            with patch(
+                "buntzen_actions.worker.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout="Google Chrome 1.55.5010.0123",
+                    stderr="",
+                ),
+            ) as version:
+                _open_context(playwright, config)
+            version.assert_called_once_with(
+                [executable, "--version"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            launch = playwright.chromium.launch_options
+            self.assertEqual(launch["executable_path"], executable)
+            self.assertIn("Chrome/1.55.5010.0123", launch["user_agent"])
+            self.assertNotIn("HeadlessChrome", launch["user_agent"])
 
     def test_insecure_tls_test_seam_is_explicit_and_loopback_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -151,9 +207,12 @@ class WorkerTests(unittest.TestCase):
             playwright = Playwright(context)
             with patch.dict(
                 "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
+            ), patch(
+                "buntzen_actions.worker.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0, stdout="Chromium 1.55.5010.0123", stderr=""
+                ),
             ):
-                from buntzen_actions.worker import _open_context
-
                 _open_context(playwright, config)
             self.assertIs(playwright.chromium.launch_options["ignore_https_errors"], True)
 
@@ -166,6 +225,11 @@ class WorkerTests(unittest.TestCase):
             )
             with patch.dict(
                 "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
+            ), patch(
+                "buntzen_actions.worker.subprocess.run",
+                return_value=SimpleNamespace(
+                    returncode=0, stdout="Chromium 1.55.5010.0123", stderr=""
+                ),
             ):
                 _open_context(playwright, remote)
             self.assertNotIn("ignore_https_errors", playwright.chromium.launch_options)

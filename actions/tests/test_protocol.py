@@ -15,7 +15,7 @@ from buntzen_actions.protocol import ControlInbox
 
 class ProtocolTests(unittest.TestCase):
     def test_reads_a_versioned_object(self) -> None:
-        reader = io.BytesIO(b'{"v":1,"type":"run.start"}\n')
+        reader = io.BytesIO(b'{"v":2,"type":"run.start"}\n')
         stream = JsonLineStream(reader, io.BytesIO())
         self.assertEqual(stream.read()["type"], "run.start")
 
@@ -24,7 +24,7 @@ class ProtocolTests(unittest.TestCase):
             JsonLineStream(io.BytesIO(b'{"v":true,"type":"x"}\n'), io.BytesIO()).read()
         with self.assertRaises(ProtocolError):
             JsonLineStream(
-                io.BytesIO(b'{"v":1,"type":"x","value":NaN}\n'), io.BytesIO()
+                io.BytesIO(b'{"v":2,"type":"x","value":NaN}\n'), io.BytesIO()
             ).read()
 
     def test_rejects_oversized_or_unterminated_input(self) -> None:
@@ -32,7 +32,7 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             JsonLineStream(oversized, io.BytesIO()).read()
         with self.assertRaises(ProtocolError):
-            JsonLineStream(io.BytesIO(b'{"v":1,"type":"x"}'), io.BytesIO()).read()
+            JsonLineStream(io.BytesIO(b'{"v":2,"type":"x"}'), io.BytesIO()).read()
 
     def test_refuses_secret_fields_on_output(self) -> None:
         stream = JsonLineStream(io.BytesIO(), io.BytesIO())
@@ -43,11 +43,11 @@ class ProtocolTests(unittest.TestCase):
 
     def test_serializes_one_compact_line(self) -> None:
         output = io.BytesIO()
-        JsonLineStream(io.BytesIO(), output).write("worker.ready", protocol=1)
+        JsonLineStream(io.BytesIO(), output).write("worker.ready", protocol=2)
         frames = output.getvalue().splitlines()
         self.assertEqual(len(frames), 1)
         self.assertEqual(
-            json.loads(frames[0]), {"v": 1, "type": "worker.ready", "protocol": 1}
+            json.loads(frames[0]), {"v": 2, "type": "worker.ready", "protocol": 2}
         )
 
     def test_rejects_secrets_in_start_config(self) -> None:
@@ -59,7 +59,7 @@ class ProtocolTests(unittest.TestCase):
     def test_confirmation_wait_rejects_wrong_or_mismatched_frame(self) -> None:
         wrong_type = JsonLineStream(
             io.BytesIO(
-                b'{"v":1,"type":"approval.approve","confirmation_id":"expected"}\n'
+                b'{"v":2,"type":"approval.approve","confirmation_id":"expected"}\n'
             ),
             io.BytesIO(),
         )
@@ -68,7 +68,7 @@ class ProtocolTests(unittest.TestCase):
 
         wrong_id = JsonLineStream(
             io.BytesIO(
-                b'{"v":1,"type":"confirmation.ready","confirmation_id":"wrong"}\n'
+                b'{"v":2,"type":"confirmation.ready","confirmation_id":"wrong"}\n'
             ),
             io.BytesIO(),
         )

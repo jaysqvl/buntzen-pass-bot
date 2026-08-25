@@ -20,8 +20,13 @@ import (
 )
 
 const (
-	ProtocolVersion = 1
-	MaxFrameBytes   = 64 * 1024
+	ProtocolVersion      = 2
+	MaxFrameBytes        = 64 * 1024
+	maxStderrLineBytes   = 4 * 1024
+	maxStderrTotalBytes  = 256 * 1024
+	maxStderrLines       = 2 * 1024
+	stderrSuppressedLine = "action stderr limit reached; further child diagnostics suppressed"
+	stderrOversizedLine  = "oversized action stderr line discarded to protect sensitive values"
 )
 
 var (
@@ -50,6 +55,7 @@ var inheritedEnvironmentKeys = []string{
 
 var allowedEnvironmentOverrides = map[string]struct{}{
 	"BUNTZEN_ACTIONPROC_HELPER": {}, // Test helper only; never contains a secret.
+	"BUNTZEN_ACTION_LOG_LEVEL":  {}, // Validated control-plane log level only.
 	"PYTHONDONTWRITEBYTECODE":   {},
 	"PYTHONUNBUFFERED":          {},
 }
@@ -301,13 +307,46 @@ func drainStderr(reader io.Reader, callback func(string), finished chan<- struct
 	defer close(finished)
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 4096), MaxFrameBytes)
+	totalBytes := 0
+	totalLines := 0
+	suppressed := false
+	oversizedReported := false
 	for scanner.Scan() {
-		if callback != nil {
-			line := strings.TrimSpace(scanner.Text())
-			if len(line) > 4096 {
-				line = line[:4096] + "..."
+		totalBytes += len(scanner.Bytes()) + 1
+		totalLines++
+		if totalBytes > maxStderrTotalBytes || totalLines > maxStderrLines {
+			if !suppressed {
+				safeStderrCallback(callback, stderrSuppressedLine)
+				suppressed = true
 			}
-			callback(line)
+			continue
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if len(line) > maxStderrLineBytes {
+			// Never emit a prefix of a raw child diagnostic. A credential that
+			// crosses the truncation boundary could otherwise evade the caller's
+			// whole-value redaction and leave a sensitive fragment in logs.
+			if !oversizedReported {
+				safeStderrCallback(callback, stderrOversizedLine)
+				oversizedReported = true
+			}
+			continue
+		}
+		if line != "" {
+			safeStderrCallback(callback, line)
 		}
 	}
+	if scanner.Err() != nil && !suppressed {
+		safeStderrCallback(callback, "action stderr line exceeded the safety limit; remaining diagnostics suppressed")
+	}
+}
+
+func safeStderrCallback(callback func(string), line string) {
+	if callback == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	callback(line)
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -173,9 +175,11 @@ func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
 		err = provider.Health(ctx)
 	}
 	if err != nil {
+		slog.Warn("OTP provider health check failed", "source_id", source.ID, "provider", source.Provider, "error", err)
 		http.Error(w, "provider health check failed", http.StatusBadGateway)
 		return
 	}
+	slog.Info("OTP provider health check succeeded", "source_id", source.ID, "provider", source.Provider)
 	http.Redirect(w, r, "/sources?ok=healthy", http.StatusSeeOther)
 }
 
@@ -190,7 +194,8 @@ func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.engine.QueuePairing(r.Context(), requestAuth(r).Authenticated.User.ID, id)
 	if err != nil {
-		http.Error(w, "pairing could not be started; assign the source to an enabled profile and booking first", http.StatusConflict)
+		slog.Warn("supervised pairing could not be queued", "source_id", id, "error", err)
+		http.Error(w, safeFormError(err), http.StatusConflict)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d?ok=queued", job.ID), http.StatusSeeOther)
@@ -438,12 +443,12 @@ func profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
 		return store.ProfileInput{}, errors.New("browser timeout must be a number")
 	}
 	input := store.ProfileInput{Name: r.Form.Get("name"), DefaultVehicle: r.Form.Get("default_vehicle"), OTPSourceID: parseInt64(r.Form.Get("otp_source_id")), Headless: checked(r, "headless"), BrowserChannel: r.Form.Get("browser_channel"), BrowserExecutable: r.Form.Get("browser_executable"), DefaultTimeoutMS: timeout, Enabled: checked(r, "enabled")}
-	email, password := strings.TrimSpace(r.Form.Get("yodel_email")), r.Form.Get("yodel_password")
-	if creating || email != "" || password != "" {
-		if email == "" || password == "" {
-			return input, errors.New("Yodel email and password must both be supplied")
+	phone := strings.TrimSpace(r.Form.Get("yodel_phone"))
+	if creating || phone != "" {
+		if phone == "" {
+			return input, errors.New("Yodel mobile number is required")
 		}
-		input.Credentials = &model.ProfileCredentials{Email: email, Password: password}
+		input.Credentials = &model.ProfileCredentials{Phone: phone}
 	}
 	return input, nil
 }
@@ -473,10 +478,10 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 	if !creating {
 		actionURL, heading, submit = fmt.Sprintf("/profiles/%d", profile.ID), "Edit Yodel profile", "Save profile"
 	}
-	data := formData{BaseData: base(r, heading), Eyebrow: "Browser identity", Heading: heading, Description: "Credentials are write-only and are passed to Python only when Yodel displays a login form.", CancelURL: "/profiles", ActionURL: actionURL, SubmitLabel: submit, FormError: formError}
+	data := formData{BaseData: base(r, heading), Eyebrow: "Browser identity", Heading: heading, Description: "The mobile login is write-only, encrypted at rest, and passed to Python only when Yodel displays its sign-in form.", CancelURL: "/profiles", ActionURL: actionURL, SubmitLabel: submit, FormError: formError}
 	data.Sections = []formSection{
 		{Title: "Profile", Help: "Buntzen assigns a private persistent browser identity automatically.", Fields: []formField{{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true}, {Name: "default_vehicle", Label: "Vehicle keyword", Type: "text", Value: value.DefaultVehicle, Required: true}, {Name: "otp_source_id", Label: "Exclusive OTP source", Type: "select", Required: true, Options: options}, {Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled}}},
-		{Title: "Yodel credentials", Fields: []formField{{Name: "yodel_email", Label: "Email", Type: "password", Placeholder: secretPlaceholder(creating)}, {Name: "yodel_password", Label: "Password", Type: "password", Placeholder: secretPlaceholder(creating)}}},
+		{Title: "Yodel sign-in", Help: "Enter the 10-digit Canadian/US mobile number used by Yodel. A leading +1 and common separators are accepted. If this profile predates mobile login support, re-enter the number before enabling it.", Fields: []formField{{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: secretPlaceholder(creating), Required: creating}}},
 		{Title: "Browser", Help: "Native macOS normally uses channel chrome. Docker uses bundled Chromium, so leave channel and executable blank there.", Fields: []formField{{Name: "headless", Label: "Run headless", Type: "checkbox", Checked: value.Headless}, {Name: "browser_channel", Label: "Browser channel", Type: "text", Value: value.BrowserChannel, Placeholder: "chrome"}, {Name: "browser_executable", Label: "Executable path override", Type: "text", Value: value.BrowserExecutable}, {Name: "default_timeout_ms", Label: "Action timeout (ms)", Type: "number", Value: strconv.Itoa(value.DefaultTimeoutMS), Required: true, Step: "1000"}}},
 	}
 	s.render(w, formStatus(formError), "form", data)
@@ -580,6 +585,7 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.engine.QueueBooking(r.Context(), requestAuth(r).Authenticated.User.ID, id, command, mode)
 	if err != nil {
+		slog.Warn("booking job could not be queued", "booking_id", id, "command", command, "error", err)
 		http.Error(w, "job could not be queued", http.StatusConflict)
 		return
 	}
@@ -620,7 +626,16 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		return
 	}
 	creating := booking == nil
-	value := model.BookingRequest{Enabled: true, TargetDate: time.Now().In(time.Local).AddDate(0, 0, 1).Format(time.DateOnly), Timezone: "UTC", ReleaseTime: "07:00", PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120, PollMinSeconds: 1.4, PollMaxSeconds: 3.6, ConfirmationMode: model.RunModeManual, CheckAllDay: true}
+	defaultYodelOrigin := config.DefaultYodelOrigin
+	if len(s.config.YodelOrigins) > 0 {
+		defaultYodelOrigin = s.config.YodelOrigins[0]
+	}
+	yodelBaseURL := strings.TrimRight(defaultYodelOrigin, "/") + "/buntzen-lake"
+	localTimezone, err := time.LoadLocation("America/Vancouver")
+	if err != nil {
+		localTimezone = time.Local
+	}
+	value := model.BookingRequest{Enabled: true, TargetDate: time.Now().In(localTimezone).AddDate(0, 0, 1).Format(time.DateOnly), Timezone: "America/Vancouver", ReleaseTime: "07:00", PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120, PollMinSeconds: 1.4, PollMaxSeconds: 3.6, ConfirmationMode: model.RunModeManual, LoginProbeURL: yodelBaseURL, AllDayPassURL: yodelBaseURL + "/All-Day-Pass", HalfDayPassURL: yodelBaseURL + "/Half-Day-Pass", CheckAllDay: true, CheckAfternoon: true, CheckMorning: true}
 	if booking != nil {
 		value = *booking
 	}

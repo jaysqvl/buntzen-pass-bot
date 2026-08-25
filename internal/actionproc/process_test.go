@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -53,8 +54,8 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 func TestDecodeRejectsMalformedAndOversizedFrames(t *testing.T) {
 	for _, raw := range [][]byte{
 		[]byte(`not-json`),
-		[]byte(`{"v":2,"type":"worker.ready"}`),
-		[]byte(`{"v":1}`),
+		[]byte(`{"v":1,"type":"worker.ready"}`),
+		[]byte(`{"v":2}`),
 	} {
 		if _, err := decodeFrame(raw); err == nil {
 			t.Fatalf("expected %q to fail", raw)
@@ -104,6 +105,67 @@ func TestChildEnvironmentRejectsUnapprovedOverrides(t *testing.T) {
 		if _, err := childEnvironment([]string{override}); err == nil {
 			t.Fatalf("expected override %q to be rejected", override)
 		}
+	}
+}
+
+func TestChildEnvironmentAllowsOnlyValidatedLoggingKnob(t *testing.T) {
+	environment, err := childEnvironment([]string{"BUNTZEN_ACTION_LOG_LEVEL=debug"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(environment, "\n"), "BUNTZEN_ACTION_LOG_LEVEL=debug") {
+		t.Fatalf("child environment omitted action log level: %q", environment)
+	}
+}
+
+func TestStderrDrainDiscardsOversizedLinesAndBoundsTotalCallbacks(t *testing.T) {
+	phoneAtBoundary := "5559876543"
+	longLine := strings.Repeat("x", maxStderrLineBytes-len(phoneAtBoundary)+2) + phoneAtBoundary
+	var input strings.Builder
+	input.WriteString(longLine)
+	input.WriteByte('\n')
+	for input.Len() <= maxStderrTotalBytes+maxStderrLineBytes {
+		input.WriteString(strings.Repeat("y", 1024))
+		input.WriteByte('\n')
+	}
+
+	finished := make(chan struct{})
+	var mu sync.Mutex
+	var lines []string
+	go drainStderr(strings.NewReader(input.String()), func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, line)
+	}, finished)
+	<-finished
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) == 0 || lines[0] != stderrOversizedLine {
+		t.Fatalf("oversized stderr line was not discarded: %#v", lines)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, phoneAtBoundary) || strings.Contains(line, "555987") {
+			t.Fatalf("oversized stderr exposed a credential fragment: %#v", lines)
+		}
+	}
+	if lines[len(lines)-1] != stderrSuppressedLine {
+		t.Fatalf("missing stderr suppression marker: %#v", lines[len(lines)-3:])
+	}
+	if len(lines) >= maxStderrLines {
+		t.Fatalf("stderr callback count was not bounded: %d", len(lines))
+	}
+}
+
+func TestStderrCallbackPanicCannotCrashDrain(t *testing.T) {
+	finished := make(chan struct{})
+	go drainStderr(strings.NewReader("first\nsecond\n"), func(string) {
+		panic("synthetic callback panic")
+	}, finished)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("stderr drain did not recover from callback panic")
 	}
 }
 

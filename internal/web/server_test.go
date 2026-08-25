@@ -353,14 +353,13 @@ func TestSameOriginCanonicalizesCaseAndDefaultPort(t *testing.T) {
 func TestEncryptedSecretsAreNeverRendered(t *testing.T) {
 	fixture := newWebFixture(t)
 	const providerPassword = "synthetic-bluebubbles-password"
-	const yodelEmail = "private-yodel@example.test"
-	const yodelPassword = "synthetic-yodel-password"
+	const yodelPhone = "5559876543"
 	userStore := fixture.store.ForUser(fixture.admin.ID)
 	source, err := userStore.CreateOTPSource(context.Background(), store.OTPSourceInput{Name: "Messages", Provider: model.OTPProviderBlueBubbles, Identity: "http://127.0.0.1:1234", ProviderConfig: bluebubbles.Config{BaseURL: "http://127.0.0.1:1234", Password: providerPassword}, PairingChatGUID: "iMessage;-;sender", PairingSender: "+15550100123", PairingService: "iMessage"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15000, Enabled: true, Credentials: &model.ProfileCredentials{Email: yodelEmail, Password: yodelPassword}})
+	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15000, Enabled: true, Credentials: &model.ProfileCredentials{Phone: yodelPhone}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,11 +372,62 @@ func TestEncryptedSecretsAreNeverRendered(t *testing.T) {
 			t.Fatalf("GET %s = %d", target, recorder.Code)
 		}
 		body := recorder.Body.String()
-		for _, secret := range []string{providerPassword, yodelEmail, yodelPassword} {
+		for _, secret := range []string{providerPassword, yodelPhone} {
 			if strings.Contains(body, secret) {
 				t.Fatalf("GET %s rendered a secret", target)
 			}
 		}
+		if strings.Contains(target, "/profiles/") {
+			if !strings.Contains(body, `name="yodel_phone"`) || strings.Contains(body, `name="yodel_email"`) || strings.Contains(body, `name="yodel_password"`) {
+				t.Fatalf("profile form did not expose only the write-only mobile field")
+			}
+		}
+	}
+}
+
+func TestNewBookingFormUsesLocalSafeDefaults(t *testing.T) {
+	fixture := newWebFixture(t)
+	cookies := loginCookies(t, fixture)
+	request := authenticatedRequest(http.MethodGet, "http://example.test/bookings/new", cookies, nil)
+	recorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("new booking form = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`name="timezone" value="America/Vancouver"`,
+		`name="release_time" value="07:00"`,
+		`name="login_probe_url" value="https://example.test/buntzen-lake"`,
+		`name="all_day_pass_url" value="https://example.test/buntzen-lake/All-Day-Pass"`,
+		`name="half_day_pass_url" value="https://example.test/buntzen-lake/Half-Day-Pass"`,
+		`value="manual" selected`,
+		`name="check_all_day" value="1" checked`,
+		`name="check_afternoon" value="1" checked`,
+		`name="check_morning" value="1" checked`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("new booking form missing safe default %q", expected)
+		}
+	}
+}
+
+func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
+	fixture := newWebFixture(t)
+	resources := fixture.store.ForUser(fixture.admin.ID)
+	source, err := resources.CreateOTPSource(context.Background(), store.OTPSourceInput{
+		Name: "Unassigned Messages", Provider: model.OTPProviderBlueBubbles,
+		Identity:       "http://127.0.0.1:2234",
+		ProviderConfig: bluebubbles.Config{BaseURL: "http://127.0.0.1:2234", Password: "synthetic-password"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := loginCookies(t, fixture)
+	form := url.Values{"csrf_token": {csrfFrom(cookies)}}
+	recorder := serveForm(fixture, http.MethodPost, fmt.Sprintf("/sources/%d/pair", source.ID), cookies, form)
+	if recorder.Code != http.StatusConflict || recorder.Body.String() != "assign this source to an enabled Yodel profile before pairing\n" {
+		t.Fatalf("pair without profile = %d body=%q", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -394,7 +444,7 @@ func TestBookingRunReturnsBoundedConflictForPendingDuplicate(t *testing.T) {
 	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{
 		Name: "Queue test profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "queue@example.test", Password: "synthetic-password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -448,7 +498,7 @@ func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
 	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{
 		Name: "SSE profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "sse@example.test", Password: "password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)

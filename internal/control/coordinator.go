@@ -48,6 +48,7 @@ type RunInput struct {
 // Implementations must never store a raw OTP or provider/credential material.
 type RunHooks struct {
 	Event                func(kind, message string)
+	Diagnostic           func(operation string, err error)
 	AwaitingApproval     func(approvalID string) error
 	ApprovalResolved     func(decision model.ApprovalDecision) error
 	ConfirmationStarting func() error
@@ -129,9 +130,12 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 				continue
 			}
 			if !ready {
-				if frame.Type != "worker.ready" || stringValue(frame.Payload, "action") != "yodel" {
+				protocol, protocolOK := frame.Payload["protocol"].(float64)
+				if frame.Type != "worker.ready" ||
+					stringValue(frame.Payload, "action") != "yodel" ||
+					!protocolOK || protocol != float64(actionproc.ProtocolVersion) {
 					process.Cancel(input.CancelGrace)
-					return RunResult{}, errors.New("action worker did not negotiate the Yodel v1 protocol")
+					return RunResult{}, errors.New("action worker did not negotiate the Yodel v2 protocol")
 				}
 				ready = true
 				if err := process.Send("run.start", map[string]any{
@@ -159,6 +163,7 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 					continue
 				}
 				if result.err != nil {
+					input.diagnostic("otp.wait", result.err)
 					responseKind := "otp.error"
 					message := "OTP provider failed while waiting for a fresh code."
 					if errors.Is(result.err, context.DeadlineExceeded) {
@@ -204,6 +209,9 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 				continue
 			}
 			processResult = &result
+			if result.Err != nil {
+				input.diagnostic("process.exit", result.Err)
+			}
 			doneStream = nil
 			cancelChallenges()
 			input.Hub.ClearOTP(jobKey)
@@ -239,6 +247,12 @@ func (input RunInput) EventsOrNoop() func(string, string) {
 	return func(string, string) {}
 }
 
+func (input RunInput) diagnostic(operation string, err error) {
+	if input.Hooks.Diagnostic != nil && err != nil {
+		input.Hooks.Diagnostic(operation, err)
+	}
+}
+
 func handleFrame(
 	ctx context.Context,
 	input RunInput,
@@ -268,8 +282,7 @@ func handleFrame(
 		}
 		return process.Send("credentials.provide", map[string]any{
 			"request_id": requestID,
-			"email":      input.Credentials.Email,
-			"password":   input.Credentials.Password,
+			"phone":      input.Credentials.Phone,
 		})
 	case "otp.prepare":
 		challengeID, err := correlation(frame.Payload, "challenge_id")
@@ -284,6 +297,7 @@ func handleFrame(
 		}
 		armed, err := input.Provider.Arm(ctx, input.OTPFilter)
 		if err != nil {
+			input.diagnostic("otp.arm", err)
 			_ = process.Send("otp.error", map[string]any{"challenge_id": challengeID})
 			events("otp.arm_failed", "OTP provider could not be armed.")
 			return nil
@@ -425,7 +439,7 @@ func safeToken(value string) string {
 
 func sanitizeMessage(message string, credentials model.ProfileCredentials) string {
 	message = strings.TrimSpace(message)
-	for _, secret := range []string{credentials.Email, credentials.Password} {
+	for _, secret := range []string{credentials.Phone} {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[redacted]")
 		}

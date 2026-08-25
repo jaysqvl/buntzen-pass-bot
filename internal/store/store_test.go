@@ -29,7 +29,7 @@ func TestMigrateCreatesCleanSchemaAndRefusesLegacyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := store.SchemaVersion(ctx)
-	if err != nil || version != 1 {
+	if err != nil || version != 2 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 
@@ -95,13 +95,13 @@ func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
 	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
 		Name: "Example", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "user@example.test", Password: "test-only-yodel-password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	credentials, err := store.GetProfileCredentials(ctx, testUserID, profile.ID)
-	if err != nil || credentials.Email != "user@example.test" || credentials.Password != "test-only-yodel-password" {
+	if err != nil || credentials.Phone != "5559876543" {
 		t.Fatalf("credentials=%+v err=%v", credentials, err)
 	}
 	var decoded map[string]any
@@ -114,23 +114,23 @@ func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
 	_, err = store.CreateProfile(ctx, testUserID, ProfileInput{
 		Name: "Second", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
 		DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "second@example.test", Password: "password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876544"},
 	})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("second profile error = %v", err)
 	}
 
-	var encryptedConfig, encryptedEmail, encryptedPassword string
+	var encryptedConfig, encryptedPhone string
 	if err := store.db.QueryRowContext(ctx, "SELECT config_ciphertext FROM otp_sources WHERE id = ?", source.ID).Scan(&encryptedConfig); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.db.QueryRowContext(ctx, `
-		SELECT yodel_email_ciphertext, yodel_password_ciphertext FROM profiles WHERE id = ?
-	`, profile.ID).Scan(&encryptedEmail, &encryptedPassword); err != nil {
+		SELECT yodel_phone_ciphertext FROM profiles WHERE id = ?
+	`, profile.ID).Scan(&encryptedPhone); err != nil {
 		t.Fatal(err)
 	}
-	joined := encryptedConfig + encryptedEmail + encryptedPassword
-	for _, secret := range []string{"test-only-provider-password", "user@example.test", "test-only-yodel-password"} {
+	joined := encryptedConfig + encryptedPhone
+	for _, secret := range []string{"test-only-provider-password", "5559876543"} {
 		if strings.Contains(joined, secret) {
 			t.Fatalf("stored ciphertext exposed %q", secret)
 		}
@@ -182,7 +182,7 @@ func TestBlueBubblesPairingFingerprintIsAllOrNothing(t *testing.T) {
 	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
 		Name: "pairing profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "pairing@example.test", Password: "password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -427,19 +427,19 @@ func TestTransitionsDecisionsAndEventRedaction(t *testing.T) {
 	}
 
 	event, err := store.SystemAppendJobEvent(ctx, JobEventInput{
-		JobID: job.ID, Kind: "otp.received", Message: "code=654321 was submitted with password",
+		JobID: job.ID, Kind: "otp.received", Message: "code=654321 was submitted for 5559876543",
 		Data: map[string]any{
 			"otp_code": "654321", "detail": "received 654321", "numeric": 654321,
 			"concrete_map":   map[string]string{"otp": "654321", "note": "code 654321"},
 			"concrete_slice": []string{"654321"},
-			"innocuous_key":  "the credential was password",
+			"innocuous_key":  "the mobile number was 5559876543",
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	serialized, _ := json.Marshal(event)
-	for _, secret := range []string{"654321", "password", "approval@example.test"} {
+	for _, secret := range []string{"654321", "5559876543"} {
 		if bytes.Contains(serialized, []byte(secret)) {
 			t.Fatalf("secret %q leaked into event: %s", secret, serialized)
 		}
@@ -735,7 +735,7 @@ func fixtureProfileAndBooking(t *testing.T, store *Store, name string) (model.Pr
 	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
 		Name: name + " profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: name + "@example.test", Password: "password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -768,7 +768,7 @@ func claimedBlueBubblesPairingJob(t *testing.T, database *Store, userID int64, n
 	profile, err := database.CreateProfile(ctx, userID, ProfileInput{
 		Name: name + " profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: name + "@example.test", Password: "synthetic-password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -833,7 +833,7 @@ func TestEncryptedSecretsNeverReachDatabaseFiles(t *testing.T) {
 	_, err = store.CreateProfile(ctx, admin.ID, ProfileInput{
 		Name: "profile", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
 		DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "hidden@example.test", Password: "also-never-persist"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -850,7 +850,7 @@ func TestEncryptedSecretsNeverReachDatabaseFiles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, secret := range []string{"never-persist-this-plaintext", "hidden@example.test", "also-never-persist"} {
+		for _, secret := range []string{"never-persist-this-plaintext", "5559876543"} {
 			if bytes.Contains(data, []byte(secret)) {
 				t.Fatalf("%s contains plaintext secret %q", entry.Name(), secret)
 			}

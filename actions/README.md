@@ -1,4 +1,4 @@
-# Buntzen actions protocol v1
+# Buntzen actions protocol v2
 
 `buntzen-actions` is a fresh-process Python worker for one allowlisted action:
 Yodel browser automation. It does not read the application database, contact an
@@ -6,23 +6,33 @@ OTP provider, or import Twilio/BlueBubbles libraries. The Go process retains all
 provider and persistence responsibility.
 
 The worker uses bounded JSON Lines (UTF-8, one object per line, maximum 65,536
-bytes) on stdin/stdout. All frames contain `{"v":1,"type":"..."}`. Logs go only
+bytes) on stdin/stdout. All frames contain `{"v":2,"type":"..."}`. Logs go only
 to stderr. Unknown object fields are ignored, but unknown frame types and invalid
 state transitions fail the run.
+
+The control plane passes its validated log threshold to each worker through
+`BUNTZEN_ACTION_LOG_LEVEL`; operators should configure `BUNTZEN_LOG_LEVEL` or
+the `BUNTZEN_DEBUG` convenience toggle rather than setting this internal
+variable directly. Worker stderr is redacted and bounded again by Go before it
+is written to the container log with a durable job ID. Protocol payloads are
+never logged.
 
 ## Start and completion
 
 The child first emits:
 
 ```json
-{"v":1,"type":"worker.ready","protocol":1,"action":"yodel","commands":["auth-check","dry-run","book"]}
+{"v":2,"type":"worker.ready","protocol":2,"action":"yodel","commands":["auth-check","dry-run","book"]}
 ```
+
+A control-plane readiness probe may reply with `control.cancel`; the worker
+then exits successfully without starting an action.
 
 Go then sends `run.start`:
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "type": "run.start",
   "run_id": "job-42",
   "command": "book",
@@ -33,8 +43,8 @@ Go then sends `run.start`:
     "timezone": "UTC",
     "allowed_yodel_origins": ["https://yodelportal.com"],
     "login_probe_url": "https://yodelportal.com/buntzen-lake",
-    "all_day_pass_url": "https://yodelportal.com/buntzen-lake",
-    "half_day_pass_url": "https://yodelportal.com/buntzen-lake",
+    "all_day_pass_url": "https://yodelportal.com/buntzen-lake/All-Day-Pass",
+    "half_day_pass_url": "https://yodelportal.com/buntzen-lake/Half-Day-Pass",
     "vehicle_keyword": "Example Vehicle",
     "pass_order": ["all_day", "afternoon", "morning"],
     "headless": true,
@@ -77,8 +87,9 @@ before requesting or filling credentials and OTPs.
 
 When Yodel actually displays a login form, Python emits
 `credentials.request {request_id}`. Go replies with
-`credentials.provide {request_id,email,password}`. Both values may be null only
-for a profile that does not display a form; Python never echoes either field.
+`credentials.provide {request_id,phone}`. The phone value is the normalized
+10-digit Canadian/US mobile number configured for the profile. Python never
+echoes it and clears its in-process reference immediately after filling login.
 
 Every action that may generate a new code follows this sequence:
 

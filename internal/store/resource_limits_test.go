@@ -89,7 +89,7 @@ func TestDurableResourceCountsAreBoundedAcrossDatabaseHandles(t *testing.T) {
 			Name:           fmt.Sprintf("profile-%02d", index),
 			DefaultVehicle: "Example Vehicle", OTPSourceID: sources[index].ID,
 			Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-			Credentials: &model.ProfileCredentials{Email: fmt.Sprintf("profile-%02d@example.test", index), Password: "synthetic-password"},
+			Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -100,7 +100,7 @@ func TestDurableResourceCountsAreBoundedAcrossDatabaseHandles(t *testing.T) {
 		Name:           "profile-over-limit",
 		DefaultVehicle: "Example Vehicle", OTPSourceID: sources[MaxProfilesPerUser].ID,
 		Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "over-limit@example.test", Password: "synthetic-password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	}); !errors.Is(err, ErrResourceLimit) {
 		t.Fatalf("profile limit error=%v", err)
 	}
@@ -165,10 +165,10 @@ func TestResourceFieldsAndEncryptedConfigurationAreBounded(t *testing.T) {
 		OTPSourceID: profile.OTPSourceID, Headless: profile.Headless,
 		BrowserChannel: profile.BrowserChannel, BrowserExecutable: profile.BrowserExecutable,
 		DefaultTimeoutMS: profile.DefaultTimeoutMS, Enabled: profile.Enabled,
-		Credentials: &model.ProfileCredentials{Email: credentials.Email, Password: strings.Repeat("p", MaxYodelPasswordBytes+1)},
+		Credentials: &model.ProfileCredentials{Phone: strings.Repeat("2", MaxYodelPhoneInputBytes+1)},
 	})
-	if err == nil || !strings.Contains(err.Error(), "password is too long") {
-		t.Fatalf("oversized Yodel password error=%v", err)
+	if err == nil || !strings.Contains(err.Error(), "mobile number is too long") {
+		t.Fatalf("oversized Yodel mobile number error=%v", err)
 	}
 	unchanged, err := resources.GetProfileCredentials(ctx, profile.ID)
 	if err != nil || unchanged != credentials {

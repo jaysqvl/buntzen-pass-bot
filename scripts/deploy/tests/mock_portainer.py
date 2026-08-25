@@ -18,6 +18,8 @@ ORIGINAL_ENV = [
     {"name": "BUNTZEN_IMAGE", "value": OLD_IMAGE},
     {"name": "BUNTZEN_WEB_PORT", "value": "18091"},
     {"name": "BUNTZEN_APPDATA_PATH", "value": "/srv/appdata/buntzen-pass-bot"},
+    {"name": "BUNTZEN_LOG_LEVEL", "value": "debug"},
+    {"name": "BUNTZEN_DEBUG", "value": "true"},
     {"name": "PRESERVED_VALUE", "value": "preserve-me"},
 ]
 ROLLBACK_COMPOSE = (

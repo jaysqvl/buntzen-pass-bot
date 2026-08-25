@@ -146,8 +146,10 @@ type Profile struct {
 }
 
 type ProfileCredentials struct {
-	Email    string
-	Password string
+	// Phone is the normalized ten-digit North American mobile number used by
+	// Yodel's passwordless sign-in flow. It remains encrypted at rest and only
+	// crosses the action boundary in response to credentials.request.
+	Phone string
 }
 
 type BookingRequest struct {
