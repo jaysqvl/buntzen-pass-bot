@@ -22,7 +22,7 @@ Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking pass
 
    Edit `.env` and:
 
-   - set `BUNTZEN_ALLOWED_HOSTS` to the exact host and port users will open, such as `192.168.1.20:8080`;
+   - set `BUNTZEN_ALLOWED_HOSTS` to the exact host and port users will open, such as `buntzen.example:8080`;
    - replace `BLUEBUBBLES_URL` with the server's LAN URL if you use BlueBubbles; and
    - leave `SCHEDULES_ENABLED=false` until onboarding is complete.
 
