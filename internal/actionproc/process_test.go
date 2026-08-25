@@ -169,6 +169,59 @@ func TestStderrCallbackPanicCannotCrashDrain(t *testing.T) {
 	}
 }
 
+func TestProcessDrainsMultiMegabyteUnterminatedStderr(t *testing.T) {
+	const helperMode = "oversized-stderr"
+	const sentinel = "SENSITIVE_STDERR_SENTINEL_4f17"
+	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == helperMode {
+		payload := strings.Repeat(sentinel, (2<<20)/len(sentinel)+1)
+		if _, err := fmt.Fprint(os.Stderr, payload); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var stderrLines []string
+	session, err := Start(ctx, Config{
+		Executable: os.Args[0],
+		Args:       []string{"-test.run=^TestProcessDrainsMultiMegabyteUnterminatedStderr$"},
+		Environment: []string{
+			"BUNTZEN_ACTIONPROC_HELPER=" + helperMode,
+		},
+		CancelGrace: 100 * time.Millisecond,
+		OnStderr: func(line string) {
+			stderrLines = append(stderrLines, line)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case result := <-session.Done():
+		if result.Err != nil || result.ExitCode != 0 {
+			t.Fatalf("oversized-stderr helper result = %#v", result)
+		}
+	case <-ctx.Done():
+		select {
+		case result := <-session.Done():
+			t.Fatalf("oversized child stderr pinned process completion until cancellation: %#v", result)
+		case <-time.After(time.Second):
+			t.Fatal("oversized child stderr prevented process cleanup after cancellation")
+		}
+	}
+
+	if len(stderrLines) != 1 || stderrLines[0] != "action stderr line exceeded the safety limit; remaining diagnostics suppressed" {
+		t.Fatalf("unexpected oversized-stderr diagnostics: %#v", stderrLines)
+	}
+	for _, line := range stderrLines {
+		if strings.Contains(line, sentinel) || strings.Contains(line, "SENSITIVE_STDERR") {
+			t.Fatalf("oversized stderr exposed sentinel content: %#v", stderrLines)
+		}
+	}
+}
+
 func TestSendRejectsOversizedFrame(t *testing.T) {
 	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == "1" {
 		helperProcess()
