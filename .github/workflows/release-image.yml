@@ -170,7 +170,15 @@ jobs:
               )
           ' /tmp/buildkit-sbom.json > /tmp/spdx.json
           docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Provenance}}' > /tmp/provenance.json
-          jq -e '(.SLSA // .["linux/amd64"].SLSA) as $p | ($p.buildType | type == "string") and ($p.builder | type == "object")' /tmp/provenance.json >/dev/null
+          jq -e '
+            def nonempty_string: type == "string" and length > 0;
+            def builder: type == "object" and (.id | nonempty_string);
+            (.SLSA // .["linux/amd64"].SLSA) as $p
+            | (
+                (($p.buildType | nonempty_string) and ($p.builder | builder)) or
+                (($p.buildDefinition.buildType | nonempty_string) and ($p.runDetails.builder | builder))
+              )
+          ' /tmp/provenance.json >/dev/null
 
       - name: Reject high and critical image vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
