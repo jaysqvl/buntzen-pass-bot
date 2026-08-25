@@ -93,6 +93,7 @@ start_container() {
     --volume "$volume:/appdata" \
     --env APPDATA_DIR=/appdata \
     --env BLUEBUBBLES_URL=http://bluebubbles.example:1234 \
+    --env BUNTZEN_DEBUG=true \
     --env BUNTZEN_SETUP_TOKEN="$setup_token" \
     --env MAX_CONCURRENT_JOBS=2 \
     --env SCHEDULES_ENABLED=false \
