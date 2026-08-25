@@ -33,8 +33,28 @@ grep -Fq 'uses: ./.github/workflows/deploy-portainer.yml' "$release_workflow" ||
   printf 'Release Please does not invoke the in-place deployment workflow\n' >&2
   exit 1
 }
+grep -Fq "startsWith(needs.release-please.outputs.tag_name, 'buntzen-pass-bot-v')" "$release_workflow" || {
+  printf 'Release Please does not recognize its component-prefixed release tag\n' >&2
+  exit 1
+}
 grep -Fq 'image_digest: ${{ needs.publish-image.outputs.image_digest }}' "$release_workflow" || {
   printf 'Release Please does not pass the published digest to deployment\n' >&2
+  exit 1
+}
+grep -Fq 'workflow_dispatch:' "$release_image_workflow" || {
+  printf 'release image workflow has no recovery dispatch path\n' >&2
+  exit 1
+}
+grep -Fq '^buntzen-pass-bot-v(0|[1-9][0-9]*)' "$release_image_workflow" || {
+  printf 'release image workflow does not validate the component-prefixed tag\n' >&2
+  exit 1
+}
+grep -Fq 'echo "version=${RELEASE_TAG#buntzen-pass-bot-v}"' "$release_image_workflow" || {
+  printf 'release image workflow does not extract the component version\n' >&2
+  exit 1
+}
+grep -Fq "if: github.event_name == 'workflow_dispatch'" "$release_image_workflow" || {
+  printf 'manually dispatched release images are not routed to deployment\n' >&2
   exit 1
 }
 grep -Fq 'workflow_call:' "$deploy_workflow" || {

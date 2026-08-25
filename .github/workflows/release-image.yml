@@ -8,13 +8,23 @@ on:
         required: true
         type: string
       tag:
-        description: Existing Release Please v* tag
+        description: Existing Release Please component tag
         required: true
         type: string
     outputs:
       image_digest:
         description: Published and verified GHCR image digest
         value: ${{ jobs.publish.outputs.image_digest }}
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Commit SHA resolved by the existing Release Please tag
+        required: true
+        type: string
+      tag:
+        description: Existing Release Please component tag
+        required: true
+        type: string
 
 permissions:
   attestations: write
@@ -47,8 +57,8 @@ jobs:
             echo "Release images may only be published from the main workflow." >&2
             exit 1
           fi
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "tag must be a v-prefixed semantic version" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^buntzen-pass-bot-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "tag must be a Buntzen Release Please semantic version" >&2
             exit 1
           fi
 
@@ -83,7 +93,7 @@ jobs:
             echo "image=$image"
             echo "sha=$release_sha"
             echo "tag=$RELEASE_TAG"
-            echo "version=${RELEASE_TAG#v}"
+            echo "version=${RELEASE_TAG#buntzen-pass-bot-v}"
           } >>"$GITHUB_OUTPUT"
 
       - name: Check out the immutable release commit
@@ -116,9 +126,9 @@ jobs:
           images: ${{ steps.release.outputs.image }}
           flavor: latest=false
           tags: |
-            type=semver,pattern={{raw}},value=${{ steps.release.outputs.tag }}
-            type=semver,pattern={{version}},value=${{ steps.release.outputs.tag }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{raw}},value=v${{ steps.release.outputs.version }}
+            type=semver,pattern={{version}},value=v${{ steps.release.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ steps.release.outputs.version }}
             type=raw,value=sha-${{ steps.release.outputs.sha }}
           labels: |
             org.opencontainers.image.revision=${{ steps.release.outputs.sha }}
@@ -283,3 +293,16 @@ jobs:
             echo
             echo "The digest passed the HIGH/CRITICAL Trivy gate, signed SPDX SBOM verification, and both BuildKit and GitHub provenance checks."
           } >>"$GITHUB_STEP_SUMMARY"
+
+  deploy-dispatched-release:
+    name: Deploy manually dispatched release
+    if: github.event_name == 'workflow_dispatch'
+    needs: publish
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy-portainer.yml
+    with:
+      image_digest: ${{ needs.publish.outputs.image_digest }}
+    secrets: inherit
