@@ -336,8 +336,16 @@ func drainStderr(reader io.Reader, callback func(string), finished chan<- struct
 			safeStderrCallback(callback, line)
 		}
 	}
-	if scanner.Err() != nil && !suppressed {
-		safeStderrCallback(callback, "action stderr line exceeded the safety limit; remaining diagnostics suppressed")
+	if err := scanner.Err(); err != nil {
+		if !suppressed {
+			safeStderrCallback(callback, "action stderr line exceeded the safety limit; remaining diagnostics suppressed")
+		}
+		if errors.Is(err, bufio.ErrTooLong) {
+			// Scanner stops consuming after an oversized token. Keep draining the
+			// underlying pipe without exposing any fragment so a child blocked in a
+			// large stderr write can still exit and be reaped by cmd.Wait.
+			_, _ = io.Copy(io.Discard, reader)
+		}
 	}
 }
 
