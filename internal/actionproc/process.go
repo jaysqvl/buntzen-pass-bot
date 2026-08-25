@@ -20,12 +20,13 @@ import (
 )
 
 const (
-	ProtocolVersion      = 1
+	ProtocolVersion      = 2
 	MaxFrameBytes        = 64 * 1024
 	maxStderrLineBytes   = 4 * 1024
 	maxStderrTotalBytes  = 256 * 1024
 	maxStderrLines       = 2 * 1024
 	stderrSuppressedLine = "action stderr limit reached; further child diagnostics suppressed"
+	stderrOversizedLine  = "oversized action stderr line discarded to protect sensitive values"
 )
 
 var (
@@ -309,6 +310,7 @@ func drainStderr(reader io.Reader, callback func(string), finished chan<- struct
 	totalBytes := 0
 	totalLines := 0
 	suppressed := false
+	oversizedReported := false
 	for scanner.Scan() {
 		totalBytes += len(scanner.Bytes()) + 1
 		totalLines++
@@ -321,7 +323,14 @@ func drainStderr(reader io.Reader, callback func(string), finished chan<- struct
 		}
 		line := strings.TrimSpace(scanner.Text())
 		if len(line) > maxStderrLineBytes {
-			line = line[:maxStderrLineBytes] + "...[truncated]"
+			// Never emit a prefix of a raw child diagnostic. A credential that
+			// crosses the truncation boundary could otherwise evade the caller's
+			// whole-value redaction and leave a sensitive fragment in logs.
+			if !oversizedReported {
+				safeStderrCallback(callback, stderrOversizedLine)
+				oversizedReported = true
+			}
+			continue
 		}
 		if line != "" {
 			safeStderrCallback(callback, line)

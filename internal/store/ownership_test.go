@@ -91,7 +91,7 @@ func TestPhysicalIdentitiesRemainGloballyExclusive(t *testing.T) {
 	if _, err := database.ForUser(secondID).CreateProfile(ctx, ProfileInput{
 		Name:           "cross-owner source",
 		DefaultVehicle: "Example Vehicle", OTPSourceID: firstSource.ID, DefaultTimeoutMS: 15_000,
-		Enabled: true, Credentials: &model.ProfileCredentials{Email: "second@example.test", Password: "password"},
+		Enabled: true, Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("cross-owner source association error=%v", err)
 	}
@@ -222,7 +222,7 @@ func createOwnedResources(t *testing.T, database *Store, userID int64, unique st
 	profile, err := resources.CreateProfile(ctx, ProfileInput{
 		Name: "shared profile name", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: unique + "@example.test", Password: unique + "-password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)

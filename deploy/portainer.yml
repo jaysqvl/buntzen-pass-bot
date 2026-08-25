@@ -24,3 +24,8 @@ services:
     security_opt:
       - "seccomp=${BUNTZEN_SECCOMP_PROFILE_PATH:?install and reference the Playwright seccomp profile on the Docker host}"
     stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -18,7 +18,7 @@ class SecretRedactorTests(unittest.TestCase):
         raw = (
             'person@example.test private-password "code":"654321" '
             "authorization: Bearer header-secret; "
-            "http://user:pass@mac.test:1234/api/v1/ping?password=provider-secret"
+            "http://user:pass@example.test:1234/api/v1/ping?password=provider-secret"
         )
         clean = redactor.redact_diagnostic(raw)
         for forbidden in (
@@ -31,7 +31,7 @@ class SecretRedactorTests(unittest.TestCase):
             "?password=",
         ):
             self.assertNotIn(forbidden, clean)
-        self.assertIn("http://mac.test:1234/api/v1/ping", clean)
+        self.assertIn("http://example.test:1234/api/v1/ping", clean)
 
     def test_log_filter_redacts_positional_arguments_before_formatting(self) -> None:
         redactor = SecretRedactor()

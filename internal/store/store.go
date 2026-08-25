@@ -167,26 +167,90 @@ func (s *Store) migrateUnlocked(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read migration %d: %w", version, err)
 		}
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("begin migration %d: %w", version, err)
-		}
-		if _, err := tx.ExecContext(ctx, string(script)); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("apply migration %d: %w", version, err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-			version, entry.Name(), formatTime(s.now()),
-		); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("record migration %d: %w", version, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit migration %d: %w", version, err)
+		if err := s.applyMigration(ctx, version, entry.Name(), script); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (s *Store) applyMigration(ctx context.Context, version int, name string, script []byte) (returnErr error) {
+	// SQLite cannot rebuild a table referenced by live foreign keys inside a
+	// transaction: dropping the old table records deferred violations that a
+	// same-name replacement does not cancel. Use one dedicated connection,
+	// temporarily disable enforcement as SQLite's documented rebuild procedure
+	// requires, and refuse to commit unless foreign_key_check is clean.
+	connection, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration %d connection: %w", version, err)
+	}
+	defer func() {
+		restoreContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := connection.ExecContext(restoreContext, "PRAGMA foreign_keys = ON"); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("restore foreign keys after migration %d: %w", version, err)
+		}
+		if returnErr == nil {
+			var enabled int
+			if err := connection.QueryRowContext(restoreContext, "PRAGMA foreign_keys").Scan(&enabled); err != nil {
+				returnErr = fmt.Errorf("verify foreign keys after migration %d: %w", version, err)
+			} else if enabled != 1 {
+				returnErr = fmt.Errorf("verify foreign keys after migration %d: enforcement remained disabled", version)
+			}
+		}
+		if err := connection.Close(); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("close migration %d connection: %w", version, err)
+		}
+	}()
+
+	if _, err := connection.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys for migration %d: %w", version, err)
+	}
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration %d: %w", version, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, string(script)); err != nil {
+		return fmt.Errorf("apply migration %d: %w", version, err)
+	}
+	if err := checkMigrationForeignKeys(ctx, tx); err != nil {
+		return fmt.Errorf("validate migration %d foreign keys: %w", version, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+		version, name, formatTime(s.now()),
+	); err != nil {
+		return fmt.Errorf("record migration %d: %w", version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %d: %w", version, err)
+	}
+	return nil
+}
+
+func checkMigrationForeignKeys(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return err
+	}
+	if rows.Next() {
+		var table, parent string
+		var rowID sql.NullInt64
+		var foreignKeyID int
+		if err := rows.Scan(&table, &rowID, &parent, &foreignKeyID); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		return fmt.Errorf("table %q row %v references %q through constraint %d", table, rowID, parent, foreignKeyID)
+	}
+	iterationErr := rows.Err()
+	closeErr := rows.Close()
+	if iterationErr != nil {
+		return iterationErr
+	}
+	return closeErr
 }
 
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {

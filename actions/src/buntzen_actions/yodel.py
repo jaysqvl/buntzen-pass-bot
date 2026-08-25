@@ -18,28 +18,14 @@ from .pass_types import PassPreference, build_pass_order
 logger = logging.getLogger("buntzen_actions.yodel")
 
 
-AUTHENTICATED_SELECTORS = (
-    ".datelist button.date",
-    "button.date",
-    ".card.ImageCard",
-    "#checkOutButton",
-    "text=Logout",
-    "text=My Account",
-    "text=Vehicles",
-)
-LOGIN_EMAIL_SELECTORS = (
-    "input[type='email']",
-    "input[name*='email' i]",
-    "input[autocomplete='username']",
-    "input[placeholder*='email' i]",
-    "input[placeholder*='phone' i]",
-)
-LOGIN_PASSWORD_SELECTORS = (
-    "input[type='password']",
-    "input[name*='password' i]",
-    "input[autocomplete='current-password']",
+LOGIN_PHONE_SELECTORS = (
+    "#txtPhonenumber",
+    "input[name='number'][aria-label*='Mobile phone' i]",
+    "input[placeholder*='number' i][inputmode='numeric']",
 )
 LOGIN_SUBMIT_SELECTORS = (
+    "a:has-text('Next')",
+    "button:has-text('Next')",
     "button:has-text('Log in')",
     "button:has-text('Login')",
     "button:has-text('Sign in')",
@@ -47,14 +33,28 @@ LOGIN_SUBMIT_SELECTORS = (
     "a:has-text('Log in')",
     "a:has-text('Sign in')",
 )
+LOGIN_ENTRY_SELECTORS = (
+    "a[aria-label='Sign in / Register']",
+    "a:has-text('Profile')",
+    "a:has-text('Wallet')",
+)
+PUBLIC_NOTICE_CLOSE_SELECTORS = (
+    "a.popup-close:has-text('Go To Pass(es)')",
+    "a.popup-close:has-text('CLOSE')",
+    "a.popup-close:has-text('OK')",
+)
 OTP_INPUT_SELECTORS = (
+    "input.otpFocusInput",
+    "input[type='tel'][maxlength='1'][aria-label*='verification code' i]",
+    "input[type='tel'][maxlength='1'][aria-label*='Digit' i]",
     "input[autocomplete='one-time-code']",
     "input[name*='otp' i]",
     "input[name*='code' i]",
     "input[placeholder*='code' i]",
-    "input[inputmode='numeric']",
 )
 OTP_REQUEST_SELECTORS = (
+    "button:has-text('Resend it')",
+    "a:has-text('Resend it')",
     "button:has-text('Send code')",
     "button:has-text('Resend code')",
     "button:has-text('Send verification')",
@@ -63,11 +63,11 @@ OTP_REQUEST_SELECTORS = (
     "a:has-text('Resend code')",
 )
 OTP_SUBMIT_SELECTORS = (
+    "a:has-text('Verify')",
     "button:has-text('Verify')",
     "button:has-text('Submit')",
     "button:has-text('Continue')",
     "button:has-text('Confirm')",
-    "a:has-text('Verify')",
     "a:has-text('Continue')",
 )
 VEHICLE_SELECTOR_SELECTORS = (
@@ -161,7 +161,9 @@ class YodelAction:
         self.control.status("auth", "Checking Yodel authentication state.")
         self._goto_allowed(self.config.login_probe_url)
         self._settle_page()
+        self._dismiss_public_notices()
 
+        login_open_attempted = False
         for attempt in range(8):
             self.control.inbox.check_cancelled()
             if self._is_authenticated():
@@ -184,9 +186,15 @@ class YodelAction:
                 continue
 
             if self._has_login_form():
-                logger.debug("Login form detected step=%d", attempt + 1)
+                logger.debug("Mobile login form detected step=%d", attempt + 1)
                 self._complete_login_form(auth_deadline_at=auth_deadline_at)
                 self._settle_page()
+                continue
+
+            if not login_open_attempted and self._open_login():
+                login_open_attempted = True
+                logger.debug("Opened Yodel mobile sign-in panel")
+                self._settle_page(timeout_ms=5_000)
                 continue
 
             self.control.status("auth_failed", "Yodel login state was not recognized.")
@@ -200,28 +208,22 @@ class YodelAction:
 
     def _complete_login_form(self, auth_deadline_at: Optional[datetime] = None) -> None:
         self._assert_page_origin()
-        email_input = self._visible_locator(LOGIN_EMAIL_SELECTORS, timeout_ms=500)
-        password_input = self._visible_locator(LOGIN_PASSWORD_SELECTORS, timeout_ms=500)
+        phone_input = self._visible_locator(LOGIN_PHONE_SELECTORS, timeout_ms=1_000)
+        if phone_input is None:
+            raise ActionError("Yodel mobile login form had no fillable phone input")
         credentials = self.control.request_credentials()
-        logger.debug("Received just-in-time credentials for an approved origin")
+        logger.debug("Received just-in-time mobile login for an approved origin")
         try:
-            if not credentials.email or not credentials.password:
-                raise ActionError(
-                    "Yodel requested credentials but none were configured"
-                )
-            if email_input is not None:
-                self._assert_page_origin()
-                email_input.fill(credentials.email)
-                self._human_pause()
-            if password_input is not None:
-                self._assert_page_origin()
-                password_input.fill(credentials.password)
-                self._human_pause()
+            if not credentials.phone:
+                raise ActionError("Yodel requested a mobile number but none was configured")
+            self._assert_page_origin()
+            phone_input.fill(credentials.phone)
+            self._human_pause()
 
             self._assert_page_origin()
             submit = self._visible_locator(LOGIN_SUBMIT_SELECTORS, timeout_ms=5_000)
             if submit is None:
-                raise ActionError("Yodel login form had no clickable submit control")
+                raise ActionError("Yodel mobile login form had no clickable Next control")
             challenge_id = self.control.prepare_otp(
                 "login_submit", deadline_at=auth_deadline_at
             )
@@ -230,7 +232,7 @@ class YodelAction:
                 submit.click()
             except Exception as exc:
                 self.control.otp_failed(challenge_id, "trigger_failed")
-                raise ActionError("Yodel login submit could not be clicked") from exc
+                raise ActionError("Yodel mobile login Next control could not be clicked") from exc
             self.control.otp_triggered(challenge_id)
             logger.debug("Login submitted after provider cursor was armed")
         finally:
@@ -240,12 +242,6 @@ class YodelAction:
         if state == "authenticated":
             self.control.otp_not_required(challenge_id)
             return
-        if state == "login":
-            # Yodel can split email and password across separate Continue
-            # screens. The current click did not generate MFA; the outer auth
-            # loop will handle the next credential screen.
-            self.control.otp_not_required(challenge_id)
-            return
         if state == "deadline":
             self.control.otp_failed(challenge_id, "auth_deadline")
             raise ActionError(
@@ -253,7 +249,7 @@ class YodelAction:
             )
         if state != "otp":
             self.control.otp_failed(challenge_id, "challenge_not_visible")
-            raise ActionError("Yodel did not show an OTP challenge after login")
+            raise ActionError("Yodel did not show an OTP challenge after mobile login")
         self._fill_and_submit_otp(challenge_id, auth_deadline_at=auth_deadline_at)
 
     def _complete_existing_otp_challenge(
@@ -330,8 +326,6 @@ class YodelAction:
                 return "authenticated"
             if self._auth_deadline_passed(auth_deadline_at):
                 return "deadline"
-            if self._has_login_form():
-                return "login"
             self.page.wait_for_timeout(250)
         return "unknown"
 
@@ -611,23 +605,76 @@ class YodelAction:
             return self.config.half_day_pass_url
         raise ActionError(f"No URL was configured for {preference.label}.")
 
+    def _dismiss_public_notices(self) -> None:
+        """Close known public information overlays before opening sign-in."""
+
+        for _attempt in range(3):
+            if self._has_login_form() or self._has_otp_challenge(timeout_ms=100):
+                return
+            close = self._visible_locator(
+                PUBLIC_NOTICE_CLOSE_SELECTORS, timeout_ms=400
+            )
+            if close is None:
+                return
+            try:
+                close.click(timeout=2_000)
+                self.page.wait_for_timeout(250)
+            except Exception:
+                logger.debug("Public Yodel notice could not be dismissed")
+                return
+
+    def _open_login(self) -> bool:
+        self._assert_page_origin()
+        entry = self._visible_locator(LOGIN_ENTRY_SELECTORS, timeout_ms=1_000)
+        if entry is None:
+            return False
+        try:
+            entry.click(timeout=5_000)
+        except Exception as exc:
+            raise ActionError("Yodel sign-in panel could not be opened") from exc
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            self.control.inbox.check_cancelled()
+            self._assert_page_origin()
+            if (
+                self._has_login_form()
+                or self._has_otp_challenge(timeout_ms=100)
+                or self._is_authenticated()
+            ):
+                return True
+            self.page.wait_for_timeout(200)
+        raise ActionError("Yodel sign-in panel did not become ready")
+
     def _has_login_form(self) -> bool:
-        return (
-            self._visible_locator(LOGIN_EMAIL_SELECTORS, timeout_ms=300) is not None
-            or self._visible_locator(LOGIN_PASSWORD_SELECTORS, timeout_ms=300)
-            is not None
-        )
+        return self._visible_locator(LOGIN_PHONE_SELECTORS, timeout_ms=300) is not None
 
     def _is_authenticated(self) -> bool:
-        if self._visible_locator(LOGIN_EMAIL_SELECTORS, timeout_ms=150) is not None:
+        # Public Yodel catalog pages expose dates, pass cards, Add To Cart, and
+        # Checkout while logged out. Those UI elements are therefore unsafe as
+        # authentication sentinels. Check only the exact-origin JWT's expiry and
+        # return a boolean so token material never crosses into Python memory,
+        # diagnostics, protocol frames, or logs.
+        try:
+            return bool(
+                self.page.evaluate(
+                    """() => {
+                        const raw = window.localStorage.getItem('BearerToken');
+                        if (!raw) return false;
+                        try {
+                            const part = raw.split('.')[1];
+                            if (!part) return false;
+                            const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
+                            const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+                            const payload = JSON.parse(window.atob(padded));
+                            return Number.isFinite(payload.exp) && payload.exp * 1000 > Date.now();
+                        } catch (_) {
+                            return false;
+                        }
+                    }"""
+                )
+            )
+        except Exception:
             return False
-        if self._visible_locator(LOGIN_PASSWORD_SELECTORS, timeout_ms=150) is not None:
-            return False
-        if self._has_otp_challenge(timeout_ms=150):
-            return False
-        return (
-            self._visible_locator(AUTHENTICATED_SELECTORS, timeout_ms=750) is not None
-        )
 
     def _has_otp_challenge(self, timeout_ms: int = 500) -> bool:
         return (

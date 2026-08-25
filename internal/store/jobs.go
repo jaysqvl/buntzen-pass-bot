@@ -891,21 +891,21 @@ func normalizeAndSanitize(value any) (any, error) {
 }
 
 func (s *Store) durableEventSecrets(ctx context.Context, jobID int64) ([]string, error) {
-	var encryptedEmail, encryptedPassword, encryptedProvider string
+	var encryptedPhone, encryptedProvider string
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT profile.yodel_email_ciphertext, profile.yodel_password_ciphertext, source.config_ciphertext
+		SELECT profile.yodel_phone_ciphertext, source.config_ciphertext
 		FROM jobs AS job
 		JOIN profiles AS profile ON profile.id = job.profile_id
 		JOIN otp_sources AS source ON source.id = job.otp_source_id
 		WHERE job.id = ?
-	`, jobID).Scan(&encryptedEmail, &encryptedPassword, &encryptedProvider); errors.Is(err, sql.ErrNoRows) {
+	`, jobID).Scan(&encryptedPhone, &encryptedProvider); errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, fmt.Errorf("load event redaction material: %w", err)
 	}
 	secrets := make([]string, 0, 8)
-	for _, encrypted := range []string{encryptedEmail, encryptedPassword} {
-		plaintext, err := s.encryptor.Decrypt(encrypted)
+	if encryptedPhone != "" {
+		plaintext, err := s.encryptor.Decrypt(encryptedPhone)
 		if err != nil {
 			return nil, fmt.Errorf("load event redaction material: %w", err)
 		}

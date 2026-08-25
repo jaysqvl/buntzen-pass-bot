@@ -571,7 +571,7 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 				},
 				CancelGrace: cancelGrace,
 				OnStderr: func(line string) {
-					observability.LogActionDiagnostic(processCtx, jobKey, line, credentials.Email, credentials.Password)
+					observability.LogActionDiagnostic(processCtx, jobKey, line, credentials.Phone)
 				},
 			})
 			if err != nil {

@@ -54,8 +54,8 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 func TestDecodeRejectsMalformedAndOversizedFrames(t *testing.T) {
 	for _, raw := range [][]byte{
 		[]byte(`not-json`),
-		[]byte(`{"v":2,"type":"worker.ready"}`),
-		[]byte(`{"v":1}`),
+		[]byte(`{"v":1,"type":"worker.ready"}`),
+		[]byte(`{"v":2}`),
 	} {
 		if _, err := decodeFrame(raw); err == nil {
 			t.Fatalf("expected %q to fail", raw)
@@ -118,8 +118,9 @@ func TestChildEnvironmentAllowsOnlyValidatedLoggingKnob(t *testing.T) {
 	}
 }
 
-func TestStderrDrainTruncatesLinesAndBoundsTotalCallbacks(t *testing.T) {
-	longLine := strings.Repeat("x", maxStderrLineBytes+100)
+func TestStderrDrainDiscardsOversizedLinesAndBoundsTotalCallbacks(t *testing.T) {
+	phoneAtBoundary := "5559876543"
+	longLine := strings.Repeat("x", maxStderrLineBytes-len(phoneAtBoundary)+2) + phoneAtBoundary
 	var input strings.Builder
 	input.WriteString(longLine)
 	input.WriteByte('\n')
@@ -140,8 +141,13 @@ func TestStderrDrainTruncatesLinesAndBoundsTotalCallbacks(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(lines) == 0 || !strings.HasSuffix(lines[0], "...[truncated]") {
-		t.Fatalf("long stderr line was not truncated: %#v", lines)
+	if len(lines) == 0 || lines[0] != stderrOversizedLine {
+		t.Fatalf("oversized stderr line was not discarded: %#v", lines)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, phoneAtBoundary) || strings.Contains(line, "555987") {
+			t.Fatalf("oversized stderr exposed a credential fragment: %#v", lines)
+		}
 	}
 	if lines[len(lines)-1] != stderrSuppressedLine {
 		t.Fatalf("missing stderr suppression marker: %#v", lines[len(lines)-3:])

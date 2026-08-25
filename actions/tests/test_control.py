@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from buntzen_actions.control import ControlPort
-from buntzen_actions.errors import ActionError, ApprovalExpired, Cancelled
+from buntzen_actions.errors import ActionError, ApprovalExpired, Cancelled, ProtocolError
 from buntzen_actions.secrets import SecretRedactor
 
 
@@ -45,7 +45,7 @@ class ControlTests(unittest.TestCase):
         def receive(expected, timeout=None, predicate=None):
             challenge_id = stream.events[0][1]["challenge_id"]
             frame_type = "otp.ready" if len(stream.events) == 1 else "otp.provide"
-            frame = {"v": 1, "type": frame_type, "challenge_id": challenge_id}
+            frame = {"v": 2, "type": frame_type, "challenge_id": challenge_id}
             if frame_type == "otp.provide":
                 frame["code"] = "654321"
             self.assertTrue(predicate(frame))
@@ -70,7 +70,7 @@ class ControlTests(unittest.TestCase):
 
         def receive(expected, timeout=None, predicate=None):
             challenge_id = stream.events[0][1]["challenge_id"]
-            return {"v": 1, "type": "otp.expired", "challenge_id": challenge_id}
+            return {"v": 2, "type": "otp.expired", "challenge_id": challenge_id}
 
         inbox.receive = receive
         with self.assertRaises(ActionError):
@@ -105,7 +105,7 @@ class ControlTests(unittest.TestCase):
         inbox = FakeInbox(
             [
                 {
-                    "v": 1,
+                    "v": 2,
                     "type": "otp.provide",
                     "challenge_id": "challenge",
                     "code": "123456",
@@ -134,7 +134,7 @@ class ControlTests(unittest.TestCase):
             if calls < 3:
                 raise queue.Empty
             approval_id = stream.events[0][1]["approval_id"]
-            return {"v": 1, "type": "approval.cancel", "approval_id": approval_id}
+            return {"v": 2, "type": "approval.cancel", "approval_id": approval_id}
 
         inbox.receive = receive
         control = ControlPort(stream, inbox, SecretRedactor())
@@ -156,7 +156,7 @@ class ControlTests(unittest.TestCase):
         def receive(expected, timeout=None, predicate=None):
             confirmation_id = stream.events[0][1]["confirmation_id"]
             frame = {
-                "v": 1,
+                "v": 2,
                 "type": "confirmation.ready",
                 "confirmation_id": confirmation_id,
             }
@@ -181,7 +181,7 @@ class ControlTests(unittest.TestCase):
                     def receive(expected, timeout=None, predicate=None):
                         confirmation_id = stream.events[0][1]["confirmation_id"]
                         return {
-                            "v": 1,
+                            "v": 2,
                             "type": response,
                             "confirmation_id": confirmation_id,
                         }
@@ -204,6 +204,40 @@ class ControlTests(unittest.TestCase):
                 check_seconds=0,
             )
         self.assertEqual(stream.events[-1][0], "approval.expired")
+
+    def test_credentials_v2_accepts_only_phone_and_redacts_it(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox([])
+
+        def receive(expected, timeout=None, predicate=None):
+            request_id = stream.events[0][1]["request_id"]
+            frame = {
+                "v": 2,
+                "type": "credentials.provide",
+                "request_id": request_id,
+                "phone": "5559876543",
+            }
+            self.assertTrue(predicate(frame))
+            return frame
+
+        inbox.receive = receive
+        redactor = SecretRedactor()
+        credentials = ControlPort(stream, inbox, redactor).request_credentials()
+        self.assertEqual(credentials.phone, "5559876543")
+        self.assertNotIn("5559876543", repr(stream.events))
+        self.assertEqual(redactor.redact("dial 5559876543"), "dial [REDACTED]")
+
+    def test_credentials_v2_rejects_non_string_phone(self) -> None:
+        stream = FakeStream()
+        inbox = FakeInbox([])
+        inbox.receive = lambda expected, timeout=None, predicate=None: {
+            "v": 2,
+            "type": "credentials.provide",
+            "request_id": stream.events[0][1]["request_id"],
+            "phone": 5559876543,
+        }
+        with self.assertRaises(ProtocolError):
+            ControlPort(stream, inbox, SecretRedactor()).request_credentials()
 
 
 if __name__ == "__main__":

@@ -23,3 +23,8 @@ services:
     security_opt:
       - "seccomp=./docker/seccomp_profile.json"
     stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

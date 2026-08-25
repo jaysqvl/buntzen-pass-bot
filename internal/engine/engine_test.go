@@ -56,7 +56,7 @@ func newEngineTestFixture(t *testing.T) engineTestFixture {
 	profile, err := resources.CreateProfile(ctx, store.ProfileInput{
 		Name: "Example profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "engine@example.test", Password: "synthetic-password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestManagedProfileDirectoriesUseImmutableOwnedIdentity(t *testing.T) {
 	otherProfile, err := memberStore.CreateProfile(ctx, store.ProfileInput{
 		Name: "Other profile", DefaultVehicle: "Other Vehicle", OTPSourceID: source.ID,
 		Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
-		Credentials: &model.ProfileCredentials{Email: "other@example.test", Password: "synthetic-password"},
+		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
 	if err != nil {
 		t.Fatal(err)

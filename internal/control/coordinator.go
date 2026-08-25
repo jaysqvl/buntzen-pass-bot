@@ -130,9 +130,12 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 				continue
 			}
 			if !ready {
-				if frame.Type != "worker.ready" || stringValue(frame.Payload, "action") != "yodel" {
+				protocol, protocolOK := frame.Payload["protocol"].(float64)
+				if frame.Type != "worker.ready" ||
+					stringValue(frame.Payload, "action") != "yodel" ||
+					!protocolOK || protocol != float64(actionproc.ProtocolVersion) {
 					process.Cancel(input.CancelGrace)
-					return RunResult{}, errors.New("action worker did not negotiate the Yodel v1 protocol")
+					return RunResult{}, errors.New("action worker did not negotiate the Yodel v2 protocol")
 				}
 				ready = true
 				if err := process.Send("run.start", map[string]any{
@@ -279,8 +282,7 @@ func handleFrame(
 		}
 		return process.Send("credentials.provide", map[string]any{
 			"request_id": requestID,
-			"email":      input.Credentials.Email,
-			"password":   input.Credentials.Password,
+			"phone":      input.Credentials.Phone,
 		})
 	case "otp.prepare":
 		challengeID, err := correlation(frame.Payload, "challenge_id")
@@ -437,7 +439,7 @@ func safeToken(value string) string {
 
 func sanitizeMessage(message string, credentials model.ProfileCredentials) string {
 	message = strings.TrimSpace(message)
-	for _, secret := range []string{credentials.Email, credentials.Password} {
+	for _, secret := range []string{credentials.Phone} {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[redacted]")
 		}

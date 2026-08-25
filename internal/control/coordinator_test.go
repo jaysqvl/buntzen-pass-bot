@@ -22,7 +22,7 @@ func newFakeProcess() *fakeProcess {
 func (p *fakeProcess) Events() <-chan actionproc.Frame { return p.events }
 func (p *fakeProcess) Done() <-chan actionproc.Result  { return p.done }
 func (p *fakeProcess) Send(kind string, payload map[string]any) error {
-	p.sent <- actionproc.Frame{Version: 1, Type: kind, Payload: payload}
+	p.sent <- actionproc.Frame{Version: actionproc.ProtocolVersion, Type: kind, Payload: payload}
 	return nil
 }
 func (p *fakeProcess) Cancel(time.Duration) {}
@@ -45,7 +45,7 @@ func frame(kind string, values map[string]any) actionproc.Frame {
 	if values == nil {
 		values = map[string]any{}
 	}
-	return actionproc.Frame{Version: 1, Type: kind, Payload: values}
+	return actionproc.Frame{Version: actionproc.ProtocolVersion, Type: kind, Payload: values}
 }
 
 func TestCoordinatorArmsBeforeProvidingOTPAndClearsIt(t *testing.T) {
@@ -58,7 +58,7 @@ func TestCoordinatorArmsBeforeProvidingOTPAndClearsIt(t *testing.T) {
 		result, err := Run(context.Background(), RunInput{
 			JobID: 4, Command: model.CommandAuthCheck, Mode: model.RunModeAuto,
 			StartConfig: map[string]any{"profile_dir": "/tmp/profile"},
-			Credentials: model.ProfileCredentials{Email: "person@example.test", Password: "secret"},
+			Credentials: model.ProfileCredentials{Phone: "5559876543"},
 			Provider:    provider, OTPTimeout: time.Second, Hub: hub,
 			NewProcess: func(context.Context) (ActionProcess, error) { return process, nil },
 		})
@@ -66,9 +66,20 @@ func TestCoordinatorArmsBeforeProvidingOTPAndClearsIt(t *testing.T) {
 		errCh <- err
 	}()
 
-	process.events <- frame("worker.ready", map[string]any{"action": "yodel"})
+	process.events <- frame("worker.ready", map[string]any{"action": "yodel", "protocol": float64(actionproc.ProtocolVersion)})
 	if sent := <-process.sent; sent.Type != "run.start" {
 		t.Fatalf("sent = %q", sent.Type)
+	}
+	process.events <- frame("credentials.request", map[string]any{"request_id": "credentials"})
+	credentials := <-process.sent
+	if credentials.Type != "credentials.provide" || credentials.Payload["phone"] != "5559876543" {
+		t.Fatalf("credentials = %#v", credentials)
+	}
+	if _, ok := credentials.Payload["email"]; ok {
+		t.Fatalf("legacy email leaked into v2 credentials frame: %#v", credentials)
+	}
+	if _, ok := credentials.Payload["password"]; ok {
+		t.Fatalf("legacy password leaked into v2 credentials frame: %#v", credentials)
 	}
 	process.events <- frame("otp.prepare", map[string]any{"challenge_id": "challenge"})
 	if sent := <-process.sent; sent.Type != "otp.ready" || provider.armedAt.IsZero() {
@@ -114,7 +125,7 @@ func TestCoordinatorCrashAfterConfirmationIsOutcomeUnknown(t *testing.T) {
 		})
 		resultCh <- result
 	}()
-	process.events <- frame("worker.ready", map[string]any{"action": "yodel"})
+	process.events <- frame("worker.ready", map[string]any{"action": "yodel", "protocol": float64(actionproc.ProtocolVersion)})
 	<-process.sent
 	process.events <- frame("confirmation.starting", map[string]any{"confirmation_id": "confirm-1"})
 	ack := <-process.sent
@@ -130,8 +141,35 @@ func TestCoordinatorCrashAfterConfirmationIsOutcomeUnknown(t *testing.T) {
 }
 
 func TestSanitizeMessageRemovesSecretsAndCodes(t *testing.T) {
-	got := sanitizeMessage("user@example.test password 729104", model.ProfileCredentials{Email: "user@example.test", Password: "password"})
-	if got != "[redacted] [redacted] [redacted-code]" {
+	got := sanitizeMessage("5559876543 729104", model.ProfileCredentials{Phone: "5559876543"})
+	if got != "[redacted] [redacted-code]" {
 		t.Fatalf("sanitized = %q", got)
+	}
+}
+
+func TestCoordinatorRequiresExplicitProtocolV2Negotiation(t *testing.T) {
+	for _, payload := range []map[string]any{
+		{"action": "yodel"},
+		{"action": "yodel", "protocol": float64(1)},
+	} {
+		process := newFakeProcess()
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := Run(context.Background(), RunInput{
+				JobID: 6, Command: model.CommandAuthCheck, Mode: model.RunModeAuto,
+				Provider: &fakeProvider{}, Hub: NewHub(),
+				NewProcess: func(context.Context) (ActionProcess, error) { return process, nil },
+			})
+			errCh <- err
+		}()
+		process.events <- frame("worker.ready", payload)
+		select {
+		case err := <-errCh:
+			if err == nil || err.Error() != "action worker did not negotiate the Yodel v2 protocol" {
+				t.Fatalf("negotiation error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("coordinator did not reject invalid worker negotiation")
+		}
 	}
 }

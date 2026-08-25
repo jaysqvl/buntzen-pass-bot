@@ -11,9 +11,9 @@ from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown, Proto
 from buntzen_actions.pass_types import PASS_PREFERENCES
 from buntzen_actions.yodel import (
     BookingResult,
-    LOGIN_EMAIL_SELECTORS,
-    LOGIN_PASSWORD_SELECTORS,
+    LOGIN_PHONE_SELECTORS,
     LOGIN_SUBMIT_SELECTORS,
+    OTP_INPUT_SELECTORS,
     YodelAction,
 )
 
@@ -45,7 +45,7 @@ class FakeControl:
 
     def request_credentials(self):
         self.events.append(("credentials.request", None))
-        return Credentials("person@example.test", "private-password")
+        return Credentials("5559876543")
 
     def prepare_otp(self, trigger, deadline_at=None):
         self.events.append(("otp.prepare", trigger))
@@ -96,15 +96,12 @@ class LoginAction(YodelAction):
         self.page = SimpleNamespace(url="https://example.test/login")
         self.config = SimpleNamespace(allows_yodel_url=allows_example_origin)
         self.next_state = next_state
-        self._email = Locator(events, "email")
-        self._password = Locator(events, "password")
+        self._phone = Locator(events, "phone")
         self._submit = submit
 
     def _visible_locator(self, selectors, root=None, timeout_ms=1000):
-        if selectors is LOGIN_EMAIL_SELECTORS:
-            return self._email
-        if selectors is LOGIN_PASSWORD_SELECTORS:
-            return self._password
+        if selectors is LOGIN_PHONE_SELECTORS:
+            return self._phone
         if selectors is LOGIN_SUBMIT_SELECTORS:
             return self._submit
         return None
@@ -156,6 +153,9 @@ class DeadlineAction(YodelAction):
         self.authenticated = authenticated
 
     def _settle_page(self, timeout_ms=15_000):
+        return None
+
+    def _dismiss_public_notices(self):
         return None
 
     def _is_authenticated(self):
@@ -295,6 +295,26 @@ class ReleaseAction(YodelAction):
 
 
 class YodelTests(unittest.TestCase):
+    def test_visible_mobile_number_input_is_not_an_otp_challenge(self) -> None:
+        class TestLocator:
+            def __init__(self, visible: bool) -> None:
+                self.first = self
+                self.visible = visible
+
+            def wait_for(self, **kwargs) -> None:
+                if not self.visible:
+                    raise RuntimeError("not visible")
+
+        class PhoneOnlyPage:
+            def locator(self, selector):
+                return TestLocator(selector in LOGIN_PHONE_SELECTORS)
+
+        action = object.__new__(YodelAction)
+        action.page = PhoneOnlyPage()
+        self.assertTrue(action._has_login_form())
+        self.assertFalse(action._has_otp_challenge())
+        self.assertNotIn("input[inputmode='numeric']", OTP_INPUT_SELECTORS)
+
     def test_auth_does_not_navigate_or_request_credentials_when_trace_stop_fails(self) -> None:
         events = []
         action = DeadlineAction(events)
@@ -319,7 +339,7 @@ class YodelTests(unittest.TestCase):
         self.assertLess(names.index("otp.prepare"), names.index("click.login"))
         self.assertLess(names.index("click.login"), names.index("otp.triggered"))
         self.assertLess(names.index("otp.triggered"), names.index("otp.fill"))
-        self.assertNotIn("private-password", repr(events))
+        self.assertNotIn("5559876543", repr(events))
 
     def test_credentials_are_not_requested_after_cross_origin_navigation(self) -> None:
         events = []
@@ -371,14 +391,12 @@ class YodelTests(unittest.TestCase):
             action._complete_login_form()
         self.assertIn(("otp.failed", "trigger_failed"), events)
 
-    def test_split_login_screen_does_not_wait_for_an_otp(self) -> None:
+    def test_mobile_login_fails_closed_without_an_otp_challenge(self) -> None:
         events = []
-        action = LoginAction(events, Locator(events, "continue"), next_state="login")
-        action.control.otp_not_required = lambda challenge_id: events.append(
-            ("otp.not_required", challenge_id)
-        )
-        action._complete_login_form()
-        self.assertIn(("otp.not_required", "challenge"), events)
+        action = LoginAction(events, Locator(events, "next"), next_state="unknown")
+        with self.assertRaises(ActionError):
+            action._complete_login_form()
+        self.assertIn(("otp.failed", "challenge_not_visible"), events)
         self.assertNotIn("otp.fill", [event[0] for event in events])
 
     def test_past_deadline_accepts_existing_session_without_starting_mfa(self) -> None:

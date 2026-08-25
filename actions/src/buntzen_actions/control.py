@@ -18,12 +18,10 @@ _OTP_PATTERN = re.compile(r"^\d{4,8}$")
 
 @dataclass
 class Credentials:
-    email: Optional[str]
-    password: Optional[str]
+    phone: Optional[str]
 
     def clear(self) -> None:
-        self.email = None
-        self.password = None
+        self.phone = None
 
 
 class ControlPort:
@@ -52,19 +50,11 @@ class ControlPort:
             {"credentials.provide"},
             predicate=lambda item: item.get("request_id") == request_id,
         )
-        email = frame.get("email")
-        password = frame.get("password")
-        if email is not None and not isinstance(email, str):
-            raise ProtocolError("credential email must be a string or null")
-        if password is not None and not isinstance(password, str):
-            raise ProtocolError("credential password must be a string or null")
-        if bool(email) != bool(password):
-            raise ProtocolError(
-                "email and password must both be supplied or both be null"
-            )
-        self.redactor.add(email)
-        self.redactor.add(password)
-        return Credentials(email=email or None, password=password or None)
+        phone = frame.get("phone")
+        if phone is not None and not isinstance(phone, str):
+            raise ProtocolError("credential phone must be a string or null")
+        self.redactor.add(phone)
+        return Credentials(phone=phone or None)
 
     def prepare_otp(self, trigger: str, deadline_at: Optional[datetime] = None) -> str:
         timeout = _remaining_seconds(deadline_at)

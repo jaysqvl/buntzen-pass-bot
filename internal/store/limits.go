@@ -12,7 +12,6 @@ const (
 
 	MaxProviderConfigJSONBytes        = 4 << 10
 	MaxProviderConfigCiphertextBytes  = 8 << 10
-	MaxYodelEmailBytes                = 320
-	MaxYodelPasswordBytes             = 1024
+	MaxYodelPhoneInputBytes           = 64
 	MaxYodelCredentialCiphertextBytes = 4 << 10
 )

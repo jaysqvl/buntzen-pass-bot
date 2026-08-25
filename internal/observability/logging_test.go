@@ -33,15 +33,33 @@ func TestLoggerLevelAndRedaction(t *testing.T) {
 	}
 }
 
+func TestFirstRunSetupNoticeRemainsVisibleAtErrorThreshold(t *testing.T) {
+	var output bytes.Buffer
+	logger, err := NewLogger(&output, "error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const generatedToken = "synthetic-first-run-value"
+	logger.Info("ordinary startup detail")
+	logger.Error("first-run setup required; one-time setup token: " + generatedToken)
+	logged := output.String()
+	if strings.Contains(logged, "ordinary startup detail") {
+		t.Fatalf("error threshold emitted info detail: %s", logged)
+	}
+	if !strings.Contains(logged, generatedToken) || !strings.Contains(logged, `"level":"ERROR"`) {
+		t.Fatalf("first-run setup value was not operator-visible: %s", logged)
+	}
+}
+
 func TestChildDiagnosticRedactsKnownSecretsCodesAndAuthenticatedURLs(t *testing.T) {
-	raw := "ERROR worker: account@example.test private-password 482913 https://user:pass@provider.test/messages?password=provider-password"
+	raw := "ERROR worker: account@example.test private-password 482913 https://user:pass@example.test/messages?password=provider-password"
 	clean := SanitizeChildDiagnostic(raw, "account@example.test", "private-password")
 	for _, forbidden := range []string{"account@example.test", "private-password", "482913", "user:pass", "provider-password", "?password="} {
 		if strings.Contains(clean, forbidden) {
 			t.Fatalf("child diagnostic leaked %q: %s", forbidden, clean)
 		}
 	}
-	if !strings.Contains(clean, "https://provider.test/messages") || !strings.Contains(clean, "[REDACTED-CODE]") {
+	if !strings.Contains(clean, "https://example.test/messages") || !strings.Contains(clean, "[REDACTED-CODE]") {
 		t.Fatalf("unexpected sanitized diagnostic: %s", clean)
 	}
 }

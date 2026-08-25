@@ -53,6 +53,20 @@ grep -Fq 'BUNTZEN_DEBUG: "${BUNTZEN_DEBUG:-false}"' "$compose_file" || {
   printf 'deployment Compose file does not pass through the development debug toggle\n' >&2
   exit 1
 }
+for manifest in "$compose_file" "$repo_root/docker-compose.yml"; do
+  [[ "$(grep -Ec '^[[:space:]]+driver:[[:space:]]+json-file[[:space:]]*$' "$manifest")" == "1" ]] || {
+    printf '%s does not use the bounded Docker JSON log driver\n' "$manifest" >&2
+    exit 1
+  }
+  grep -Fq 'max-size: "10m"' "$manifest" || {
+    printf '%s does not cap each Docker log file at 10 MiB\n' "$manifest" >&2
+    exit 1
+  }
+  grep -Fq 'max-file: "3"' "$manifest" || {
+    printf '%s does not retain exactly three rotated Docker log files\n' "$manifest" >&2
+    exit 1
+  }
+done
 
 start_mock() {
   local scenario="$1"

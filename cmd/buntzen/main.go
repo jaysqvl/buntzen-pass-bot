@@ -7,7 +7,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -122,6 +121,7 @@ func runDoctor(ctx context.Context, cfg config.Config, database *store.Store) er
 	report := map[string]any{
 		"ok":                  true,
 		"schema_version":      version,
+		"action_protocol":     actionproc.ProtocolVersion,
 		"appdata_dir":         cfg.AppDataDir,
 		"database_path":       cfg.DatabasePath,
 		"profiles_dir":        cfg.ProfilesDir,
@@ -129,6 +129,7 @@ func runDoctor(ctx context.Context, cfg config.Config, database *store.Store) er
 		"python_executable":   cfg.PythonExecutable,
 		"python_module":       cfg.PythonModule,
 		"python_ready":        pythonOK,
+		"log_level":           cfg.EffectiveLogLevel(),
 		"schedules_enabled":   cfg.SchedulesEnabled,
 		"max_concurrent_jobs": cfg.MaxConcurrentJobs,
 		"otp_sources":         providerReports,
@@ -166,9 +167,11 @@ func doctorPython(ctx context.Context, cfg config.Config) (bool, string) {
 	}
 	select {
 	case frame, open := <-session.Events():
-		if !open || frame.Type != "worker.ready" || frame.Payload["action"] != "yodel" {
+		protocol, protocolOK := frame.Payload["protocol"].(float64)
+		if !open || frame.Type != "worker.ready" || frame.Payload["action"] != "yodel" ||
+			!protocolOK || protocol != float64(actionproc.ProtocolVersion) {
 			session.Cancel(time.Second)
-			return false, "Python action worker did not negotiate protocol v1"
+			return false, "Python action worker did not negotiate protocol v2"
 		}
 		session.Cancel(time.Second)
 		select {
@@ -212,9 +215,12 @@ func runServe(parent context.Context, cfg config.Config, database *store.Store) 
 			if err != nil {
 				return fmt.Errorf("generate first-run setup token: %w", err)
 			}
-			log.Printf("first-run setup token: %s", cfg.SetupToken)
+			// First-run setup is an operator-action-required state. Keep this
+			// record visible even when the configured threshold is error; without
+			// the generated value there is no way to complete bootstrap.
+			slog.Error("first-run setup required; one-time setup token: " + cfg.SetupToken)
 		} else {
-			log.Print("first-run setup token loaded from BUNTZEN_SETUP_TOKEN")
+			slog.Info("first-run setup token loaded from BUNTZEN_SETUP_TOKEN")
 		}
 	}
 	recovered, err := database.SystemRecoverInterruptedJobs(parent)

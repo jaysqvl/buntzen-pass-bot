@@ -22,6 +22,12 @@ type ProfileInput struct {
 	Credentials       *model.ProfileCredentials
 }
 
+// ErrYodelPhoneRequired is returned when a legacy profile has been migrated
+// without copying its former email credential into Yodel's mobile-number
+// field. The operator must explicitly provide a mobile number before the
+// profile can be enabled or run again.
+var ErrYodelPhoneRequired = errors.New("profile requires its Yodel mobile number to be re-entered before it can be enabled or run")
+
 func (s *Store) CreateProfile(ctx context.Context, userID int64, input ProfileInput) (model.Profile, error) {
 	if userID <= 0 {
 		return model.Profile{}, ErrUserRequired
@@ -31,36 +37,29 @@ func (s *Store) CreateProfile(ctx context.Context, userID int64, input ProfileIn
 		return model.Profile{}, err
 	}
 	if input.Credentials == nil {
-		return model.Profile{}, errors.New("Yodel credentials are required when creating a profile")
+		return model.Profile{}, errors.New("Yodel mobile number is required when creating a profile")
 	}
-	if strings.TrimSpace(input.Credentials.Email) == "" || input.Credentials.Password == "" {
-		return model.Profile{}, errors.New("Yodel email and password are required")
-	}
-	credentialEmail := strings.TrimSpace(input.Credentials.Email)
-	if err := validateProfileCredentials(credentialEmail, input.Credentials.Password); err != nil {
+	phone, err := normalizeYodelPhone(input.Credentials.Phone)
+	if err != nil {
 		return model.Profile{}, err
 	}
-	email, err := s.encryptor.Encrypt([]byte(credentialEmail))
+	encryptedPhone, err := s.encryptor.Encrypt([]byte(phone))
 	if err != nil {
-		return model.Profile{}, fmt.Errorf("encrypt Yodel email: %w", err)
+		return model.Profile{}, fmt.Errorf("encrypt Yodel mobile number: %w", err)
 	}
-	password, err := s.encryptor.Encrypt([]byte(input.Credentials.Password))
-	if err != nil {
-		return model.Profile{}, fmt.Errorf("encrypt Yodel password: %w", err)
-	}
-	if len(email) > MaxYodelCredentialCiphertextBytes || len(password) > MaxYodelCredentialCiphertextBytes {
-		return model.Profile{}, errors.New("encrypted Yodel credentials are too large")
+	if len(encryptedPhone) > MaxYodelCredentialCiphertextBytes {
+		return model.Profile{}, errors.New("encrypted Yodel mobile number is too large")
 	}
 	now := s.now()
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO profiles(
 			user_id, name, default_vehicle, otp_source_id,
-			yodel_email_ciphertext, yodel_password_ciphertext,
+			yodel_phone_ciphertext,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, userID, profile.Name, profile.DefaultVehicle, profile.OTPSourceID,
-		email, password, profile.Headless, profile.BrowserChannel, profile.BrowserExecutable,
+		encryptedPhone, profile.Headless, profile.BrowserChannel, profile.BrowserExecutable,
 		profile.DefaultTimeoutMS, profile.Enabled, formatTime(now), formatTime(now))
 	if err != nil {
 		return model.Profile{}, mapWriteError(err)
@@ -72,8 +71,8 @@ func (s *Store) CreateProfile(ctx context.Context, userID int64, input ProfileIn
 	return s.GetProfile(ctx, userID, id)
 }
 
-// UpdateProfile retains existing Yodel credentials when Credentials is nil.
-// A non-nil value replaces both encrypted fields, including with empty values.
+// UpdateProfile retains the existing Yodel mobile number when Credentials is nil.
+// A non-nil value replaces the encrypted mobile number.
 func (s *Store) UpdateProfile(ctx context.Context, userID, id int64, input ProfileInput) (model.Profile, error) {
 	if userID <= 0 {
 		return model.Profile{}, ErrUserRequired
@@ -82,6 +81,19 @@ func (s *Store) UpdateProfile(ctx context.Context, userID, id int64, input Profi
 	if err := model.ValidateProfile(profile); err != nil {
 		return model.Profile{}, err
 	}
+	if profile.Enabled && input.Credentials == nil {
+		var hasPhone bool
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT yodel_phone_ciphertext <> '' FROM profiles WHERE id = ? AND user_id = ?
+		`, id, userID).Scan(&hasPhone); errors.Is(err, sql.ErrNoRows) {
+			return model.Profile{}, ErrNotFound
+		} else if err != nil {
+			return model.Profile{}, fmt.Errorf("check Yodel mobile number: %w", err)
+		}
+		if !hasPhone {
+			return model.Profile{}, ErrYodelPhoneRequired
+		}
+	}
 	args := []any{profile.Name, profile.DefaultVehicle,
 		profile.OTPSourceID, profile.Headless, profile.BrowserChannel,
 		profile.BrowserExecutable, profile.DefaultTimeoutMS, profile.Enabled}
@@ -89,26 +101,19 @@ func (s *Store) UpdateProfile(ctx context.Context, userID, id int64, input Profi
 		otp_source_id = ?, headless = ?, browser_channel = ?, browser_executable = ?,
 		default_timeout_ms = ?, enabled = ?`
 	if input.Credentials != nil {
-		if strings.TrimSpace(input.Credentials.Email) == "" || input.Credentials.Password == "" {
-			return model.Profile{}, errors.New("Yodel email and password are required")
-		}
-		credentialEmail := strings.TrimSpace(input.Credentials.Email)
-		if err := validateProfileCredentials(credentialEmail, input.Credentials.Password); err != nil {
+		phone, err := normalizeYodelPhone(input.Credentials.Phone)
+		if err != nil {
 			return model.Profile{}, err
 		}
-		email, err := s.encryptor.Encrypt([]byte(credentialEmail))
+		encryptedPhone, err := s.encryptor.Encrypt([]byte(phone))
 		if err != nil {
-			return model.Profile{}, fmt.Errorf("encrypt Yodel email: %w", err)
+			return model.Profile{}, fmt.Errorf("encrypt Yodel mobile number: %w", err)
 		}
-		password, err := s.encryptor.Encrypt([]byte(input.Credentials.Password))
-		if err != nil {
-			return model.Profile{}, fmt.Errorf("encrypt Yodel password: %w", err)
+		if len(encryptedPhone) > MaxYodelCredentialCiphertextBytes {
+			return model.Profile{}, errors.New("encrypted Yodel mobile number is too large")
 		}
-		if len(email) > MaxYodelCredentialCiphertextBytes || len(password) > MaxYodelCredentialCiphertextBytes {
-			return model.Profile{}, errors.New("encrypted Yodel credentials are too large")
-		}
-		query += ", yodel_email_ciphertext = ?, yodel_password_ciphertext = ?"
-		args = append(args, email, password)
+		query += ", yodel_phone_ciphertext = ?"
+		args = append(args, encryptedPhone)
 	}
 	query += `, updated_at = ? WHERE id = ? AND user_id = ? AND NOT EXISTS (
 		SELECT 1 FROM jobs WHERE profile_id = ?
@@ -199,43 +204,41 @@ func (s *Store) GetProfileCredentials(ctx context.Context, userID, id int64) (mo
 	if userID <= 0 {
 		return model.ProfileCredentials{}, ErrUserRequired
 	}
-	var encryptedEmail, encryptedPassword string
+	var encryptedPhone string
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT yodel_email_ciphertext, yodel_password_ciphertext FROM profiles WHERE id = ? AND user_id = ?
-	`, id, userID).Scan(&encryptedEmail, &encryptedPassword); errors.Is(err, sql.ErrNoRows) {
+		SELECT yodel_phone_ciphertext FROM profiles WHERE id = ? AND user_id = ?
+	`, id, userID).Scan(&encryptedPhone); errors.Is(err, sql.ErrNoRows) {
 		return model.ProfileCredentials{}, ErrNotFound
 	} else if err != nil {
 		return model.ProfileCredentials{}, fmt.Errorf("read Yodel credentials: %w", err)
 	}
-	email, err := s.encryptor.Decrypt(encryptedEmail)
-	if err != nil {
-		return model.ProfileCredentials{}, fmt.Errorf("decrypt Yodel email: %w", err)
+	if encryptedPhone == "" {
+		return model.ProfileCredentials{}, ErrYodelPhoneRequired
 	}
-	password, err := s.encryptor.Decrypt(encryptedPassword)
+	phone, err := s.encryptor.Decrypt(encryptedPhone)
 	if err != nil {
-		return model.ProfileCredentials{}, fmt.Errorf("decrypt Yodel password: %w", err)
+		return model.ProfileCredentials{}, fmt.Errorf("decrypt Yodel mobile number: %w", err)
 	}
-	return model.ProfileCredentials{Email: string(email), Password: string(password)}, nil
+	return model.ProfileCredentials{Phone: string(phone)}, nil
 }
 
 func (s *Store) SystemGetProfileCredentials(ctx context.Context, id int64) (model.ProfileCredentials, error) {
-	var encryptedEmail, encryptedPassword string
+	var encryptedPhone string
 	if err := s.db.QueryRowContext(ctx, `
-		SELECT yodel_email_ciphertext, yodel_password_ciphertext FROM profiles WHERE id = ?
-	`, id).Scan(&encryptedEmail, &encryptedPassword); errors.Is(err, sql.ErrNoRows) {
+		SELECT yodel_phone_ciphertext FROM profiles WHERE id = ?
+	`, id).Scan(&encryptedPhone); errors.Is(err, sql.ErrNoRows) {
 		return model.ProfileCredentials{}, ErrNotFound
 	} else if err != nil {
 		return model.ProfileCredentials{}, fmt.Errorf("read Yodel credentials: %w", err)
 	}
-	email, err := s.encryptor.Decrypt(encryptedEmail)
-	if err != nil {
-		return model.ProfileCredentials{}, fmt.Errorf("decrypt Yodel email: %w", err)
+	if encryptedPhone == "" {
+		return model.ProfileCredentials{}, ErrYodelPhoneRequired
 	}
-	password, err := s.encryptor.Decrypt(encryptedPassword)
+	phone, err := s.encryptor.Decrypt(encryptedPhone)
 	if err != nil {
-		return model.ProfileCredentials{}, fmt.Errorf("decrypt Yodel password: %w", err)
+		return model.ProfileCredentials{}, fmt.Errorf("decrypt Yodel mobile number: %w", err)
 	}
-	return model.ProfileCredentials{Email: string(email), Password: string(password)}, nil
+	return model.ProfileCredentials{Phone: string(phone)}, nil
 }
 
 func (s *Store) DeleteProfile(ctx context.Context, userID, id int64) error {
@@ -259,14 +262,37 @@ func profileFromInput(id, userID int64, input ProfileInput) model.Profile {
 	}
 }
 
-func validateProfileCredentials(email, password string) error {
-	if len(email) > MaxYodelEmailBytes {
-		return errors.New("Yodel email is too long")
+func normalizeYodelPhone(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("Yodel mobile number is required")
 	}
-	if len(password) > MaxYodelPasswordBytes {
-		return errors.New("Yodel password is too long")
+	if len(value) > MaxYodelPhoneInputBytes {
+		return "", errors.New("Yodel mobile number is too long")
 	}
-	return nil
+	hasInternationalPrefix := strings.HasPrefix(value, "+")
+	var digits strings.Builder
+	for index, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			digits.WriteRune(r)
+		case r == '+' && index == 0:
+		case r == ' ' || r == '-' || r == '.' || r == '(' || r == ')':
+		default:
+			return "", errors.New("Yodel mobile number must contain only digits and common separators")
+		}
+	}
+	normalized := digits.String()
+	if hasInternationalPrefix && (len(normalized) != 11 || normalized[0] != '1') {
+		return "", errors.New("Yodel mobile number international format must use the +1 country code")
+	}
+	if len(normalized) == 11 && normalized[0] == '1' {
+		normalized = normalized[1:]
+	}
+	if len(normalized) != 10 {
+		return "", errors.New("Yodel mobile number must contain 10 North American digits")
+	}
+	return normalized, nil
 }
 
 func scanProfile(scanner rowScanner) (model.Profile, error) {

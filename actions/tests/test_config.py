@@ -8,7 +8,7 @@ from buntzen_actions.errors import ProtocolError
 
 def start_frame() -> dict:
     return {
-        "v": 1,
+        "v": 2,
         "type": "run.start",
         "run_id": "job-1",
         "command": "book",
@@ -19,8 +19,8 @@ def start_frame() -> dict:
             "timezone": "UTC",
             "allowed_yodel_origins": ["https://yodelportal.com"],
             "login_probe_url": "https://yodelportal.com/buntzen-lake",
-            "all_day_pass_url": "https://yodelportal.com/buntzen-lake",
-            "half_day_pass_url": "https://yodelportal.com/buntzen-lake",
+            "all_day_pass_url": "https://yodelportal.com/buntzen-lake/All-Day-Pass",
+            "half_day_pass_url": "https://yodelportal.com/buntzen-lake/Half-Day-Pass",
             "vehicle_keyword": "Example Vehicle",
             "pass_order": ["all_day", "afternoon", "morning"],
             "headless": True,
