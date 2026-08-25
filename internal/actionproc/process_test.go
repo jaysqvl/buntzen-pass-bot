@@ -47,7 +47,7 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 	}
 	result := <-session.Done()
 	if result.Err != nil || result.ExitCode != 0 {
-		t.Fatalf("result = %#v", result)
+		t.Fatalf("result: exit=%d error=%v", result.ExitCode, result.Err)
 	}
 }
 

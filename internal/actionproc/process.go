@@ -286,9 +286,12 @@ func (s *Session) forceKill() {
 }
 
 func (s *Session) wait(stdoutDone <-chan error, stderrDone <-chan struct{}) {
-	processErr := s.cmd.Wait()
 	protocolErr := <-stdoutDone
 	<-stderrDone
+	// StdoutPipe and StderrPipe require their readers to reach EOF before Wait.
+	// Calling Wait first can close an otherwise healthy child's pipes under the
+	// readers and turn a clean exit into a spurious "file already closed" error.
+	processErr := s.cmd.Wait()
 	_ = s.stdin.Close()
 	exitCode := 0
 	if s.cmd.ProcessState != nil {
