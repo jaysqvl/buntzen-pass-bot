@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
 	"fmt"
 	"html/template"
@@ -38,6 +39,16 @@ type BaseData struct {
 }
 
 func NewRenderer() (*Renderer, error) {
+	assetURLs := make(map[string]string)
+	for _, name := range []string{"app.css", "app.js", "htmx.min.js", "favicon.svg"} {
+		content, err := assets.ReadFile("assets/static/" + name)
+		if err != nil {
+			return nil, fmt.Errorf("read %s asset: %w", name, err)
+		}
+		digest := sha256.Sum256(content)
+		assetURLs[name] = fmt.Sprintf("/static/%s?v=%x", name, digest[:8])
+	}
+	functions := template.FuncMap{"assetURL": func(name string) string { return assetURLs[name] }}
 	definitions := map[string][]string{
 		"login":     {"assets/templates/base.html", "assets/templates/login.html"},
 		"setup":     {"assets/templates/base.html", "assets/templates/setup.html"},
@@ -52,7 +63,7 @@ func NewRenderer() (*Renderer, error) {
 	}
 	pages := make(map[string]*template.Template, len(definitions))
 	for name, files := range definitions {
-		tmpl, err := template.New(name).Option("missingkey=error").ParseFS(assets, files...)
+		tmpl, err := template.New(name).Funcs(functions).Option("missingkey=error").ParseFS(assets, files...)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s template: %w", name, err)
 		}

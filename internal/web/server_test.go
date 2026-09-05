@@ -359,7 +359,7 @@ func TestEncryptedSecretsAreNeverRendered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15000, Enabled: true, Credentials: &model.ProfileCredentials{Phone: yodelPhone}})
+	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{LoginProbeURL: "https://example.test/login", Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15000, Enabled: true, Credentials: &model.ProfileCredentials{Phone: yodelPhone}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,18 +398,15 @@ func TestNewBookingFormUsesLocalSafeDefaults(t *testing.T) {
 	for _, expected := range []string{
 		`name="timezone" value="America/Vancouver"`,
 		`name="release_time" value="07:00"`,
-		`name="login_probe_url" value="https://example.test/buntzen-lake"`,
 		`name="all_day_pass_url" value="https://example.test/buntzen-lake/All-Day-Pass"`,
 		`name="half_day_pass_url" value="https://example.test/buntzen-lake/Half-Day-Pass"`,
 		`value="manual" selected`,
-		`name="check_all_day" value="1" checked`,
-		`name="check_afternoon" value="1" checked`,
-		`name="check_morning" value="1" checked`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("new booking form missing safe default %q", expected)
 		}
 	}
+	assertBookingPassChoices(t, body, []string{"all_day", "afternoon", "morning"})
 }
 
 func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
@@ -424,9 +421,13 @@ func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookies := loginCookies(t, fixture)
+	page := serveForm(fixture, http.MethodGet, "/sources", cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), fmt.Sprintf(`href="/profiles/new?source_id=%d"`, source.ID)) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
+		t.Fatalf("unassigned source guidance = %d body=%q", page.Code, page.Body.String())
+	}
 	form := url.Values{"csrf_token": {csrfFrom(cookies)}}
 	recorder := serveForm(fixture, http.MethodPost, fmt.Sprintf("/sources/%d/pair", source.ID), cookies, form)
-	if recorder.Code != http.StatusConflict || recorder.Body.String() != "assign this source to an enabled Yodel profile before pairing\n" {
+	if recorder.Code != http.StatusConflict || recorder.Body.String() != "create a Yodel profile and assign this OTP source before pairing\n" {
 		t.Fatalf("pair without profile = %d body=%q", recorder.Code, recorder.Body.String())
 	}
 }
@@ -441,7 +442,7 @@ func TestBookingRunReturnsBoundedConflictForPendingDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{
+	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{LoginProbeURL: "https://example.test/login",
 		Name: "Queue test profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
@@ -495,7 +496,7 @@ func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{
+	profile, err := userStore.CreateProfile(context.Background(), store.ProfileInput{LoginProbeURL: "https://example.test/login",
 		Name: "SSE profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},

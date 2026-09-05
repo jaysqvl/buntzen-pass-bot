@@ -6,7 +6,7 @@ import (
 )
 
 func TestRuntimeTimingBounds(t *testing.T) {
-	profile := Profile{Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: 1, DefaultTimeoutMS: 1000}
+	profile := Profile{LoginProbeURL: "https://example.test/login", Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: 1, DefaultTimeoutMS: 1000}
 	if err := profile.Validate(); err != nil {
 		t.Fatalf("valid profile: %v", err)
 	}
@@ -61,8 +61,12 @@ func validBooking() BookingRequest {
 	}
 }
 
-func TestBookingYodelOriginBoundary(t *testing.T) {
+func TestProfileAndBookingYodelOriginBoundaries(t *testing.T) {
 	booking := validBooking()
+	profile := Profile{Name: "Example", DefaultVehicle: "Example Vehicle", OTPSourceID: 1, DefaultTimeoutMS: 1000, LoginProbeURL: "https://example.test:443/login"}
+	if err := profile.ValidateForOrigins([]string{"https://example.test"}); err != nil {
+		t.Fatalf("approved profile login rejected: %v", err)
+	}
 	if err := booking.ValidateForOrigins([]string{"https://example.test"}); err != nil {
 		t.Fatalf("approved Yodel URLs rejected: %v", err)
 	}
@@ -76,15 +80,21 @@ func TestBookingYodelOriginBoundary(t *testing.T) {
 		{"lookalike subdomain", "https://example.test.attacker.example/login", []string{"https://example.test"}},
 		{"userinfo confusion", "https://example.test" + "@attacker.example/login", []string{"https://example.test"}},
 		{"plaintext HTTP", "http://example.test/login", []string{"https://example.test"}},
+		{"missing login URL", "", []string{"https://example.test"}},
 		{"empty policy", "https://example.test/login", nil},
 		{"invalid policy path", "https://example.test/login", []string{"https://example.test/path"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := booking
-			candidate.LoginProbeURL = test.login
+			candidate.AllDayPassURL = test.login
 			if err := candidate.ValidateForOrigins(test.origins); err == nil {
-				t.Fatal("unsafe Yodel origin was accepted")
+				t.Fatal("unsafe booking Yodel origin was accepted")
+			}
+			candidateProfile := profile
+			candidateProfile.LoginProbeURL = test.login
+			if err := candidateProfile.ValidateForOrigins(test.origins); err == nil {
+				t.Fatal("unsafe profile Yodel origin was accepted")
 			}
 		})
 	}

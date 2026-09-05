@@ -35,27 +35,58 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
 		EmptyMessage: "Create a BlueBubbles or Twilio inbox.",
 	}
 	for _, source := range sources {
-		paired := "Ready"
-		class := "ok"
-		if source.Provider == model.OTPProviderBlueBubbles && (source.PairingChatGUID == "" || source.PairingSender == "" || source.PairingService == "") {
-			paired, class = "Needs pairing", "warn"
+		card, err := s.sourceCard(r.Context(), requestAuth(r).Authenticated.User.ID, source)
+		if err != nil {
+			s.internal(w)
+			return
 		}
-		postActions := []postAction{{Label: "Test connection", URL: fmt.Sprintf("/sources/%d/health", source.ID)}}
-		if source.Provider == model.OTPProviderBlueBubbles {
-			pairLabel := "Pair with Yodel"
-			if paired == "Ready" {
-				pairLabel = "Re-pair"
-			}
-			postActions = append(postActions, postAction{Label: pairLabel, URL: fmt.Sprintf("/sources/%d/pair", source.ID), Class: "primary"})
-		}
-		data.Cards = append(data.Cards, listCard{
-			Title: source.Name, Subtitle: string(source.Provider), Status: paired, StatusClass: class, URL: fmt.Sprintf("/sources/%d", source.ID),
-			Fields:      []labelValue{{"Inbox identity", source.Identity}, {"Paired sender", maskStoredSender(source.PairingSender)}},
-			Actions:     []cardAction{{"Edit", fmt.Sprintf("/sources/%d", source.ID), ""}},
-			PostActions: postActions,
-		})
+		data.Cards = append(data.Cards, card)
 	}
 	s.render(w, http.StatusOK, "list", data)
+}
+
+func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPSource) (listCard, error) {
+	card := listCard{
+		Title: source.Name, Subtitle: string(source.Provider), Status: "Ready", StatusClass: "ok", URL: fmt.Sprintf("/sources/%d", source.ID),
+		Fields:      []labelValue{{"Inbox identity", source.Identity}, {"Paired sender", maskStoredSender(source.PairingSender)}},
+		Actions:     []cardAction{{"Edit", fmt.Sprintf("/sources/%d", source.ID), ""}},
+		PostActions: []postAction{{Label: "Test connection", URL: fmt.Sprintf("/sources/%d/health", source.ID)}},
+	}
+	if source.Provider != model.OTPProviderBlueBubbles {
+		return card, nil
+	}
+	if source.PairingChatGUID == "" || source.PairingSender == "" || source.PairingService == "" {
+		card.Status, card.StatusClass = "Needs pairing", "warn"
+	}
+	setup, err := s.engine.CheckPairingSetup(ctx, userID, source.ID)
+	if setup.ProfileID != 0 {
+		card.Fields = append(card.Fields, labelValue{"Linked profile", setup.ProfileName})
+	}
+	if err != nil {
+		action := cardAction{Class: "primary"}
+		switch {
+		case errors.Is(err, engine.ErrPairingProfileRequired):
+			action.Label, action.URL = "Create profile", fmt.Sprintf("/profiles/new?source_id=%d", source.ID)
+		case errors.Is(err, engine.ErrPairingProfileDisabled):
+			action.Label, action.URL = "Enable profile", fmt.Sprintf("/profiles/%d", setup.ProfileID)
+		case errors.Is(err, engine.ErrPairingProfileInvalid):
+			action.Label, action.URL = "Review profile", fmt.Sprintf("/profiles/%d", setup.ProfileID)
+		default:
+			return listCard{}, err
+		}
+		card.Description = "Pairing uses the linked profile's Yodel mobile number and login page. To continue, " + safeFormError(err) + "."
+		card.Actions = append(card.Actions, action)
+		if card.Status == "Needs pairing" {
+			card.Status = "Setup needed"
+		}
+		return card, nil
+	}
+	pairLabel := "Pair with Yodel"
+	if card.Status == "Ready" {
+		pairLabel = "Re-pair"
+	}
+	card.PostActions = append(card.PostActions, postAction{Label: pairLabel, URL: fmt.Sprintf("/sources/%d/pair", source.ID), Class: "primary"})
+	return card, nil
 }
 
 func maskStoredSender(value string) string {

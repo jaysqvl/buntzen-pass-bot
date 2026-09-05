@@ -166,7 +166,8 @@ func TestDeleteMemberRequiresDisabledQuiescentAccountAndReleasesOwnedState(t *te
 		t.Fatal(err)
 	}
 	profile, err := resources.CreateProfile(ctx, ProfileInput{
-		Name: "Member profile", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
+		LoginProbeURL: "https://example.test/login",
+		Name:          "Member profile", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
 		Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
@@ -489,7 +490,8 @@ func TestTerminalTransitionsAtomicallyRespectCommittedRevocation(t *testing.T) {
 			t.Fatal(err)
 		}
 		profile, err := resources.CreateProfile(ctx, ProfileInput{
-			Name: unique + " profile", DefaultVehicle: "Example Vehicle",
+			LoginProbeURL: "https://example.test/login",
+			Name:          unique + " profile", DefaultVehicle: "Example Vehicle",
 			OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 			Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 		})

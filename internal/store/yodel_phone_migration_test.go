@@ -84,37 +84,45 @@ func TestYodelPhoneMigrationFailsClosedAndPreservesLinkedWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	booking, err := database.CreateBookingRequest(ctx, admin.ID, model.BookingRequest{
-		Name: "Linked booking", ProfileID: profileID, Enabled: true, ScheduleEnabled: true,
-		TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
-		PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120,
-		PollMinSeconds: 1, PollMaxSeconds: 2, ConfirmationMode: model.RunModeManual,
-		LoginProbeURL: "https://example.test/login", AllDayPassURL: "https://example.test/all",
-		CheckAllDay: true,
-	})
+	result, err = database.db.ExecContext(ctx, `
+		INSERT INTO booking_requests(user_id, name, profile_id, enabled, schedule_enabled,
+			target_date, timezone, release_time, prep_minutes_before, auth_deadline_minutes_before,
+			poll_deadline_seconds, poll_min_seconds, poll_max_seconds, confirmation_mode,
+			login_probe_url, all_day_pass_url, check_all_day, created_at, updated_at)
+		VALUES (?, 'Linked booking', ?, 1, 1, '2030-01-15', 'UTC', '07:00', 30, 5,
+			120, 1, 2, 'manual', 'https://example.test/login', 'https://example.test/all', 1, ?, ?)
+	`, admin.ID, profileID, now, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bookingID := booking.ID
-	job, err := database.EnqueueJob(ctx, admin.ID, EnqueueJobParams{
-		BookingRequestID: &bookingID,
-		Command:          model.CommandBook,
-		RunMode:          model.RunModeManual,
-		DueAt:            time.Date(2030, 1, 14, 7, 0, 0, 0, time.UTC),
-		DedupKey:         "migration-linked-job",
-	})
+	bookingID, err := result.LastInsertId()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.RequestJobCancellation(ctx, admin.ID, job.ID); err != nil {
+	booking := model.BookingRequest{ID: bookingID}
+
+	// Insert the historical row using its historical schema. Current enqueue
+	// code intentionally requires columns added by later migrations.
+	result, err = database.db.ExecContext(ctx, `
+		INSERT INTO jobs(user_id, booking_request_id, profile_id, otp_source_id,
+			command, run_mode, status, due_at, dedup_key, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'book', 'manual', 'cancelled', ?, 'migration-linked-job', ?, ?)
+	`, admin.ID, booking.ID, profileID, source.ID,
+		formatTime(time.Date(2030, 1, 14, 7, 0, 0, 0, time.UTC)), now, now)
+	if err != nil {
 		t.Fatal(err)
 	}
+	jobID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := model.Job{ID: jobID}
 
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	version, err := database.SchemaVersion(ctx)
-	if err != nil || version != 3 {
+	if err != nil || version != 6 {
 		t.Fatalf("schema version=%d err=%v", version, err)
 	}
 	var phoneColumns, legacyCredentialColumns int
@@ -159,7 +167,7 @@ func TestYodelPhoneMigrationFailsClosedAndPreservesLinkedWork(t *testing.T) {
 		t.Fatalf("preserved booking=%+v err=%v", preservedBooking, err)
 	}
 	preservedJob, err := database.GetJob(ctx, admin.ID, job.ID)
-	if err != nil || preservedJob.ProfileID != profileID || preservedJob.BookingRequestID == nil || *preservedJob.BookingRequestID != booking.ID {
+	if err != nil || preservedJob.RunImmediately || preservedJob.ProfileID != profileID || preservedJob.BookingRequestID == nil || *preservedJob.BookingRequestID != booking.ID {
 		t.Fatalf("preserved job=%+v err=%v", preservedJob, err)
 	}
 	event, err := database.SystemAppendJobEvent(ctx, JobEventInput{
@@ -198,7 +206,8 @@ func TestYodelPhoneMigrationFailsClosedAndPreservesLinkedWork(t *testing.T) {
 	profile.Enabled = true
 	update := ProfileInput{
 		Name: profile.Name, DefaultVehicle: profile.DefaultVehicle, OTPSourceID: profile.OTPSourceID,
-		Headless: profile.Headless, BrowserChannel: profile.BrowserChannel,
+		LoginProbeURL: profile.LoginProbeURL,
+		Headless:      profile.Headless, BrowserChannel: profile.BrowserChannel,
 		BrowserExecutable: profile.BrowserExecutable, DefaultTimeoutMS: profile.DefaultTimeoutMS,
 		Enabled: true,
 	}

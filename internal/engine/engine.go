@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -20,7 +19,6 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/observability"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/scheduler"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
 
@@ -208,39 +206,44 @@ func (e *Engine) monitorCancellation(ctx context.Context, jobID int64, cancel co
 }
 
 func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult, error) {
+	if err := job.ValidateImmediateRun(); err != nil {
+		return control.RunResult{}, err
+	}
+	if job.RunImmediately {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, *job.ExpiresAt)
+		defer cancel()
+	}
 	slog.Debug("loading job execution inputs", "job_id", job.ID)
 	profile, err := e.store.SystemGetProfile(ctx, job.ProfileID)
 	if err != nil {
+		return control.RunResult{}, err
+	}
+	// Validate the configured origin boundary before decrypting either Yodel
+	// credentials or provider configuration. Saved URLs cannot choose a new
+	// credential recipient outside the operator's approved origins.
+	if err := profile.ValidateForOrigins(e.config.YodelOrigins); err != nil {
 		return control.RunResult{}, err
 	}
 	source, err := e.store.SystemGetOTPSource(ctx, job.OTPSourceID)
 	if err != nil {
 		return control.RunResult{}, err
 	}
-	booking, err := e.bookingForJob(ctx, job)
-	if err != nil {
-		return control.RunResult{}, err
-	}
-	// Validate the operator-owned origin boundary before decrypting either the
-	// Yodel credentials or provider configuration. Persisted booking URLs are
-	// never authority to choose a credential recipient.
-	if err := booking.ValidateForOrigins(e.config.YodelOrigins); err != nil {
-		return control.RunResult{}, err
-	}
-	var bookWindow *scheduler.Window
-	if job.Command == model.CommandBook {
-		window, err := scheduler.WindowFor(booking)
+	var booking model.BookingRequest
+	if job.Command != model.CommandAuthCheck {
+		if job.BookingRequestID == nil {
+			return control.RunResult{}, errors.New("dry-run and book jobs require a booking request")
+		}
+		booking, err = e.store.SystemGetBookingRequest(ctx, *job.BookingRequestID)
 		if err != nil {
 			return control.RunResult{}, err
 		}
-		now := time.Now()
-		if now.Before(window.PrepAt) {
-			return control.RunResult{}, errors.New("the booking job became runnable before its bounded preparation window")
+		if err := booking.ValidateForOrigins(e.config.YodelOrigins); err != nil {
+			return control.RunResult{}, err
 		}
-		if !now.Before(window.PollEndsAt) {
-			return control.RunResult{}, errors.New("the booking release window ended before the action could start")
+		if _, err := bookingStartTiming(job, booking, time.Now()); err != nil {
+			return control.RunResult{}, err
 		}
-		bookWindow = &window
 	}
 	credentials, err := e.store.SystemGetProfileCredentials(ctx, profile.ID)
 	if err != nil {
@@ -251,12 +254,14 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		return control.RunResult{}, err
 	}
 	pairing := strings.HasPrefix(job.DedupKey, fmt.Sprintf("pairing:%d:", source.ID))
+	var supervised *supervisedProvider
 	if pairing {
 		pairingProvider, ok := provider.(otp.PairingProvider)
 		if !ok || source.Provider != model.OTPProviderBlueBubbles {
 			return control.RunResult{}, errors.New("only BlueBubbles supports supervised pairing")
 		}
-		provider = &supervisedProvider{PairingProvider: pairingProvider, hub: e.hub, store: e.store, jobID: job.ID, sourceID: source.ID, jobKey: strconv.FormatInt(job.ID, 10)}
+		supervised = &supervisedProvider{PairingProvider: pairingProvider, hub: e.hub, store: e.store, jobID: job.ID, sourceID: source.ID, jobKey: strconv.FormatInt(job.ID, 10)}
+		provider = supervised
 	}
 	slog.Debug("checking selected OTP provider",
 		"job_id", job.ID,
@@ -286,38 +291,33 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 
 	startConfig := map[string]any{
 		"profile_dir":           profileDir,
-		"target_date":           booking.TargetDate,
-		"timezone":              booking.Timezone,
-		"login_probe_url":       booking.LoginProbeURL,
+		"login_probe_url":       profile.LoginProbeURL,
 		"allowed_yodel_origins": append([]string(nil), e.config.YodelOrigins...),
-		"all_day_pass_url":      nullable(booking.AllDayPassURL),
-		"half_day_pass_url":     nullable(booking.HalfDayPassURL),
 		"vehicle_keyword":       profile.DefaultVehicle,
-		"pass_order":            passStrings(booking.PassOrder()),
 		"headless":              profile.Headless,
 		"browser_channel":       nullable(profile.BrowserChannel),
 		"executable_path":       nullable(profile.BrowserExecutable),
 		"default_timeout_ms":    profile.DefaultTimeoutMS,
-		"poll_deadline_seconds": booking.PollDeadlineSeconds,
-		"poll_min_seconds":      booking.PollMinSeconds,
-		"poll_max_seconds":      booking.PollMaxSeconds,
 		"artifacts_dir":         artifactDir,
 	}
-	if job.Command == model.CommandBook {
-		window := *bookWindow
-		if time.Now().Before(window.ReleaseAt) {
-			startConfig["release_at"] = window.ReleaseAt.Format(time.RFC3339)
+	otpTimeout := 120 * time.Second
+	if job.Command != model.CommandAuthCheck {
+		startConfig["target_date"] = booking.TargetDate
+		startConfig["timezone"] = booking.Timezone
+		startConfig["all_day_pass_url"] = nullable(booking.AllDayPassURL)
+		startConfig["half_day_pass_url"] = nullable(booking.HalfDayPassURL)
+		startConfig["pass_order"] = passStrings(booking.PassOrder())
+		startConfig["poll_deadline_seconds"] = booking.PollDeadlineSeconds
+		startConfig["poll_min_seconds"] = booking.PollMinSeconds
+		startConfig["poll_max_seconds"] = booking.PollMaxSeconds
+		timing, err := bookingStartTiming(job, booking, time.Now())
+		if err != nil {
+			return control.RunResult{}, err
 		}
-		startConfig["auth_deadline_at"] = window.AuthDeadlineAt.Format(time.RFC3339)
-		if job.ExpiresAt != nil {
-			remaining := int(math.Ceil(time.Until(*job.ExpiresAt).Seconds()))
-			if remaining < 1 {
-				return control.RunResult{}, errors.New("the scheduled booking window expired before the action could start")
-			}
-			if remaining < booking.PollDeadlineSeconds {
-				startConfig["poll_deadline_seconds"] = remaining
-			}
+		for key, value := range timing {
+			startConfig[key] = value
 		}
+		otpTimeout = time.Duration(booking.PollDeadlineSeconds) * time.Second
 	}
 
 	filter := otp.Filter{RequireYodel: true}
@@ -345,11 +345,11 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		"mode", job.RunMode,
 		"headless", profile.Headless,
 	)
-	return control.Run(ctx, control.RunInput{
+	result, err := control.Run(ctx, control.RunInput{
 		JobID: job.ID, Command: job.Command, Mode: job.RunMode,
 		StartConfig: startConfig, Credentials: credentials,
 		Provider: provider, OTPFilter: filter,
-		OTPTimeout:  time.Duration(booking.PollDeadlineSeconds) * time.Second,
+		OTPTimeout:  otpTimeout,
 		CancelGrace: cancelGrace, Hub: e.hub,
 		NewProcess: func(processCtx context.Context) (control.ActionProcess, error) {
 			session, err := actionproc.Start(processCtx, actionproc.Config{
@@ -379,8 +379,9 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 			Diagnostic: func(operation string, err error) {
 				slog.Warn("isolated action diagnostic", "job_id", job.ID, "operation", operation, "error", err)
 			},
-			AwaitingApproval: func(string) error {
-				_, err := e.store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning}, model.JobAwaitingApproval, store.JobTransition{Message: "Waiting immediately before final confirmation."})
+			AwaitingApproval: func(_ string, pass model.PassType) error {
+				message := "Waiting for approval: " + strings.ReplaceAll(string(pass), "_", "-") + " pass."
+				_, err := e.store.SystemTransitionJob(ctx, job.ID, []model.JobStatus{model.JobRunning}, model.JobAwaitingApproval, store.JobTransition{Message: message})
 				return err
 			},
 			ApprovalResolved: func(decision model.ApprovalDecision) error {
@@ -395,22 +396,11 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 			},
 		},
 	})
-}
-
-func (e *Engine) bookingForJob(ctx context.Context, job model.Job) (model.BookingRequest, error) {
-	if job.BookingRequestID != nil {
-		return e.store.SystemGetBookingRequest(ctx, *job.BookingRequestID)
+	if err == nil && result.Status == model.JobSucceeded && supervised != nil && !supervised.selected.Load() {
+		result.Status = model.JobFailed
+		result.Message = "Yodel was already signed in, so no new verification message was selected. Sign out of Yodel in this profile's browser session, then retry pairing."
 	}
-	bookings, err := e.store.SystemListBookingRequests(ctx)
-	if err != nil {
-		return model.BookingRequest{}, err
-	}
-	for _, booking := range bookings {
-		if booking.ProfileID == job.ProfileID && booking.Enabled {
-			return booking, nil
-		}
-	}
-	return model.BookingRequest{}, errors.New("the profile needs an enabled booking request to supply its Yodel login URL")
+	return result, err
 }
 
 func (e *Engine) finish(jobID int64, status model.JobStatus, message string, exitCode *int) {

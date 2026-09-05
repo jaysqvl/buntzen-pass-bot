@@ -13,6 +13,7 @@ import (
 type ProfileInput struct {
 	Name              string
 	DefaultVehicle    string
+	LoginProbeURL     string
 	OTPSourceID       int64
 	Headless          bool
 	BrowserChannel    string
@@ -20,6 +21,10 @@ type ProfileInput struct {
 	DefaultTimeoutMS  int
 	Enabled           bool
 	Credentials       *model.ProfileCredentials
+}
+
+func (input ProfileInput) ValidateForOrigins(allowedOrigins []string) error {
+	return profileFromInput(0, 0, input).ValidateForOrigins(allowedOrigins)
 }
 
 // ErrYodelPhoneRequired is returned when a legacy profile has been migrated
@@ -53,12 +58,12 @@ func (s *Store) CreateProfile(ctx context.Context, userID int64, input ProfileIn
 	now := s.now()
 	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO profiles(
-			user_id, name, default_vehicle, otp_source_id,
+			user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			yodel_phone_ciphertext,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
 			created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, userID, profile.Name, profile.DefaultVehicle, profile.OTPSourceID,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, userID, profile.Name, profile.DefaultVehicle, profile.LoginProbeURL, profile.OTPSourceID,
 		encryptedPhone, profile.Headless, profile.BrowserChannel, profile.BrowserExecutable,
 		profile.DefaultTimeoutMS, profile.Enabled, formatTime(now), formatTime(now))
 	if err != nil {
@@ -94,10 +99,10 @@ func (s *Store) UpdateProfile(ctx context.Context, userID, id int64, input Profi
 			return model.Profile{}, ErrYodelPhoneRequired
 		}
 	}
-	args := []any{profile.Name, profile.DefaultVehicle,
+	args := []any{profile.Name, profile.DefaultVehicle, profile.LoginProbeURL,
 		profile.OTPSourceID, profile.Headless, profile.BrowserChannel,
 		profile.BrowserExecutable, profile.DefaultTimeoutMS, profile.Enabled}
-	query := `UPDATE profiles SET name = ?, default_vehicle = ?,
+	query := `UPDATE profiles SET name = ?, default_vehicle = ?, login_probe_url = ?,
 		otp_source_id = ?, headless = ?, browser_channel = ?, browser_executable = ?,
 		default_timeout_ms = ?, enabled = ?`
 	if input.Credentials != nil {
@@ -135,7 +140,7 @@ func (s *Store) GetProfile(ctx context.Context, userID, id int64) (model.Profile
 		return model.Profile{}, ErrUserRequired
 	}
 	return scanProfile(s.db.QueryRowContext(ctx, `
-		SELECT id, user_id, name, default_vehicle, otp_source_id,
+		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
 			created_at, updated_at
 		FROM profiles WHERE id = ? AND user_id = ?
@@ -147,7 +152,7 @@ func (s *Store) ListProfiles(ctx context.Context, userID int64) ([]model.Profile
 		return nil, ErrUserRequired
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, user_id, name, default_vehicle, otp_source_id,
+		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
 			created_at, updated_at
 		FROM profiles WHERE user_id = ? ORDER BY name, id
@@ -171,7 +176,7 @@ func (s *Store) ListProfiles(ctx context.Context, userID int64) ([]model.Profile
 // from a durable job. HTTP handlers must use ForUser.
 func (s *Store) SystemGetProfile(ctx context.Context, id int64) (model.Profile, error) {
 	return scanProfile(s.db.QueryRowContext(ctx, `
-		SELECT id, user_id, name, default_vehicle, otp_source_id,
+		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
 			created_at, updated_at
 		FROM profiles WHERE id = ?
@@ -180,7 +185,7 @@ func (s *Store) SystemGetProfile(ctx context.Context, id int64) (model.Profile, 
 
 func (s *Store) SystemListProfiles(ctx context.Context) ([]model.Profile, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, user_id, name, default_vehicle, otp_source_id,
+		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
 			created_at, updated_at
 		FROM profiles ORDER BY user_id, name, id
@@ -256,7 +261,8 @@ func profileFromInput(id, userID int64, input ProfileInput) model.Profile {
 	return model.Profile{
 		ID: id, UserID: userID, Name: strings.TrimSpace(input.Name),
 		DefaultVehicle: strings.TrimSpace(input.DefaultVehicle), OTPSourceID: input.OTPSourceID,
-		Headless: input.Headless, BrowserChannel: strings.TrimSpace(input.BrowserChannel),
+		LoginProbeURL: strings.TrimSpace(input.LoginProbeURL),
+		Headless:      input.Headless, BrowserChannel: strings.TrimSpace(input.BrowserChannel),
 		BrowserExecutable: strings.TrimSpace(input.BrowserExecutable), DefaultTimeoutMS: input.DefaultTimeoutMS,
 		Enabled: input.Enabled,
 	}
@@ -299,7 +305,7 @@ func scanProfile(scanner rowScanner) (model.Profile, error) {
 	var profile model.Profile
 	var created, updated string
 	if err := scanner.Scan(&profile.ID, &profile.UserID, &profile.Name,
-		&profile.DefaultVehicle, &profile.OTPSourceID, &profile.Headless,
+		&profile.DefaultVehicle, &profile.LoginProbeURL, &profile.OTPSourceID, &profile.Headless,
 		&profile.BrowserChannel, &profile.BrowserExecutable, &profile.DefaultTimeoutMS,
 		&profile.Enabled, &created, &updated); errors.Is(err, sql.ErrNoRows) {
 		return model.Profile{}, ErrNotFound

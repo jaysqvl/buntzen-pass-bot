@@ -501,7 +501,7 @@ func TestBookingFormCannotExpandYodelCredentialOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{
+	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{LoginProbeURL: "https://example.test/login",
 		Name: "Profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},

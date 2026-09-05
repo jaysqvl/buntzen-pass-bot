@@ -7,6 +7,7 @@
 {{range .Cards}}
   <article class="card">
     <div class="card-title"><div><h2><a href="{{.URL}}">{{.Title}}</a></h2><p>{{.Subtitle}}</p></div><span class="pill {{.StatusClass}}">{{.Status}}</span></div>
+    {{if .Description}}<p>{{.Description}}</p>{{end}}
     <dl>{{range .Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>
     <div class="actions">
       {{range .Actions}}<a class="button {{.Class}}" href="{{.URL}}">{{.Label}}</a>{{end}}

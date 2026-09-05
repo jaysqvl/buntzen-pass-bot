@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
@@ -24,6 +25,20 @@ type supervisedProvider struct {
 	jobID    int64
 	sourceID int64
 	jobKey   string
+	selected atomic.Bool
+}
+
+var (
+	ErrPairingProfileRequired = errors.New("create a Yodel profile and assign this OTP source before pairing")
+	ErrPairingProfileDisabled = errors.New("enable the Yodel profile linked to this OTP source before pairing")
+	ErrPairingProfileInvalid  = errors.New("review the linked Yodel profile before pairing")
+)
+
+// PairingSetup identifies the owner's profile, including the resource to correct
+// when CheckPairingSetup returns a prerequisite error.
+type PairingSetup struct {
+	ProfileID   int64
+	ProfileName string
 }
 
 func (e *Engine) ChoosePairing(ctx context.Context, userID, jobID int64, messageID string) error {
@@ -33,43 +48,48 @@ func (e *Engine) ChoosePairing(ctx context.Context, userID, jobID int64, message
 	return e.hub.ChoosePairing(strconv.FormatInt(jobID, 10), messageID)
 }
 
-func (e *Engine) QueuePairing(ctx context.Context, userID, sourceID int64) (model.Job, error) {
+// CheckPairingSetup shares pairing prerequisites between queue admission and UI
+// guidance. Authentication belongs to the profile and needs no booking request.
+func (e *Engine) CheckPairingSetup(ctx context.Context, userID, sourceID int64) (PairingSetup, error) {
+	var setup PairingSetup
 	resources := e.store.ForUser(userID)
 	source, err := resources.GetOTPSource(ctx, sourceID)
 	if err != nil {
-		return model.Job{}, err
+		return setup, err
 	}
 	if source.Provider != model.OTPProviderBlueBubbles {
-		return model.Job{}, errors.New("only BlueBubbles sources require supervised pairing")
+		return setup, errors.New("only BlueBubbles sources require supervised pairing")
 	}
 	profiles, err := resources.ListProfiles(ctx)
 	if err != nil {
-		return model.Job{}, err
+		return setup, err
 	}
 	var profile *model.Profile
 	for index := range profiles {
-		if profiles[index].OTPSourceID == sourceID && profiles[index].Enabled {
+		if profiles[index].OTPSourceID == sourceID {
 			profile = &profiles[index]
 			break
 		}
 	}
 	if profile == nil {
-		return model.Job{}, errors.New("assign this source to an enabled Yodel profile before pairing")
+		return setup, ErrPairingProfileRequired
 	}
-	bookings, err := resources.ListBookingRequests(ctx)
+	setup.ProfileID, setup.ProfileName = profile.ID, profile.Name
+	if !profile.Enabled {
+		return setup, ErrPairingProfileDisabled
+	}
+	if err := profile.ValidateForOrigins(e.config.YodelOrigins); err != nil {
+		return setup, fmt.Errorf("%w: %v", ErrPairingProfileInvalid, err)
+	}
+	return setup, nil
+}
+
+func (e *Engine) QueuePairing(ctx context.Context, userID, sourceID int64) (model.Job, error) {
+	setup, err := e.CheckPairingSetup(ctx, userID, sourceID)
 	if err != nil {
 		return model.Job{}, err
 	}
-	var bookingID int64
-	for _, booking := range bookings {
-		if booking.ProfileID == profile.ID && booking.Enabled && booking.ValidateForOrigins(e.config.YodelOrigins) == nil {
-			bookingID = booking.ID
-			break
-		}
-	}
-	if bookingID == 0 {
-		return model.Job{}, errors.New("create an enabled booking request for this profile before pairing")
-	}
+	resources := e.store.ForUser(userID)
 	jobs, err := resources.ListJobs(ctx, 500)
 	if err != nil {
 		return model.Job{}, err
@@ -81,12 +101,12 @@ func (e *Engine) QueuePairing(ctx context.Context, userID, sourceID int64) (mode
 		}
 	}
 	job, err := resources.EnqueueJob(ctx, store.EnqueueJobParams{
-		BookingRequestID: &bookingID, Command: model.CommandAuthCheck,
+		ProfileID: setup.ProfileID, Command: model.CommandAuthCheck,
 		RunMode: model.RunModeManual, DueAt: time.Now().UTC(),
 		DedupKey: prefix + strconv.FormatInt(time.Now().UnixNano(), 10),
 	})
 	if err == nil {
-		slog.Info("supervised pairing job queued", "job_id", job.ID, "source_id", sourceID, "profile_id", profile.ID)
+		slog.Info("supervised pairing job queued", "job_id", job.ID, "source_id", sourceID, "profile_id", setup.ProfileID)
 	}
 	return job, err
 }
@@ -136,5 +156,6 @@ func (p *supervisedProvider) WaitForCode(ctx context.Context, armed otp.Armed) (
 	if err := p.store.SystemPersistOTPSourcePairing(ctx, p.jobID, p.sourceID, selected.ChatGUID, selected.Sender, selected.Service); err != nil {
 		return otp.Message{}, err
 	}
+	p.selected.Store(true)
 	return selected, nil
 }

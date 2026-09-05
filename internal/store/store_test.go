@@ -29,7 +29,7 @@ func TestMigrateCreatesCleanSchemaAndRefusesLegacyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := store.SchemaVersion(ctx)
-	if err != nil || version != 3 {
+	if err != nil || version != 6 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 
@@ -86,14 +86,16 @@ func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateProfile(ctx, testUserID, ProfileInput{
-		Name: "Empty", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          "Empty", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{},
 	}); err == nil {
 		t.Fatal("empty Yodel credentials were accepted")
 	}
 	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
-		Name: "Example", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          "Example", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
@@ -112,7 +114,8 @@ func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
 		t.Fatalf("provider config = %#v", decoded)
 	}
 	_, err = store.CreateProfile(ctx, testUserID, ProfileInput{
-		Name: "Second", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
+		LoginProbeURL: "https://example.test/login",
+		Name:          "Second", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
 		DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876544"},
 	})
@@ -156,9 +159,9 @@ func TestBookingPreservesExplicitZeroOffsetsAndRejectsRelativeURLs(t *testing.T)
 		t.Fatalf("explicit zero offsets were rewritten: %+v", created)
 	}
 	request.Name = "invalid URL"
-	request.LoginProbeURL = "/relative"
+	request.AllDayPassURL = "/relative"
 	if _, err := store.CreateBookingRequest(context.Background(), testUserID, request); err == nil {
-		t.Fatal("relative login URL was accepted")
+		t.Fatal("relative pass URL was accepted")
 	}
 }
 
@@ -180,7 +183,8 @@ func TestBlueBubblesPairingFingerprintIsAllOrNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
-		Name: "pairing profile", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          "pairing profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
@@ -360,7 +364,8 @@ func TestQueuedJobGuardsProfileSourceAndBookingConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = store.UpdateProfile(ctx, testUserID, profile.ID, ProfileInput{
-		Name: profile.Name, DefaultVehicle: "New vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          profile.Name, DefaultVehicle: "New vehicle",
 		OTPSourceID: profile.OTPSourceID, Headless: profile.Headless,
 		BrowserChannel: profile.BrowserChannel, BrowserExecutable: profile.BrowserExecutable,
 		DefaultTimeoutMS: profile.DefaultTimeoutMS, Enabled: profile.Enabled,
@@ -385,7 +390,8 @@ func TestQueuedJobGuardsProfileSourceAndBookingConfiguration(t *testing.T) {
 	}
 	profile.DefaultVehicle = "New vehicle"
 	updated, err := store.UpdateProfile(ctx, testUserID, profile.ID, ProfileInput{
-		Name: profile.Name, DefaultVehicle: profile.DefaultVehicle,
+		LoginProbeURL: "https://example.test/login",
+		Name:          profile.Name, DefaultVehicle: profile.DefaultVehicle,
 		OTPSourceID: profile.OTPSourceID, Headless: profile.Headless,
 		BrowserChannel: profile.BrowserChannel, BrowserExecutable: profile.BrowserExecutable,
 		DefaultTimeoutMS: profile.DefaultTimeoutMS, Enabled: profile.Enabled,
@@ -733,7 +739,8 @@ func fixtureProfileAndBooking(t *testing.T, store *Store, name string) (model.Pr
 		t.Fatal(err)
 	}
 	profile, err := store.CreateProfile(ctx, testUserID, ProfileInput{
-		Name: name + " profile", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          name + " profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
@@ -766,7 +773,8 @@ func claimedBlueBubblesPairingJob(t *testing.T, database *Store, userID int64, n
 		t.Fatal(err)
 	}
 	profile, err := database.CreateProfile(ctx, userID, ProfileInput{
-		Name: name + " profile", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          name + " profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
@@ -831,7 +839,8 @@ func TestEncryptedSecretsNeverReachDatabaseFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = store.CreateProfile(ctx, admin.ID, ProfileInput{
-		Name: "profile", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
+		LoginProbeURL: "https://example.test/login",
+		Name:          "profile", DefaultVehicle: "Example Vehicle", OTPSourceID: source.ID,
 		DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})

@@ -31,6 +31,35 @@ def start_frame() -> dict:
 
 
 class ConfigTests(unittest.TestCase):
+    def test_profile_auth_check_does_not_require_booking_configuration(self) -> None:
+        frame = start_frame()
+        frame["command"] = "auth-check"
+        for key in (
+            "target_date", "timezone", "pass_order", "all_day_pass_url",
+            "half_day_pass_url", "release_at", "auth_deadline_at",
+        ):
+            del frame["config"][key]
+        config = ActionConfig.from_start(frame)
+        self.assertIsNone(config.target_date)
+        self.assertEqual(config.timezone_name, "UTC")
+        self.assertEqual(config.pass_order, ())
+
+    def test_bookings_still_require_their_date_and_timezone(self) -> None:
+        for command in ("book", "dry-run"):
+            for key in ("target_date", "timezone"):
+                with self.subTest(command=command, missing=key):
+                    frame = start_frame()
+                    frame["command"] = command
+                    del frame["config"][key]
+                    with self.assertRaises(ProtocolError):
+                        ActionConfig.from_start(frame)
+
+    def test_custom_pass_priority_is_preserved(self) -> None:
+        frame = start_frame()
+        frame["config"]["pass_order"] = ["morning", "all_day", "afternoon"]
+        config = ActionConfig.from_start(frame)
+        self.assertEqual(config.pass_order, ("morning", "all_day", "afternoon"))
+
     def test_parses_control_plane_config(self) -> None:
         config = ActionConfig.from_start(start_frame())
         self.assertEqual(config.command, "book")

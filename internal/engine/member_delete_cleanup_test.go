@@ -69,7 +69,8 @@ func TestDeletedMemberStorageReconciliationIsOwnerIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	memberProfile, err := memberStore.CreateProfile(ctx, store.ProfileInput{
-		Name: "Deletion cleanup profile", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          "Deletion cleanup profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})

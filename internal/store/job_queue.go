@@ -16,6 +16,7 @@ type EnqueueJobParams struct {
 	ProfileID        int64
 	Command          model.JobCommand
 	RunMode          model.RunMode
+	RunImmediately   bool
 	DueAt            time.Time
 	ExpiresAt        *time.Time
 	DedupKey         string
@@ -59,6 +60,18 @@ func (s *Store) enqueueJob(ctx context.Context, actorUserID int64, params Enqueu
 	}
 	if params.ExpiresAt != nil && !params.ExpiresAt.After(params.DueAt) {
 		return model.Job{}, errors.New("job expiry must be after its due time")
+	}
+	if err := (model.Job{
+		Command: params.Command, RunMode: params.RunMode, RunImmediately: params.RunImmediately,
+		DueAt: params.DueAt, ExpiresAt: params.ExpiresAt,
+	}).ValidateImmediateRun(); err != nil {
+		return model.Job{}, err
+	}
+	if params.RunImmediately {
+		now := s.now()
+		if params.DueAt.After(now) || !params.ExpiresAt.After(now) {
+			return model.Job{}, errors.New("immediate booking must be due now with an unexpired deadline")
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -120,10 +133,10 @@ func (s *Store) enqueueJob(ctx context.Context, actorUserID int64, params Enqueu
 	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO jobs(
-			user_id, booking_request_id, profile_id, otp_source_id, command, run_mode, status,
+			user_id, booking_request_id, profile_id, otp_source_id, command, run_mode, run_immediately, status,
 			due_at, expires_at, dedup_key, created_at, updated_at
 		)
-		SELECT ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?
+		SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?
 		FROM users AS account
 		WHERE account.id = ? AND account.status = 'active'
 		AND (
@@ -132,7 +145,7 @@ func (s *Store) enqueueJob(ctx context.Context, actorUserID int64, params Enqueu
 			AND pending.status IN ('queued', 'running', 'awaiting_approval')
 		) < ?
 		AND (SELECT count(*) FROM jobs AS retained WHERE retained.user_id = account.id) < ?
-	`, jobUserID, params.BookingRequestID, profileID, sourceID, params.Command, params.RunMode,
+	`, jobUserID, params.BookingRequestID, profileID, sourceID, params.Command, params.RunMode, params.RunImmediately,
 		formatTime(params.DueAt), optionalTimeValue(params.ExpiresAt), strings.TrimSpace(params.DedupKey),
 		formatTime(now), formatTime(now), jobUserID, MaxPendingJobsPerUser, MaxRetainedJobsPerUser)
 	if err != nil {

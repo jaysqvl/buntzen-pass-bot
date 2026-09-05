@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,17 +35,24 @@ type BookingRequest struct {
 	PollMinSeconds            float64
 	PollMaxSeconds            float64
 	ConfirmationMode          RunMode
-	LoginProbeURL             string
-	AllDayPassURL             string
-	HalfDayPassURL            string
-	CheckAllDay               bool
-	CheckAfternoon            bool
-	CheckMorning              bool
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	// LoginProbeURL retains the legacy database value for migration/history.
+	// Authentication uses Profile.LoginProbeURL exclusively.
+	LoginProbeURL   string
+	AllDayPassURL   string
+	HalfDayPassURL  string
+	PreferredPasses []PassType
+	// Legacy input flags are used only when PreferredPasses is nil.
+	CheckAllDay    bool
+	CheckAfternoon bool
+	CheckMorning   bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func (r BookingRequest) PassOrder() []PassType {
+	if r.PreferredPasses != nil {
+		return slices.Clone(r.PreferredPasses)
+	}
 	result := make([]PassType, 0, 3)
 	if r.CheckAllDay {
 		result = append(result, PassAllDay)
@@ -97,18 +105,27 @@ func (r BookingRequest) Validate() error {
 	if !r.ConfirmationMode.Valid() || r.ConfirmationMode == RunModeDryRun {
 		problems = append(problems, "confirmation mode must be manual or auto")
 	}
-	if len(r.PassOrder()) == 0 {
+	passes := r.PassOrder()
+	if len(passes) == 0 {
 		problems = append(problems, "at least one pass preference is required")
+	} else if len(passes) > 3 {
+		problems = append(problems, "at most three pass preferences are allowed")
 	}
-	if err := validateHTTPURL(r.LoginProbeURL, "login probe URL"); err != nil {
-		problems = append(problems, err.Error())
+	seen := make(map[PassType]bool, len(passes))
+	for _, pass := range passes {
+		if pass != PassAllDay && pass != PassAfternoon && pass != PassMorning {
+			problems = append(problems, "pass preferences must be all-day, afternoon, or morning")
+		} else if seen[pass] {
+			problems = append(problems, "each pass preference can only be selected once")
+		}
+		seen[pass] = true
 	}
-	if r.CheckAllDay {
+	if seen[PassAllDay] {
 		if err := validateHTTPURL(r.AllDayPassURL, "all-day pass URL"); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}
-	if r.CheckAfternoon || r.CheckMorning {
+	if seen[PassAfternoon] || seen[PassMorning] {
 		if err := validateHTTPURL(r.HalfDayPassURL, "half-day pass URL"); err != nil {
 			problems = append(problems, err.Error())
 		}
@@ -127,6 +144,15 @@ func (r BookingRequest) ValidateForOrigins(allowedOrigins []string) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
+	return validateYodelURLs(allowedOrigins,
+		yodelURL{r.AllDayPassURL, "all-day pass URL"},
+		yodelURL{r.HalfDayPassURL, "half-day pass URL"},
+	)
+}
+
+type yodelURL struct{ value, label string }
+
+func validateYodelURLs(allowedOrigins []string, checks ...yodelURL) error {
 	approved := make(map[string]struct{}, len(allowedOrigins))
 	for _, value := range allowedOrigins {
 		canonical, err := origin.Canonical(value)
@@ -137,14 +163,6 @@ func (r BookingRequest) ValidateForOrigins(allowedOrigins []string) error {
 	}
 	if len(approved) == 0 {
 		return errors.New("no approved Yodel origin is configured")
-	}
-	checks := []struct {
-		value string
-		label string
-	}{
-		{r.LoginProbeURL, "login probe URL"},
-		{r.AllDayPassURL, "all-day pass URL"},
-		{r.HalfDayPassURL, "half-day pass URL"},
 	}
 	for _, check := range checks {
 		if strings.TrimSpace(check.value) == "" {

@@ -89,6 +89,7 @@ func TestPhysicalIdentitiesRemainGloballyExclusive(t *testing.T) {
 		t.Fatalf("second BlueBubbles inbox error=%v", err)
 	}
 	if _, err := database.ForUser(secondID).CreateProfile(ctx, ProfileInput{
+		LoginProbeURL:  "https://example.test/login",
 		Name:           "cross-owner source",
 		DefaultVehicle: "Example Vehicle", OTPSourceID: firstSource.ID, DefaultTimeoutMS: 15_000,
 		Enabled: true, Credentials: &model.ProfileCredentials{Phone: "5559876543"},
@@ -220,7 +221,8 @@ func createOwnedResources(t *testing.T, database *Store, userID int64, unique st
 		t.Fatal(err)
 	}
 	profile, err := resources.CreateProfile(ctx, ProfileInput{
-		Name: "shared profile name", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          "shared profile name", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})

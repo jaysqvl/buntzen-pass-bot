@@ -176,42 +176,83 @@ func TestBookingReservationMigrationCancelsLegacyDuplicates(t *testing.T) {
 			if _, err := database.SetupAdmin(ctx, "reservation-admin", "a strong reservation migration password"); err != nil {
 				t.Fatal(err)
 			}
-			_, booking := fixtureProfileAndBooking(t, database, "migration-reservation")
-			params := EnqueueJobParams{BookingRequestID: &booking.ID, Command: model.CommandBook, RunMode: model.RunModeManual}
-			first, err := database.SystemEnqueueJob(ctx, params)
+			// Build a genuine v2 fixture with historical SQL. Current resource
+			// methods require columns that these migrations have not added yet.
+			source, err := database.CreateOTPSource(ctx, testUserID, OTPSourceInput{
+				Name: "Migration inbox", Provider: model.OTPProviderTwilio,
+				Identity: "twilio:migration-reservation", ProviderConfig: map[string]string{"auth_token": "synthetic"},
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if priorOutcome != model.JobQueued {
-				if _, err := database.SystemTransitionJob(ctx, first.ID, []model.JobStatus{model.JobQueued}, model.JobRunning, JobTransition{}); err != nil {
+			now := formatTime(database.now())
+			phone, err := database.encryptor.Encrypt([]byte("5559876543"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := database.db.ExecContext(ctx, `
+				INSERT INTO profiles(user_id, name, default_vehicle, otp_source_id,
+					yodel_phone_ciphertext, enabled, created_at, updated_at)
+				VALUES (?, 'Migration profile', 'Example Vehicle', ?, ?, 1, ?, ?)
+			`, testUserID, source.ID, phone, now, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profileID, err := result.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err = database.db.ExecContext(ctx, `
+				INSERT INTO booking_requests(user_id, name, profile_id, target_date,
+					login_probe_url, all_day_pass_url, created_at, updated_at)
+				VALUES (?, 'Migration booking', ?, '2030-01-15', 'https://example.test/login',
+					'https://example.test/all', ?, ?)
+			`, testUserID, profileID, now, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bookingID, err := result.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			insertJob := func(mode model.RunMode, status model.JobStatus, confirmed bool) model.Job {
+				t.Helper()
+				var confirmationStarted any
+				if confirmed {
+					confirmationStarted = now
+				}
+				result, err := database.db.ExecContext(ctx, `
+					INSERT INTO jobs(user_id, booking_request_id, profile_id, otp_source_id,
+						command, run_mode, status, due_at, confirmation_started_at, created_at, updated_at)
+					VALUES (?, ?, ?, ?, 'book', ?, ?, ?, ?, ?, ?)
+				`, testUserID, bookingID, profileID, source.ID, mode, status, now, confirmationStarted, now, now)
+				if err != nil {
 					t.Fatal(err)
 				}
-				if priorOutcome != model.JobRunning {
-					if _, err := database.SystemTransitionJob(ctx, first.ID, []model.JobStatus{model.JobRunning}, priorOutcome,
-						JobTransition{ConfirmationStarted: true}); err != nil {
-						t.Fatal(err)
-					}
+				id, err := result.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
 				}
+				return model.Job{ID: id}
 			}
-			params.RunMode = model.RunModeAuto
-			second, err := database.SystemEnqueueJob(ctx, params)
-			if err != nil {
-				t.Fatal(err)
-			}
+			first := insertJob(model.RunModeManual, priorOutcome,
+				priorOutcome == model.JobSucceeded || priorOutcome == model.JobOutcomeUnknown)
 			duplicateStatus := model.JobCancelled
+			secondStatus := model.JobQueued
 			if priorOutcome == model.JobOutcomeUnknown {
 				// An old worker may already have claimed the duplicate. Revoke it
 				// without releasing its browser lease before cancellation finishes.
-				if _, err := database.SystemTransitionJob(ctx, second.ID, []model.JobStatus{model.JobQueued}, model.JobRunning, JobTransition{}); err != nil {
-					t.Fatal(err)
-				}
+				secondStatus = model.JobRunning
 				duplicateStatus = model.JobRunning
 			}
+			second := insertJob(model.RunModeAuto, secondStatus, false)
+			params := EnqueueJobParams{BookingRequestID: &bookingID, Command: model.CommandBook, RunMode: model.RunModeAuto}
+
 			if err := database.Migrate(ctx); err != nil {
 				t.Fatal(err)
 			}
 			first, err = database.SystemGetJob(ctx, first.ID)
-			if err != nil || first.Status != priorOutcome {
+			if err != nil || first.RunImmediately || first.Status != priorOutcome {
 				t.Fatalf("original job=%+v err=%v", first, err)
 			}
 			second, err = database.SystemGetJob(ctx, second.ID)

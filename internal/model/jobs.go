@@ -1,8 +1,11 @@
 package model
 
 import (
+	"errors"
 	"time"
 )
+
+const MaxImmediateBookingLifetime = 15 * time.Minute
 
 type RunMode string
 
@@ -83,6 +86,7 @@ type Job struct {
 	OTPSourceID           int64
 	Command               JobCommand
 	RunMode               RunMode
+	RunImmediately        bool
 	Status                JobStatus
 	DueAt                 time.Time
 	ExpiresAt             *time.Time
@@ -96,6 +100,22 @@ type Job struct {
 	UpdatedAt             time.Time
 	StartedAt             *time.Time
 	FinishedAt            *time.Time
+}
+
+// ValidateImmediateRun preserves the manual approval boundary and the original
+// enqueue deadline when an immediate booking is claimed or recovered.
+func (j Job) ValidateImmediateRun() error {
+	if !j.RunImmediately {
+		return nil
+	}
+	if j.Command != CommandBook || j.RunMode != RunModeManual {
+		return errors.New("immediate bookings require the book command and manual approval")
+	}
+	if j.DueAt.IsZero() || j.ExpiresAt == nil || !j.ExpiresAt.After(j.DueAt) ||
+		j.ExpiresAt.Sub(j.DueAt) > MaxImmediateBookingLifetime {
+		return errors.New("immediate bookings require an expiry within 15 minutes of enqueue")
+	}
+	return nil
 }
 
 type JobEvent struct {

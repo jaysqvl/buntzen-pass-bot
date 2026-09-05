@@ -6,19 +6,19 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="same-origin">
   <meta name="htmx-config" content='{"historyCacheSize":0,"includeIndicatorStyles":false}'>
-  <link rel="icon" href="data:,">
+  <link rel="icon" type="image/svg+xml" href="{{assetURL "favicon.svg"}}">
   <title>{{if .Title}}{{.Title}} · {{end}}Buntzen Bot</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script defer src="/static/htmx.min.js"></script>
-  <script defer src="/static/app.js"></script>
+  <link rel="stylesheet" href="{{assetURL "app.css"}}">
+  <script defer src="{{assetURL "htmx.min.js"}}"></script>
+  <script defer src="{{assetURL "app.js"}}"></script>
 </head>
 <body>
   {{if .Authenticated}}
   <header class="topbar">
     <a class="brand" href="/">Buntzen <span>Bot</span></a>
     <nav>
-      <a href="/profiles">Profiles</a>
       <a href="/sources">OTP Sources</a>
+      <a href="/profiles">Profiles</a>
       <a href="/bookings">Bookings</a>
       <a href="/jobs">Jobs</a>
 	  {{if .IsAdmin}}<a href="/admin/users">Users</a>{{end}}

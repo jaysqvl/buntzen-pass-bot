@@ -86,6 +86,7 @@ func TestDurableResourceCountsAreBoundedAcrossDatabaseHandles(t *testing.T) {
 	profiles := make([]model.Profile, 0, MaxProfilesPerUser)
 	for index := 0; index < MaxProfilesPerUser; index++ {
 		profile, err := database.ForUser(user.ID).CreateProfile(ctx, ProfileInput{
+			LoginProbeURL:  "https://example.test/login",
 			Name:           fmt.Sprintf("profile-%02d", index),
 			DefaultVehicle: "Example Vehicle", OTPSourceID: sources[index].ID,
 			Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
@@ -97,6 +98,7 @@ func TestDurableResourceCountsAreBoundedAcrossDatabaseHandles(t *testing.T) {
 		profiles = append(profiles, profile)
 	}
 	if _, err := peer.ForUser(user.ID).CreateProfile(ctx, ProfileInput{
+		LoginProbeURL:  "https://example.test/login",
 		Name:           "profile-over-limit",
 		DefaultVehicle: "Example Vehicle", OTPSourceID: sources[MaxProfilesPerUser].ID,
 		Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
@@ -161,7 +163,8 @@ func TestResourceFieldsAndEncryptedConfigurationAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = resources.UpdateProfile(ctx, profile.ID, ProfileInput{
-		Name: profile.Name, DefaultVehicle: profile.DefaultVehicle,
+		LoginProbeURL: "https://example.test/login",
+		Name:          profile.Name, DefaultVehicle: profile.DefaultVehicle,
 		OTPSourceID: profile.OTPSourceID, Headless: profile.Headless,
 		BrowserChannel: profile.BrowserChannel, BrowserExecutable: profile.BrowserExecutable,
 		DefaultTimeoutMS: profile.DefaultTimeoutMS, Enabled: profile.Enabled,

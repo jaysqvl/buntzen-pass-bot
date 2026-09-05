@@ -13,53 +13,6 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
 
-type dashboardData struct {
-	BaseData
-	Stats struct {
-		Profiles  int
-		Scheduled int
-		Active    int
-		Waiting   int
-	}
-	Jobs []jobRow
-}
-
-func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	userStore := s.userStore(r)
-	profiles, err := userStore.ListProfiles(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	bookings, err := userStore.ListBookingRequests(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	jobs, err := userStore.ListJobs(r.Context(), 10)
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	data := dashboardData{BaseData: base(r, "Dashboard")}
-	data.Stats.Profiles = len(profiles)
-	for _, booking := range bookings {
-		if booking.Enabled && booking.ScheduleEnabled {
-			data.Stats.Scheduled++
-		}
-	}
-	for _, job := range jobs {
-		if job.Status == model.JobRunning || job.Status == model.JobAwaitingApproval {
-			data.Stats.Active++
-		}
-		if job.Status == model.JobAwaitingApproval {
-			data.Stats.Waiting++
-		}
-	}
-	data.Jobs = s.jobRows(r.Context(), userStore, jobs)
-	s.render(w, http.StatusOK, "dashboard", data)
-}
-
 type jobRow struct {
 	ID           int64
 	ShortID      string
@@ -108,23 +61,32 @@ func (s *Server) jobRows(ctx context.Context, userStore store.UserStore, jobs []
 
 type labelValue struct{ Label, Value string }
 type jobView struct {
-	ID               int64
-	ShortID          string
-	ProfileName      string
-	Command          string
-	StatusLabel      string
-	StatusClass      string
-	CreatedLabel     string
-	Message          string
-	AwaitingApproval bool
-	CanCancel        bool
-	Fields           []labelValue
+	ID                int64
+	ShortID           string
+	ProfileName       string
+	Command           string
+	StatusLabel       string
+	StatusClass       string
+	Status            string
+	CreatedLabel      string
+	StartedLabel      string
+	FinishedLabel     string
+	ConfirmationLabel string
+	Mode              string
+	DueLabel          string
+	ExpiresLabel      string
+	TimingLabel       string
+	BookingReview     []labelValue
+	Message           string
+	AwaitingApproval  bool
+	CanCancel         bool
 }
 type eventView struct{ Time, Type, Message string }
 type jobData struct {
 	BaseData
-	Job    jobView
-	Events []eventView
+	Job         jobView
+	Events      []eventView
+	LastEventID int64
 }
 
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
@@ -138,35 +100,58 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		s.notFoundOrInternal(w, err)
 		return
 	}
-	profile, _ := userStore.GetProfile(r.Context(), job.ProfileID)
+	profile, err := userStore.GetProfile(r.Context(), job.ProfileID)
+	if err != nil {
+		s.internal(w)
+		return
+	}
 	events, err := userStore.ListJobEvents(r.Context(), id, 0, 500)
 	if err != nil {
 		s.internal(w)
 		return
 	}
 	view := jobView{
-		ID:               job.ID,
-		ShortID:          fmt.Sprintf("#%06d", job.ID),
-		ProfileName:      profile.Name,
-		Command:          string(job.Command),
-		StatusLabel:      statusLabel(job.Status),
-		StatusClass:      statusClass(job.Status),
-		CreatedLabel:     job.CreatedAt.Local().Format(time.RFC1123),
-		Message:          job.Message,
-		AwaitingApproval: job.Status == model.JobAwaitingApproval,
-		CanCancel:        job.Status == model.JobQueued || job.Status == model.JobRunning || job.Status == model.JobAwaitingApproval,
+		ID:                job.ID,
+		ShortID:           fmt.Sprintf("#%06d", job.ID),
+		ProfileName:       profile.Name,
+		Command:           string(job.Command),
+		StatusLabel:       statusLabel(job.Status),
+		StatusClass:       statusClass(job.Status),
+		Status:            string(job.Status),
+		CreatedLabel:      job.CreatedAt.Local().Format(time.RFC1123),
+		StartedLabel:      optionalTime(job.StartedAt),
+		FinishedLabel:     optionalTime(job.FinishedAt),
+		ConfirmationLabel: optionalTime(job.ConfirmationStartedAt),
+		Mode:              string(job.RunMode),
+		DueLabel:          job.DueAt.Local().Format(time.RFC1123),
+		ExpiresLabel:      optionalTime(job.ExpiresAt),
+		Message:           job.Message,
+		AwaitingApproval:  job.Status == model.JobAwaitingApproval,
+		CanCancel:         !job.Status.Terminal(),
 	}
-	view.Fields = []labelValue{
-		{"Mode", string(job.RunMode)},
-		{"Status", string(job.Status)},
-		{"Due", job.DueAt.Local().Format(time.RFC1123)},
-		{"Started", optionalTime(job.StartedAt)},
-		{"Finished", optionalTime(job.FinishedAt)},
-		{"Final confirmation", optionalTime(job.ConfirmationStartedAt)},
+	if job.RunImmediately {
+		view.TimingLabel = "Book now · manual approval"
+	} else if job.Command == model.CommandBook {
+		view.TimingLabel = "Release window"
+	}
+	// Pending jobs prevent edits to the linked profile and booking. Terminal
+	// history may outlive edits, so do not present current settings as its receipt.
+	if !job.Status.Terminal() && job.BookingRequestID != nil && job.Command == model.CommandBook {
+		booking, err := userStore.GetBookingRequest(r.Context(), *job.BookingRequestID)
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		view.BookingReview = []labelValue{
+			{"Target date", booking.TargetDate + " · " + booking.Timezone},
+			{"Vehicle", profile.DefaultVehicle},
+			{"Pass preference order", strings.Join(passNames(booking.PassOrder()), " → ")},
+		}
 	}
 	data := jobData{BaseData: base(r, "Job "+view.ShortID), Job: view}
 	for _, event := range events {
 		data.Events = append(data.Events, eventView{Time: event.CreatedAt.Local().Format("15:04:05"), Type: event.Kind, Message: event.Message})
+		data.LastEventID = event.ID
 	}
 	s.render(w, http.StatusOK, "job", data)
 }
@@ -180,6 +165,20 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	if _, err := userStore.GetJob(r.Context(), id); err != nil {
 		s.notFoundOrInternal(w, err)
 		return
+	}
+	var afterID int64
+	for _, cursor := range []string{r.URL.Query().Get("after"), r.Header.Get("Last-Event-ID")} {
+		if cursor == "" {
+			continue
+		}
+		parsed, err := strconv.ParseInt(cursor, 10, 64)
+		if err != nil || parsed < 0 {
+			http.Error(w, "invalid event cursor", http.StatusBadRequest)
+			return
+		}
+		if parsed > afterID {
+			afterID = parsed
+		}
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -203,20 +202,54 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	existing, _ := userStore.ListJobEvents(r.Context(), id, 0, 1000)
-	var afterID int64
-	if len(existing) > 0 {
-		afterID = existing[len(existing)-1].ID
-	}
-	s.writeJobState(w, userStore, id)
-	flusher.Flush()
 	jobKey := strconv.FormatInt(id, 10)
 	live, unsubscribe := s.engine.Hub().Subscribe(jobKey)
 	defer unsubscribe()
-	poll := time.NewTicker(2 * time.Second)
+	const pollInterval = 2 * time.Second
+	poll := time.NewTicker(pollInterval)
 	keepalive := time.NewTicker(15 * time.Second)
 	defer poll.Stop()
 	defer keepalive.Stop()
+	var terminalObservedAt time.Time
+	writeSnapshot := func(completed bool) bool {
+		if !streamAuthorized() {
+			expireStream()
+			return true
+		}
+		job, err := userStore.GetJob(r.Context(), id)
+		if err != nil {
+			return true
+		}
+		if job.Status.Terminal() && terminalObservedAt.IsZero() {
+			terminalObservedAt = time.Now()
+		}
+		// Finish writes the terminal event after the status transition. Give that
+		// bounded write time to finish when its live completion signal was missed.
+		finished := job.Status.Terminal() && (completed || time.Since(terminalObservedAt) >= 2*pollInterval)
+		for {
+			events, err := userStore.ListJobEvents(r.Context(), id, afterID, 100)
+			if err != nil {
+				return true
+			}
+			for _, event := range events {
+				_, _ = fmt.Fprintf(w, "id: %d\n", event.ID)
+				writeSSE(w, "job_event", map[string]any{"id": event.ID, "time": event.CreatedAt.Local().Format("15:04:05"), "type": event.Kind, "message": event.Message})
+				afterID = event.ID
+			}
+			if len(events) < 100 {
+				break
+			}
+		}
+		writeJobState(w, job)
+		if finished {
+			writeSSE(w, "complete", map[string]any{})
+		}
+		flusher.Flush()
+		return finished
+	}
+	if writeSnapshot(false) {
+		return
+	}
 	for {
 		select {
 		case <-r.Context().Done():
@@ -231,30 +264,12 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			if event.Kind == "otp" || event.Kind == "pairing" {
 				writeSSE(w, event.Kind, event.Data)
-			} else {
-				s.writeJobState(w, userStore, id)
+			} else if writeSnapshot(event.Kind == "complete") {
+				return
 			}
 			flusher.Flush()
 		case <-poll.C:
-			if !streamAuthorized() {
-				expireStream()
-				return
-			}
-			events, err := userStore.ListJobEvents(r.Context(), id, afterID, 100)
-			if err != nil {
-				return
-			}
-			for _, event := range events {
-				writeSSE(w, "job_event", map[string]any{"time": event.CreatedAt.Local().Format("15:04:05"), "type": event.Kind, "message": event.Message})
-				afterID = event.ID
-			}
-			job, err := userStore.GetJob(r.Context(), id)
-			if err != nil {
-				return
-			}
-			s.writeJobState(w, userStore, id)
-			flusher.Flush()
-			if job.Status.Terminal() {
+			if writeSnapshot(false) {
 				return
 			}
 		case <-keepalive.C:
@@ -268,17 +283,18 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) writeJobState(w http.ResponseWriter, userStore store.UserStore, id int64) {
-	job, err := userStore.GetJob(context.Background(), id)
-	if err != nil {
-		return
-	}
+func writeJobState(w http.ResponseWriter, job model.Job) {
 	writeSSE(w, "state", map[string]any{
-		"message":           job.Message,
-		"label":             statusLabel(job.Status),
-		"class_name":        statusClass(job.Status),
-		"awaiting_approval": job.Status == model.JobAwaitingApproval,
-		"terminal":          job.Status.Terminal(),
+		"message":              job.Message,
+		"label":                statusLabel(job.Status),
+		"class_name":           statusClass(job.Status),
+		"status":               string(job.Status),
+		"started":              optionalTime(job.StartedAt),
+		"finished":             optionalTime(job.FinishedAt),
+		"confirmation_started": optionalTime(job.ConfirmationStartedAt),
+		"can_cancel":           !job.Status.Terminal(),
+		"awaiting_approval":    job.Status == model.JobAwaitingApproval,
+		"terminal":             job.Status.Terminal(),
 	})
 }
 
