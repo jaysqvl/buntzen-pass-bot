@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.2](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.3.1...buntzen-pass-bot-v0.3.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* drain action pipes before waiting ([6278a65](https://github.com/jaysqvl/buntzen-pass-bot/commit/6278a65dc3bf151a7a072350239a94142368409e))
+* drain action pipes before waiting ([2b0f8b0](https://github.com/jaysqvl/buntzen-pass-bot/commit/2b0f8b085ecd00a46a9a26abc328e6e0ef16d211))
+* verify bookings and simplify runtime ownership ([#60](https://github.com/jaysqvl/buntzen-pass-bot/issues/60)) ([19b3ad7](https://github.com/jaysqvl/buntzen-pass-bot/commit/19b3ad78e0ac093e5cb32dd9e47d5552f690f5da))
+
 ## [0.3.1](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.3.0...buntzen-pass-bot-v0.3.1) (2026-08-25)
 
 
