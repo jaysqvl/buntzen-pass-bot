@@ -120,9 +120,24 @@ for the matching `confirmation.ready {confirmation_id}`. Go sends that reply
 only after durably recording that the final click may begin. A matching
 `confirmation.error {confirmation_id}`, cancellation, closed stream, unexpected
 frame, or mismatched ID aborts without clicking. Python emits
-`confirmation.completed {confirmation_id,pass_key,label}` only after Playwright
-returns successfully. A click failure after `confirmation.ready` ends as
-`outcome_unknown`; Go must never automatically retry that state.
+`confirmation.completed {confirmation_id,pass_key,label}` only after a new
+checkout response reports a successful order with one issued wallet item and
+Yodel's visible `Confirmed` / `See My Pass` dialog appears. A successful click
+alone is insufficient. Verification is bounded to 30 seconds and preserves
+cancellation. An error, missing receipt, or click failure after
+`confirmation.ready` ends as `outcome_unknown`; Go must never automatically
+retry that state. Receipt contents and order identifiers are not sent over the
+worker protocol or logged.
+
+Date selection is scoped to the requested pass card. The full year, month, and
+day must agree across the calendar heading and button metadata, and the selected
+state must be observed before availability or vehicle selection proceeds.
+Missing or ambiguous dates fail without choosing another date.
+
+Before adding a pass, the existing Yodel cart must be empty. The mounted cart is
+checked for exactly one pass and quantity one after adding, and again after the
+manual approval wait. Unrecognized or nonempty starting carts fail for operator
+review; the worker never silently deletes existing cart contents.
 
 ## Artifact guarantees
 

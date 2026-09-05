@@ -298,6 +298,9 @@ func mapWriteError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed: booking_reservations.profile_id") {
+		return fmt.Errorf("%w: this profile and date already have a pending, successful, or unresolved booking", ErrConflict)
+	}
 	if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
 		return fmt.Errorf("%w: %v", ErrConflict, err)
 	}

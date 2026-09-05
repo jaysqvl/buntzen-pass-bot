@@ -114,7 +114,7 @@ func TestYodelPhoneMigrationFailsClosedAndPreservesLinkedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := database.SchemaVersion(ctx)
-	if err != nil || version != 2 {
+	if err != nil || version != 3 {
 		t.Fatalf("schema version=%d err=%v", version, err)
 	}
 	var phoneColumns, legacyCredentialColumns int

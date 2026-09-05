@@ -209,6 +209,10 @@ func (s *Store) SystemClaimNextDueJobAt(ctx context.Context, workerOwner string,
 			WHERE candidate.status = 'queued' AND candidate.cancel_requested = 0 AND candidate.due_at <= ?
 			AND (candidate.expires_at IS NULL OR candidate.expires_at > ?)
 			AND profile.enabled = 1 AND profile.otp_source_id = candidate.otp_source_id
+			AND (candidate.command <> 'book' OR EXISTS (
+				SELECT 1 FROM booking_reservations WHERE job_id = candidate.id
+				AND profile_id = candidate.profile_id
+			))
 			AND (
 				candidate.booking_request_id IS NULL OR
 				(booking.enabled = 1 AND booking.profile_id = candidate.profile_id)
@@ -541,6 +545,15 @@ func (s *Store) SystemExpireStaleJobs(ctx context.Context, now time.Time) (int64
 // retention since its last status transition. In particular, scheduler rows
 // become prunable only after their deduplication window expires.
 func (s *Store) SystemPruneTerminalJobs(ctx context.Context, now time.Time) (int64, error) {
+	// Completed booking guards outlive pruned job rows so history cleanup cannot
+	// permit another confirmation. Once the target day has passed everywhere,
+	// detached guards are no longer needed by the bounded booking window.
+	if _, err := s.db.ExecContext(ctx, `
+		DELETE FROM booking_reservations
+		WHERE job_id IS NULL AND target_date < date(?, '-1 day')
+	`, formatTime(now)); err != nil {
+		return 0, fmt.Errorf("prune past booking reservations: %w", err)
+	}
 	count, err := pruneJobHistory(ctx, s.db, 0, now)
 	if err != nil {
 		return 0, fmt.Errorf("prune job history: %w", err)

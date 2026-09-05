@@ -5,10 +5,13 @@ import random
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Iterable, Optional
 
+from .calendar_dates import resolve_button_date
 from .config import ActionConfig
+from .checkout import CheckoutConfirmation
+from .cart import require_empty_cart, require_single_pass_cart
 from .control import ControlPort
 from .diagnostics import SafeDiagnostics
 from .errors import ActionError, OutcomeUnknown
@@ -93,12 +96,6 @@ FINAL_CONFIRM_SELECTORS = (
     "button:has-text('Yes')",
     "button:has-text('Confirm')",
     "a:has-text('Confirm')",
-)
-DATE_BUTTON_SELECTORS = (
-    ".datelist button.date",
-    "button.date",
-    "button[aria-label*='{day}']",
-    "button:has-text('{day}')",
 )
 
 
@@ -455,18 +452,18 @@ class YodelAction:
         self._goto_allowed(url)
         self._settle_page(timeout_ms=10_000)
 
-        if not self._select_target_date():
+        container = self._find_pass_container(preference)
+        if container is None:
+            return BookingResult(
+                False, f"{preference.label} pass card was not found.", preference.key
+            )
+        if not self._select_target_date(container):
             return BookingResult(
                 False,
                 f"Target date {self.config.target_date} was not selectable.",
                 preference.key,
             )
 
-        container = self._find_pass_container(preference)
-        if container is None:
-            return BookingResult(
-                False, f"{preference.label} pass card was not found.", preference.key
-            )
         if not self._pass_is_available(container):
             return BookingResult(
                 False, f"{preference.label} pass is not available.", preference.key
@@ -487,6 +484,7 @@ class YodelAction:
                 preference.key,
             )
 
+        self._check_cart(empty=True)
         if not self._click_first(container, ADD_TO_CART_SELECTORS, timeout_ms=5_000):
             if not self._click_first(
                 self.page, ADD_TO_CART_SELECTORS, timeout_ms=5_000
@@ -499,6 +497,7 @@ class YodelAction:
                 )
 
         self._human_pause(0.4, 1.2)
+        self._check_cart(empty=False)
         if not self._click_first(self.page, CHECKOUT_SELECTORS, timeout_ms=15_000):
             self._capture_failure(f"{preference.key}-checkout-failed")
             return BookingResult(
@@ -532,26 +531,37 @@ class YodelAction:
         elif mode != "auto":
             raise ActionError("Unsupported booking mode")
 
+        self._check_cart(empty=False)
         self._click_final_confirmation(final_confirm, preference)
         self._capture_failure(f"{preference.key}-confirmed")
         return BookingResult(
             True, f"{preference.label} pass checkout was confirmed.", preference.key
         )
 
+    def _check_cart(self, *, empty: bool) -> None:
+        if empty:
+            require_empty_cart(self.page, self.control)
+        else:
+            require_single_pass_cart(self.page, self.control)
+
     def _click_final_confirmation(
         self, locator: Any, preference: PassPreference
     ) -> None:
         self.control.inbox.check_cancelled()
         self._assert_page_origin()
+        receipt = CheckoutConfirmation(self.page, self.config)
+        receipt.check_not_already_confirmed()
         confirmation_id = self.control.await_confirmation_ready(
             preference.key, preference.label
         )
         logger.debug("Durable final-confirmation barrier recorded pass_key=%s", preference.key)
         try:
-            locator.click(timeout=30_000)
+            with receipt:
+                locator.click(timeout=30_000)
+                receipt.wait(self.control)
         except Exception as exc:
             raise OutcomeUnknown(
-                f"Final confirmation for {preference.label} may have been submitted; do not retry automatically"
+                f"Final confirmation for {preference.label} may have been submitted, but the reservation could not be verified; inspect the Yodel wallet before retrying"
             ) from exc
         self.control.emit(
             "confirmation.completed",
@@ -717,55 +727,79 @@ class YodelAction:
                 continue
         return False
 
-    def _select_target_date(self) -> bool:
-        target = self.config.target_date
-        day = str(target.day)
-        exact_tokens = {
-            target.isoformat(),
-            target.strftime("%B %d").replace(" 0", " "),
-            target.strftime("%b %d").replace(" 0", " "),
-            target.strftime("%A, %B %d").replace(" 0", " "),
-        }
-        buttons = self.page.locator(".datelist button.date, button.date")
+    def _calendar_dates(
+        self, container: Any
+    ) -> Optional[list[tuple[Any, date, bool, bool]]]:
+        """Read only this pass card's dates, failing on ambiguous metadata."""
+
+        self.control.inbox.check_cancelled()
         try:
+            headings = container.locator(".month")
+            if headings.count() > 4:
+                return None
+            months = [
+                headings.nth(index).inner_text(timeout=500).strip()
+                for index in range(headings.count())
+                if headings.nth(index).is_visible()
+            ]
+            buttons = container.locator("button.date")
             count = buttons.count()
+            if count < 1 or count > 62:
+                return None
         except Exception:
-            count = 0
-        fallback = None
+            return None
+
+        entries = []
         for index in range(count):
-            button = buttons.nth(index)
+            self.control.inbox.check_cancelled()
             try:
-                text = button.inner_text(timeout=500).strip()
-                attrs = " ".join(
-                    value or ""
-                    for value in (
-                        button.get_attribute("aria-label"),
-                        button.get_attribute("title"),
-                        button.get_attribute("data-date"),
-                        button.get_attribute("datetime"),
-                    )
+                button = buttons.nth(index)
+                if not button.is_visible():
+                    continue
+                attributes = {
+                    name: button.get_attribute(name, timeout=500)
+                    for name in ("aria-label", "title", "data-date", "datetime")
+                }
+                value = resolve_button_date(
+                    button.inner_text(timeout=500), attributes, months
                 )
-                combined = f"{text} {attrs}"
-                if any(token.lower() in combined.lower() for token in exact_tokens):
-                    button.click()
-                    self._human_pause(0.1, 0.5)
-                    return True
-                if text == day and fallback is None:
-                    fallback = button
+                if value is None:
+                    return None
+                selected = (
+                    "active" in (button.get_attribute("class", timeout=500) or "").split()
+                    or button.get_attribute("aria-selected", timeout=500) == "true"
+                    or button.get_attribute("aria-pressed", timeout=500) == "true"
+                )
+                entries.append((button, value, selected, button.is_enabled()))
             except Exception:
-                continue
-        if fallback is not None:
-            fallback.click()
-            self._human_pause(0.1, 0.5)
-            return True
-        for selector in DATE_BUTTON_SELECTORS:
-            locator = self._visible_locator(
-                (selector.format(day=day),), timeout_ms=1_000
-            )
-            if locator is not None:
-                locator.click()
-                self._human_pause(0.1, 0.5)
-                return True
+                return None
+        return entries
+
+    def _select_target_date(self, container: Any) -> bool:
+        target = self.config.target_date
+        entries = self._calendar_dates(container)
+        if entries is None:
+            return False
+        matches = [entry for entry in entries if entry[1] == target]
+        if len(matches) != 1 or not matches[0][3]:
+            return False
+        self.control.inbox.check_cancelled()
+        try:
+            matches[0][0].click(timeout=3_000)
+        except Exception:
+            return False
+
+        # A click alone does not prove the card's independent calendar changed.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            self.control.inbox.check_cancelled()
+            entries = self._calendar_dates(container)
+            if entries is not None:
+                matches = [entry for entry in entries if entry[1] == target]
+                selected = [entry[1] for entry in entries if entry[2]]
+                if len(matches) == 1 and selected == [target]:
+                    return True
+            self.page.wait_for_timeout(100)
         return False
 
     def _find_pass_container(self, preference: PassPreference) -> Optional[Any]:
@@ -898,14 +932,23 @@ class YodelAction:
         timeout_ms: int = 1_000,
     ) -> Optional[Any]:
         search_root = root if root is not None else self.page
-        for selector in selectors:
-            try:
-                locator = search_root.locator(selector).first
-                locator.wait_for(state="visible", timeout=timeout_ms)
-                return locator
-            except Exception:
-                continue
-        return None
+        selectors = tuple(selectors)
+        deadline = time.monotonic() + timeout_ms / 1_000
+        while True:
+            self.control.inbox.check_cancelled()
+            for selector in selectors:
+                try:
+                    matches = search_root.locator(selector)
+                    for index in range(min(matches.count(), 20)):
+                        locator = matches.nth(index)
+                        if locator.is_visible():
+                            return locator
+                except Exception:
+                    continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            self.page.wait_for_timeout(min(100, remaining * 1_000))
 
     def _settle_page(self, timeout_ms: int = 15_000) -> None:
         try:

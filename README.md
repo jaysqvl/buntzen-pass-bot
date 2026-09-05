@@ -12,6 +12,12 @@ Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking pass
 - Read-only inbound OTP retrieval through either BlueBubbles or Twilio, with no provider fallback or outbound messaging.
 - Durable jobs, restart recovery, and an `outcome_unknown` state that prevents unsafe retries after an ambiguous confirmation.
 
+Only one booking attempt may reserve a Yodel profile and visit date, across
+manual and scheduled runs. Success and unknown outcomes keep that reservation
+even when job history is pruned. A cancellation or failure before confirmation
+allows another attempt. Inspect the Yodel wallet after an unknown outcome;
+creating another request or changing confirmation mode will not bypass the guard.
+
 ## Quick start with Docker Compose
 
 1. Create the local configuration:
@@ -62,6 +68,11 @@ Keep `SCHEDULES_ENABLED=false` while completing these steps:
 5. Run **Auth check**, then **Dry run**, from the booking card.
 6. Test a manual booking, including approval and cancellation, then explicitly test one automatic booking.
 7. Verify the OTP provider still works after its host restarts before enabling unattended schedules.
+
+Before a booking, the Yodel cart must be empty. The bot checks that adding the
+selected pass produces exactly one item of quantity one, then rechecks it before
+confirmation. Cancelling a manual test can leave that item in Yodel's cart;
+inspect and clear it in Yodel before starting the next booking test.
 
 BlueBubbles can retrieve an OTP only when the SMS reaches Messages on its Mac through Messages in iCloud or text-message forwarding. Keep that Mac awake and connected to the network.
 
