@@ -117,7 +117,7 @@ validate_doctor() {
   report="$(docker exec "$container" /usr/local/bin/buntzen doctor)"
   printf '%s\n' "$report" | jq -e '
     .ok == true and
-    .schema_version == 2 and
+    .schema_version == 3 and
     .action_protocol == 2 and
     .appdata_dir == "/appdata" and
     .database_path == "/appdata/buntzen.db" and
