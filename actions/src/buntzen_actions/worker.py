@@ -190,7 +190,6 @@ def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optiona
             page = context.pages[0] if context.pages else context.new_page()
             action = YodelAction(
                 page=page,
-                context=context,
                 config=config,
                 control=control,
                 diagnostics=diagnostics,
@@ -201,7 +200,12 @@ def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optiona
             return result.message, result.pass_key
         finally:
             if diagnostics is not None:
-                diagnostics.close()
+                try:
+                    diagnostics.close()
+                except Exception:
+                    # Final cleanup must not hide the action outcome or leave
+                    # its persistent browser profile locked by an open context.
+                    logger.warning("Safe diagnostics did not close cleanly")
             if context is not None:
                 try:
                     context.close()

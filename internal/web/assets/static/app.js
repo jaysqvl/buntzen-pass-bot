@@ -68,8 +68,16 @@
     button.disabled = true;
     const body = new URLSearchParams({csrf_token: csrf, decision: button.dataset.decision});
     if (button.dataset.messageId) body.set('message_id', button.dataset.messageId);
-    const response = await fetch(`/jobs/${encodeURIComponent(jobID)}/decision`, {method:'POST', body, credentials:'same-origin', headers:{'Content-Type':'application/x-www-form-urlencoded'}});
-    if (!response.ok) { button.disabled = false; alert(await response.text() || 'Request failed'); }
+    try {
+      const response = await fetch(`/jobs/${encodeURIComponent(jobID)}/decision`, {method:'POST', body, credentials:'same-origin', headers:{'Content-Type':'application/x-www-form-urlencoded'}});
+      if (!response.ok) {
+        button.disabled = false;
+        alert(await response.text() || 'Request failed');
+      }
+    } catch {
+      button.disabled = false;
+      alert('Connection lost. Check the job status before retrying.');
+    }
   });
   window.addEventListener('pagehide', () => {
     clearSensitive();

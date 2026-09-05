@@ -22,7 +22,12 @@ func TestLoadOrCreateAndRoundTrip(t *testing.T) {
 	if strings.Contains(ciphertext, "correct horse") {
 		t.Fatal("ciphertext contains plaintext")
 	}
-	plaintext, err := box.Decrypt(ciphertext)
+	// Reopening must reuse the persisted key, as it does after a service restart.
+	reopened, err := LoadOrCreate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := reopened.Decrypt(ciphertext)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -79,6 +79,10 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if input.NewProcess == nil || input.Provider == nil || input.Hub == nil {
 		return RunResult{}, errors.New("action process, OTP provider, and live hub are required")
 	}
+	// The coordinator owns every process and asynchronous wait it starts. A
+	// terminal worker must release them even when its parent context stays alive.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if input.OTPTimeout <= 0 {
 		input.OTPTimeout = 2 * time.Minute
 	}
@@ -92,7 +96,7 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 	jobKey := strconv.FormatInt(input.JobID, 10)
 	defer input.Hub.ClearOTP(jobKey)
 
-	events := input.EventsOrNoop()
+	events := input.eventSink()
 	async := make(chan asyncResult, 8)
 	challenges := make(map[string]*pendingChallenge)
 	var challengeMu sync.Mutex
@@ -240,7 +244,7 @@ func finishRun(ctx context.Context, terminal *RunResult, confirmationStarted boo
 	return RunResult{Status: model.JobFailed, Message: "The action process ended without a terminal result.", ExitCode: processResult.ExitCode}, nil
 }
 
-func (input RunInput) EventsOrNoop() func(string, string) {
+func (input RunInput) eventSink() func(string, string) {
 	if input.Hooks.Event != nil {
 		return input.Hooks.Event
 	}
@@ -266,7 +270,7 @@ func handleFrame(
 	confirmationID *string,
 	terminal **RunResult,
 ) error {
-	events := input.EventsOrNoop()
+	events := input.eventSink()
 	switch frame.Type {
 	case "run.status":
 		phase := safeToken(stringValue(frame.Payload, "phase"))
@@ -324,7 +328,10 @@ func handleFrame(
 		challengeMu.Unlock()
 		go func() {
 			message, waitErr := input.Provider.WaitForCode(waitCtx, armed)
-			async <- asyncResult{kind: "otp", correlation: challengeID, message: message, err: waitErr}
+			select {
+			case async <- asyncResult{kind: "otp", correlation: challengeID, message: message, err: waitErr}:
+			case <-ctx.Done():
+			}
 		}()
 	case "otp.submitted", "otp.not_required", "otp.failed":
 		challengeID, err := correlation(frame.Payload, "challenge_id")
@@ -356,7 +363,10 @@ func handleFrame(
 		input.Hub.Publish(jobKey, LiveEvent{Kind: "approval", Data: map[string]any{"active": true}})
 		go func() {
 			decision, waitErr := input.Hub.WaitDecision(ctx, jobKey)
-			async <- asyncResult{kind: "approval", correlation: approvalID, decision: decision, err: waitErr}
+			select {
+			case async <- asyncResult{kind: "approval", correlation: approvalID, decision: decision, err: waitErr}:
+			case <-ctx.Done():
+			}
 		}()
 	case "approval.approved", "approval.cancelled", "approval.expired":
 		input.Hub.Publish(jobKey, LiveEvent{Kind: "approval", Data: map[string]any{"active": false}})

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -18,7 +17,9 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 		helperProcess()
 		os.Exit(0)
 	}
-	session, err := Start(context.Background(), Config{
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	session, err := Start(ctx, Config{
 		Executable: os.Args[0],
 		Args:       []string{"-test.run=TestProcessRoundTripAndCancellation"},
 		Environment: []string{
@@ -29,6 +30,7 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { session.Cancel(100 * time.Millisecond) })
 	ready := <-session.Events()
 	if ready.Type != "worker.ready" {
 		t.Fatalf("first event = %q", ready.Type)
@@ -48,6 +50,106 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 	result := <-session.Done()
 	if result.Err != nil || result.ExitCode != 0 {
 		t.Fatalf("result: exit=%d error=%v", result.ExitCode, result.Err)
+	}
+}
+
+func TestCancellationKillsWorkerWithBlockedInput(t *testing.T) {
+	const helperMode = "blocked-stdin"
+	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == helperMode {
+		fmt.Fprintln(os.Stdout, `{"v":2,"type":"worker.ready"}`)
+		// Keep stdin open without consuming it, like a hung browser worker.
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+	session, err := Start(t.Context(), Config{
+		Executable:  os.Args[0],
+		Args:        []string{"-test.run=^TestCancellationKillsWorkerWithBlockedInput$"},
+		Environment: []string{"BUNTZEN_ACTIONPROC_HELPER=" + helperMode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(session.forceKill)
+	select {
+	case <-session.Events():
+	case <-time.After(5 * time.Second):
+		t.Fatal("helper did not start")
+	}
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		for range 128 {
+			if err := session.Send("run.start", map[string]any{"padding": strings.Repeat("x", 60*1024)}); err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-writeDone:
+		t.Fatal("expected the worker's unread pipe to block the writer")
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancelReturned := make(chan struct{})
+	go func() {
+		session.Cancel(100 * time.Millisecond)
+		close(cancelReturned)
+	}()
+	select {
+	case <-cancelReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation blocked on the worker's stdin")
+	}
+	select {
+	case result := <-session.Done():
+		if result.ExitCode == 0 {
+			t.Fatal("hung worker exited successfully instead of being killed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hung worker was not reaped after the cancellation deadline")
+	}
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not stop after the worker was killed")
+	}
+}
+
+func TestCancellationReapsWorkerWhenCallerStopsReadingEvents(t *testing.T) {
+	const helperMode = "unread-events"
+	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == helperMode {
+		for range 256 {
+			fmt.Fprintln(os.Stdout, `{"v":2,"type":"heartbeat"}`)
+		}
+		fmt.Fprintln(os.Stderr, "events-written")
+		os.Exit(0)
+	}
+	written := make(chan struct{})
+	session, err := Start(t.Context(), Config{
+		Executable:  os.Args[0],
+		Args:        []string{"-test.run=^TestCancellationReapsWorkerWhenCallerStopsReadingEvents$"},
+		Environment: []string{"BUNTZEN_ACTIONPROC_HELPER=" + helperMode},
+		OnStderr: func(line string) {
+			if line == "events-written" {
+				close(written)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(session.forceKill)
+	select {
+	case <-written:
+	case <-time.After(5 * time.Second):
+		t.Fatal("helper did not write its events")
+	}
+	// A caller may return on a protocol error without reading more events.
+	// Cleanup must not depend on making space in the abandoned event channel.
+	session.Cancel(100 * time.Millisecond)
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("unread events prevented process cleanup")
 	}
 }
 
@@ -108,7 +210,7 @@ func TestChildEnvironmentRejectsUnapprovedOverrides(t *testing.T) {
 	}
 }
 
-func TestChildEnvironmentAllowsOnlyValidatedLoggingKnob(t *testing.T) {
+func TestChildEnvironmentAllowsActionLogLevel(t *testing.T) {
 	environment, err := childEnvironment([]string{"BUNTZEN_ACTION_LOG_LEVEL=debug"})
 	if err != nil {
 		t.Fatal(err)
@@ -130,17 +232,10 @@ func TestStderrDrainDiscardsOversizedLinesAndBoundsTotalCallbacks(t *testing.T) 
 	}
 
 	finished := make(chan struct{})
-	var mu sync.Mutex
 	var lines []string
-	go drainStderr(strings.NewReader(input.String()), func(line string) {
-		mu.Lock()
-		defer mu.Unlock()
+	drainStderr(strings.NewReader(input.String()), func(line string) {
 		lines = append(lines, line)
 	}, finished)
-	<-finished
-
-	mu.Lock()
-	defer mu.Unlock()
 	if len(lines) == 0 || lines[0] != stderrOversizedLine {
 		t.Fatalf("oversized stderr line was not discarded: %#v", lines)
 	}
@@ -227,7 +322,9 @@ func TestSendRejectsOversizedFrame(t *testing.T) {
 		helperProcess()
 		os.Exit(0)
 	}
-	session, err := Start(context.Background(), Config{
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	session, err := Start(ctx, Config{
 		Executable: os.Args[0],
 		Args:       []string{"-test.run=TestSendRejectsOversizedFrame"},
 		Environment: []string{
@@ -237,7 +334,14 @@ func TestSendRejectsOversizedFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Cancel(100 * time.Millisecond)
+	t.Cleanup(func() {
+		session.Cancel(100 * time.Millisecond)
+		select {
+		case <-session.Done():
+		case <-time.After(2 * time.Second):
+			t.Error("helper did not exit during cleanup")
+		}
+	})
 	<-session.Events()
 	err = session.Send("run.start", map[string]any{"padding": strings.Repeat("x", MaxFrameBytes)})
 	if !errors.Is(err, ErrFrameTooLarge) {

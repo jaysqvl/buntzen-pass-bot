@@ -3,7 +3,6 @@
 package integration_test
 
 import (
-	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -154,10 +152,8 @@ func TestControlPlanePythonBrowserBooking(t *testing.T) {
 			}
 
 			observed := strings.Join(append(append([]string{}, outcome.stderr...), outcome.events...), "\n")
-			assertExcludesSecrets(t, []byte(observed), "booking worker stderr and durable events")
-			assertExcludesValue(t, []byte(observed), bookingBearerToken, "booking worker stderr and durable events")
-			assertTreeExcludesSecrets(t, outcome.artifactDir)
-			assertTreeExcludesValue(t, outcome.artifactDir, bookingBearerToken)
+			assertExcludesValues(t, []byte(observed), "booking worker stderr and durable events", testPhone, testOTP, testBBPassword, bookingBearerToken)
+			assertTreeExcludesValues(t, outcome.artifactDir, testPhone, testOTP, testBBPassword, bookingBearerToken)
 		})
 	}
 }
@@ -179,7 +175,7 @@ type bookingRunOutcome struct {
 func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobCommand, mode model.RunMode, decision model.ApprovalDecision, receipt string) bookingRunOutcome {
 	t.Helper()
 	repoRoot := repositoryRoot(t)
-	python, pythonArgs := pythonWorker(t, repoRoot)
+	python, pythonArgs := pythonCommand(t, repoRoot, "-m", "buntzen_actions")
 	var confirmationBarrier atomic.Bool
 	flow := &bookingFlow{confirmationBarrier: &confirmationBarrier, receipt: receipt}
 	yodel := httptest.NewUnstartedServer(http.HandlerFunc(flow.serveYodel))
@@ -529,53 +525,5 @@ func assertEventKindsAbsent(t *testing.T, events []string, forbidden ...string) 
 		if strings.Contains(joined, kind+":") {
 			t.Errorf("durable event stream unexpectedly contained %s; events:\n%s", kind, joined)
 		}
-	}
-}
-
-func assertTreeExcludesValue(t *testing.T, root, forbidden string) {
-	t.Helper()
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(strings.ToLower(entry.Name()), ".zip") {
-			archive, err := zip.OpenReader(path)
-			if err != nil {
-				return err
-			}
-			defer archive.Close()
-			for _, item := range archive.File {
-				reader, err := item.Open()
-				if err != nil {
-					return err
-				}
-				contents, err := io.ReadAll(io.LimitReader(reader, 16<<20))
-				_ = reader.Close()
-				if err != nil {
-					return err
-				}
-				assertExcludesValue(t, contents, forbidden, filepath.Base(path)+":"+item.Name)
-			}
-			return nil
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		assertExcludesValue(t, contents, forbidden, filepath.Base(path))
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("inspect booking integration artifacts: %v", err)
-	}
-}
-
-func assertExcludesValue(t *testing.T, contents []byte, forbidden, label string) {
-	t.Helper()
-	if strings.Contains(string(contents), forbidden) {
-		t.Errorf("%s retained a synthetic bearer credential", label)
 	}
 }

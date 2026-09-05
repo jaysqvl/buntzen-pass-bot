@@ -4,12 +4,13 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
 )
 
 const (
@@ -95,9 +96,9 @@ func Load() (Config, error) {
 	for _, host := range allowedHosts {
 		seenHosts[host] = struct{}{}
 	}
-	for _, origin := range allowedOrigins {
-		parsed, _ := url.Parse(origin)
-		host, err := CanonicalHost(parsed.Host)
+	for _, allowedOrigin := range allowedOrigins {
+		parsed, _ := url.Parse(allowedOrigin)
+		host, err := origin.Host(parsed.Host)
 		if err != nil {
 			return Config{}, err
 		}
@@ -189,7 +190,7 @@ func hostList(name string) ([]string, error) {
 		if value == "" {
 			return nil, errors.New(name + " must be a comma-separated list of hosts")
 		}
-		canonical, err := CanonicalHost(value)
+		canonical, err := origin.Host(value)
 		if err != nil {
 			return nil, fmt.Errorf("%s contains an invalid host: %w", name, err)
 		}
@@ -200,35 +201,6 @@ func hostList(name string) ([]string, error) {
 		values = append(values, canonical)
 	}
 	return values, nil
-}
-
-// CanonicalHost validates an exact HTTP Host authority. Ports are retained
-// because the browser's same-origin boundary includes them.
-func CanonicalHost(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.ContainsAny(value, ` /\\@`) {
-		return "", errors.New("invalid host")
-	}
-	parsed, err := url.Parse("http://" + value)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("invalid host")
-	}
-	hostname := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
-	if hostname == "" || strings.Contains(hostname, "*") {
-		return "", errors.New("invalid host")
-	}
-	port := parsed.Port()
-	if port != "" {
-		value, err := strconv.ParseUint(port, 10, 16)
-		if err != nil || value == 0 {
-			return "", errors.New("invalid host port")
-		}
-		return net.JoinHostPort(hostname, port), nil
-	}
-	if strings.Contains(hostname, ":") {
-		return "[" + hostname + "]", nil
-	}
-	return hostname, nil
 }
 
 // originList parses an optional comma-separated list of exact browser origins
@@ -250,7 +222,7 @@ func parseOriginList(name, raw string) ([]string, error) {
 		if value == "" {
 			return nil, errors.New(name + " must be a comma-separated list of origins")
 		}
-		canonical, err := CanonicalOrigin(value)
+		canonical, err := origin.Canonical(value)
 		if err != nil {
 			return nil, fmt.Errorf("%s contains an invalid origin: %w", name, err)
 		}
@@ -261,39 +233,6 @@ func parseOriginList(name, raw string) ([]string, error) {
 		values = append(values, canonical)
 	}
 	return values, nil
-}
-
-// CanonicalOrigin validates an HTTP(S) origin and returns its browser-equivalent
-// serialization. It accepts an explicit default port but stores it omitted.
-func CanonicalOrigin(value string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("invalid origin")
-	}
-	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return "", errors.New("invalid origin scheme")
-	}
-	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
-	if host == "" || strings.Contains(host, "*") {
-		return "", errors.New("invalid origin host")
-	}
-	port := parsed.Port()
-	if port != "" {
-		value, err := strconv.ParseUint(port, 10, 16)
-		if err != nil || value == 0 {
-			return "", errors.New("invalid origin port")
-		}
-		if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
-			port = ""
-		}
-	}
-	if port != "" {
-		host = net.JoinHostPort(host, port)
-	} else if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	return scheme + "://" + host, nil
 }
 
 func (c Config) EnsureDirectories() error {

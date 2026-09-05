@@ -1,10 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
 	"net/http"
 )
@@ -68,13 +68,21 @@ func NewRenderer() (*Renderer, error) {
 func (r *Renderer) Render(w http.ResponseWriter, status int, name string, data any) error {
 	tmpl, ok := r.pages[name]
 	if !ok {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return fmt.Errorf("unknown template %q", name)
+	}
+	// Finish evaluating templates before committing headers or partial HTML.
+	// A missing page field must become a server error, not a truncated 200 page.
+	var page bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&page, "base", data); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return fmt.Errorf("render %s: %w", name, err)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	if err := tmpl.ExecuteTemplate(w, "base", data); err != nil {
-		return fmt.Errorf("render %s: %w", name, err)
+	if _, err := w.Write(page.Bytes()); err != nil {
+		return fmt.Errorf("write %s page: %w", name, err)
 	}
 	return nil
 }
@@ -85,8 +93,4 @@ func (r *Renderer) Static(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	}
 	r.static.ServeHTTP(w, req)
-}
-
-func renderError(w io.Writer, err error) {
-	_, _ = fmt.Fprintf(w, "render error: %s", template.HTMLEscapeString(err.Error()))
 }

@@ -20,7 +20,6 @@ func TestExtractCode(t *testing.T) {
 		{"no digits", "", false},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.body, func(t *testing.T) {
 			t.Parallel()
 			got, ok := ExtractCode(test.body)
@@ -31,7 +30,7 @@ func TestExtractCode(t *testing.T) {
 	}
 }
 
-func TestMatchEnforcesFingerprintAndDropsBody(t *testing.T) {
+func TestMatchEnforcesFingerprintAndFreshness(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2030, 1, 14, 18, 0, 0, 0, time.UTC)
 	raw := RawMessage{

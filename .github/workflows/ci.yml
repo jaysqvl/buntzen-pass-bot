@@ -43,6 +43,8 @@ jobs:
         run: go vet ./...
       - name: Unit and package tests
         run: go test -race -count=1 ./...
+      - name: Browser client event tests
+        run: node --test internal/web/testdata/client.test.cjs
       - name: Reachable vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
@@ -65,7 +67,7 @@ jobs:
       - name: Sync locked environment
         run: uv sync --project actions --locked
       - name: Lint
-        run: uvx --from ruff==0.12.10 ruff check actions scripts/deploy/tests
+        run: uvx --from ruff==0.12.10 ruff check actions scripts/deploy/tests integration/*.py
       - name: Tests
         run: uv run --project actions python -m unittest discover -s actions/tests
       - name: Compile package
@@ -94,7 +96,7 @@ jobs:
         run: uv run --project actions playwright install --with-deps chromium
       - name: Vet browser integration
         run: go vet -tags=integration ./integration/...
-      - name: Browser OTP integration
+      - name: Browser integration
         run: BUNTZEN_E2E_PYTHON="$PWD/actions/.venv/bin/python" go test -race -count=1 -tags=integration -timeout=5m ./integration/...
 
   docker:

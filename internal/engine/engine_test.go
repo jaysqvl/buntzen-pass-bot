@@ -100,6 +100,37 @@ func TestQueueBookingRejectsExplicitInvalidMode(t *testing.T) {
 	}
 }
 
+func TestUserAndSystemQueuePathsApplyTheSameRunModePolicy(t *testing.T) {
+	fixture := newEngineTestFixture(t)
+	ctx := context.Background()
+	for _, test := range []struct {
+		command model.JobCommand
+		mode    model.RunMode
+		want    model.RunMode
+	}{
+		{model.CommandAuthCheck, model.RunModeAuto, model.RunModeManual},
+		{model.CommandDryRun, model.RunModeAuto, model.RunModeDryRun},
+		{model.CommandBook, "", model.RunModeAuto},
+		{model.CommandBook, model.RunModeManual, model.RunModeManual},
+	} {
+		for _, system := range []bool{false, true} {
+			var job model.Job
+			var err error
+			if system {
+				job, err = fixture.engine.SystemQueueBooking(ctx, fixture.booking.ID, test.command, test.mode)
+			} else {
+				job, err = fixture.engine.QueueBooking(ctx, fixture.user.ID, fixture.booking.ID, test.command, test.mode)
+			}
+			if err != nil || job.RunMode != test.want {
+				t.Fatalf("system=%v command=%s requested=%s job=%+v err=%v", system, test.command, test.mode, job, err)
+			}
+			if err := fixture.resources.RequestJobCancellation(ctx, job.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestUserAndSystemQueuePathsSharePendingDeduplication(t *testing.T) {
 	fixture := newEngineTestFixture(t)
 	ctx := context.Background()

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import time
+from dataclasses import dataclass
 from datetime import date
-from typing import Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 _MONTHS = {
@@ -97,3 +99,93 @@ def resolve_button_date(
     except ValueError:
         return None
     return next(iter(resolved)) if len(resolved) == 1 else None
+
+
+@dataclass(frozen=True)
+class DateButton:
+    locator: Any
+    value: date
+    is_selected: bool
+    is_enabled: bool
+
+
+def _read_calendar(
+    container: Any, check_cancelled: Callable[[], None]
+) -> list[DateButton] | None:
+    """Read only this pass card's dates, failing on ambiguous metadata."""
+
+    from playwright.sync_api import Error as PlaywrightError
+
+    check_cancelled()
+    try:
+        headings = container.locator(".month")
+        if headings.count() > 4:
+            return None
+        months = [
+            headings.nth(index).inner_text(timeout=500).strip()
+            for index in range(headings.count())
+            if headings.nth(index).is_visible()
+        ]
+        buttons = container.locator("button.date")
+        count = buttons.count()
+        if count < 1 or count > 62:
+            return None
+    except PlaywrightError:
+        return None
+
+    entries = []
+    for index in range(count):
+        check_cancelled()
+        try:
+            button = buttons.nth(index)
+            if not button.is_visible():
+                continue
+            attributes = {
+                name: button.get_attribute(name, timeout=500)
+                for name in ("aria-label", "title", "data-date", "datetime")
+            }
+            value = resolve_button_date(button.inner_text(timeout=500), attributes, months)
+            if value is None:
+                return None
+            selected = (
+                "active" in (button.get_attribute("class", timeout=500) or "").split()
+                or button.get_attribute("aria-selected", timeout=500) == "true"
+                or button.get_attribute("aria-pressed", timeout=500) == "true"
+            )
+            entries.append(DateButton(button, value, selected, button.is_enabled()))
+        except PlaywrightError:
+            return None
+    return entries
+
+
+def select_target_date(
+    page: Any, container: Any, target: date, check_cancelled: Callable[[], None]
+) -> bool:
+    """Select and verify a complete date in one independently controlled card."""
+
+    from playwright.sync_api import Error as PlaywrightError
+
+    entries = _read_calendar(container, check_cancelled)
+    if entries is None:
+        return False
+    matches = [entry for entry in entries if entry.value == target]
+    if len(matches) != 1 or not matches[0].is_enabled:
+        return False
+    check_cancelled()
+    try:
+        matches[0].locator.click(timeout=3_000)
+    except PlaywrightError:
+        return False
+
+    # A click alone does not prove the card's independent calendar changed.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        check_cancelled()
+        entries = _read_calendar(container, check_cancelled)
+        if entries is not None:
+            matches = [entry for entry in entries if entry.value == target]
+            selected = [entry.value for entry in entries if entry.is_selected]
+            if len(matches) == 1 and selected == [target]:
+                return True
+        page.wait_for_timeout(100)
+    return False

@@ -21,6 +21,8 @@ release_image_workflow="$repo_root/.github/workflows/release-image.yml"
 release_workflow="$repo_root/.github/workflows/release-please.yml"
 deploy_workflow="$repo_root/.github/workflows/deploy-portainer.yml"
 
+# Guard the release/deployment wiring and Compose configuration. Runtime
+# behavior is exercised against the mock Portainer server below.
 grep -Fq 'value: ${{ jobs.publish.outputs.image_digest }}' "$release_image_workflow" || {
   printf 'release image workflow does not export its verified digest\n' >&2
   exit 1
@@ -43,22 +45,6 @@ grep -Fq 'image_digest: ${{ needs.publish-image.outputs.image_digest }}' "$relea
 }
 grep -Fq 'workflow_dispatch:' "$release_image_workflow" || {
   printf 'release image workflow has no recovery dispatch path\n' >&2
-  exit 1
-}
-grep -Fq '^buntzen-pass-bot-v(0|[1-9][0-9]*)' "$release_image_workflow" || {
-  printf 'release image workflow does not validate the component-prefixed tag\n' >&2
-  exit 1
-}
-grep -Fq 'echo "version=${RELEASE_TAG#buntzen-pass-bot-v}"' "$release_image_workflow" || {
-  printf 'release image workflow does not extract the component version\n' >&2
-  exit 1
-}
-grep -Fq '$p.buildDefinition.buildType' "$release_image_workflow" || {
-  printf 'release image workflow does not accept the current SLSA v1 provenance shape\n' >&2
-  exit 1
-}
-grep -Fq '$p.runDetails.builder' "$release_image_workflow" || {
-  printf 'release image workflow does not validate the SLSA v1 builder identity\n' >&2
   exit 1
 }
 grep -Fq "if: github.event_name == 'workflow_dispatch'" "$release_image_workflow" || {

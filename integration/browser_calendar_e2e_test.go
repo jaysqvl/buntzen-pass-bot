@@ -14,15 +14,12 @@ import (
 // This runs the real Python calendar and pass-selection methods against local
 // Chromium DOM fixtures. Any network requests stay on process-local loopback;
 // no provider account is involved.
-func TestPythonBrowserCalendarSelection(t *testing.T) {
+func TestPythonBrowserCalendarAndCheckout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real-browser integration test")
 	}
 	repoRoot := repositoryRoot(t)
-	python, args := pythonWorker(t, repoRoot)
-	// pythonWorker appends -m buntzen_actions; retain its selected interpreter
-	// (including the uv prefix) while running these independent browser cases.
-	args = append(args[:len(args)-2], filepath.Join(repoRoot, "integration", "browser_calendar_cases.py"))
+	python, args := pythonCommand(t, repoRoot, filepath.Join(repoRoot, "integration", "browser_calendar_cases.py"))
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, python, args...)

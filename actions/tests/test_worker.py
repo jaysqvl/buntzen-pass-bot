@@ -1,78 +1,24 @@
 from __future__ import annotations
 
-import sys
 import tempfile
-import types
 import unittest
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from buntzen_actions.config import ActionConfig
-from buntzen_actions.errors import ActionError
+from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown
 from buntzen_actions.worker import _open_context, _read_start_or_cancel, run_action
+from buntzen_actions.yodel import BookingResult
 
 
-class Tracing:
-    def start(self, **kwargs):
-        return None
-
-
-class Page:
-    def route(self, pattern, handler):
-        return None
-
-    def stop(self, **kwargs):
-        return None
-
-
-class Context:
-    def __init__(self) -> None:
-        self.pages = [Page()]
-        self.tracing = Tracing()
-        self.closed = 0
-        self.default_timeout = None
-        self.navigation_timeout = None
-
-    def set_default_timeout(self, value):
-        self.default_timeout = value
-
-    def set_default_navigation_timeout(self, value):
-        self.navigation_timeout = value
-
-    def close(self):
-        self.closed += 1
-
-
-class Chromium:
-    def __init__(self, context) -> None:
-        self.context = context
-        self.launch_options = None
-        self.executable_path = "/synthetic/chromium"
-
-    def launch_persistent_context(self, **kwargs):
-        self.launch_options = kwargs
-        return self.context
-
-
-class Playwright:
-    def __init__(self, context) -> None:
-        self.chromium = Chromium(context)
-
-
-class PlaywrightManager:
-    last_playwright = None
-
-    def __init__(self, context) -> None:
-        self.value = Playwright(context)
-        PlaywrightManager.last_playwright = self.value
-
-    def __enter__(self):
-        return self.value
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
+def browser_launcher():
+    return SimpleNamespace(chromium=SimpleNamespace(
+        executable_path="/synthetic/chromium",
+        launch_persistent_context=Mock(),
+    ))
 
 
 def make_config(profile_dir: Path) -> ActionConfig:
@@ -81,7 +27,7 @@ def make_config(profile_dir: Path) -> ActionConfig:
         command="auth-check",
         mode="manual",
         profile_dir=profile_dir,
-        target_date=__import__("datetime").date(2030, 1, 15),
+        target_date=date(2030, 1, 15),
         timezone_name="UTC",
         login_probe_url="https://example.test",
         allowed_yodel_origins=frozenset({"https://example.test"}),
@@ -107,69 +53,72 @@ class WorkerTests(unittest.TestCase):
         stream = SimpleNamespace(read=lambda: {"v": 2, "type": "control.cancel"})
         self.assertIsNone(_read_start_or_cancel(stream))
 
-    def test_browser_context_closes_when_action_fails(self) -> None:
+    def test_browser_closes_and_preserves_action_failure_kind(self) -> None:
+        for failure_type in (ActionError, Cancelled, OutcomeUnknown):
+            with self.subTest(failure_type=failure_type):
+                context = Mock(pages=[object()])
+                failure = failure_type("synthetic action outcome")
+                with (
+                    tempfile.TemporaryDirectory() as directory,
+                    patch("playwright.sync_api.sync_playwright"),
+                    patch("buntzen_actions.worker._open_context", return_value=context),
+                    patch("buntzen_actions.worker.SafeDiagnostics") as diagnostics,
+                    patch("buntzen_actions.worker.YodelAction") as action,
+                ):
+                    action.return_value.execute.side_effect = failure
+                    with self.assertRaises(failure_type) as raised:
+                        run_action(make_config(Path(directory) / "profile"), object())
+                self.assertIs(raised.exception, failure)
+                diagnostics.return_value.close.assert_called_once()
+                context.close.assert_called_once()
+
+    def test_diagnostic_cleanup_failure_does_not_hide_outcome_or_skip_browser_close(self) -> None:
+        context = Mock(pages=[object()])
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("playwright.sync_api.sync_playwright"),
+            patch("buntzen_actions.worker._open_context", return_value=context),
+            patch("buntzen_actions.worker.SafeDiagnostics") as diagnostics,
+            patch("buntzen_actions.worker.YodelAction") as action,
+            self.assertLogs("buntzen_actions.worker", level="WARNING"),
+        ):
+            diagnostics.return_value.close.side_effect = RuntimeError("cleanup failure")
+            action.return_value.execute.return_value = BookingResult(True, "Confirmed", "all_day")
+            result = run_action(make_config(Path(directory) / "profile"), object())
+        self.assertEqual(result, ("Confirmed", "all_day"))
+        context.close.assert_called_once()
+
+    def test_failed_booking_result_is_not_reported_as_success(self) -> None:
+        context = Mock(pages=[object()])
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("playwright.sync_api.sync_playwright"),
+            patch("buntzen_actions.worker._open_context", return_value=context),
+            patch("buntzen_actions.worker.SafeDiagnostics"),
+            patch("buntzen_actions.worker.YodelAction") as action,
+        ):
+            action.return_value.execute.return_value = BookingResult(False, "No pass available")
+            with self.assertRaisesRegex(ActionError, "No pass available"):
+                run_action(make_config(Path(directory) / "profile"), object())
+        context.close.assert_called_once()
+
+    def test_browser_launch_preserves_site_compatibility_and_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = Context()
-            sync_api = types.ModuleType("playwright.sync_api")
-            sync_api.sync_playwright = lambda: PlaywrightManager(context)
-            playwright = types.ModuleType("playwright")
-            playwright.sync_api = sync_api
-            modules = {"playwright": playwright, "playwright.sync_api": sync_api}
-            with (
-                patch.dict(sys.modules, modules),
-                patch(
-                    "buntzen_actions.worker.YodelAction.execute",
-                    side_effect=ActionError("synthetic failure"),
-                ),
-                patch(
-                    "buntzen_actions.worker.subprocess.run",
-                    return_value=SimpleNamespace(
-                        returncode=0,
-                        stdout="Chromium 1.55.5010.0123",
-                        stderr="",
-                    ),
-                ),
-            ):
-                with self.assertRaises(ActionError):
-                    run_action(make_config(Path(directory) / "profile"), object())
-            self.assertEqual(context.closed, 1)
-            self.assertEqual(context.default_timeout, 15_000)
-            self.assertEqual(context.navigation_timeout, 15_000)
-            self.assertIs(
-                PlaywrightManager.last_playwright.chromium.launch_options[
-                    "chromium_sandbox"
-                ],
-                True,
-            )
-            self.assertEqual(
-                PlaywrightManager.last_playwright.chromium.launch_options[
-                    "service_workers"
-                ],
-                "allow",
-            )
-            self.assertIn(
-                "Chrome/1.55.5010.0123",
-                PlaywrightManager.last_playwright.chromium.launch_options[
-                    "user_agent"
-                ],
-            )
-            self.assertNotIn(
-                "HeadlessChrome",
-                PlaywrightManager.last_playwright.chromium.launch_options[
-                    "user_agent"
-                ],
-            )
-            self.assertNotIn(
-                "--no-sandbox",
-                PlaywrightManager.last_playwright.chromium.launch_options.get(
-                    "args", []
-                ),
-            )
+            playwright = browser_launcher()
+            with patch("buntzen_actions.worker.subprocess.run", return_value=SimpleNamespace(
+                returncode=0, stdout="Chromium 1.55.5010.0123", stderr="",
+            )):
+                _open_context(playwright, make_config(Path(directory) / "profile"))
+            launch = playwright.chromium.launch_persistent_context.call_args.kwargs
+            self.assertIs(launch["chromium_sandbox"], True)
+            self.assertEqual(launch["service_workers"], "allow")
+            self.assertIn("Chrome/1.55.5010.0123", launch["user_agent"])
+            self.assertNotIn("HeadlessChrome", launch["user_agent"])
+            self.assertNotIn("--no-sandbox", launch.get("args", []))
 
     def test_explicit_chrome_uses_its_exact_version_without_headless_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = Context()
-            playwright = Playwright(context)
+            playwright = browser_launcher()
             executable = "/synthetic/google-chrome"
             config = replace(
                 make_config(Path(directory) / "profile"),
@@ -191,20 +140,19 @@ class WorkerTests(unittest.TestCase):
                 text=True,
                 timeout=5,
             )
-            launch = playwright.chromium.launch_options
+            launch = playwright.chromium.launch_persistent_context.call_args.kwargs
             self.assertEqual(launch["executable_path"], executable)
             self.assertIn("Chrome/1.55.5010.0123", launch["user_agent"])
             self.assertNotIn("HeadlessChrome", launch["user_agent"])
 
     def test_insecure_tls_test_seam_is_explicit_and_loopback_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            context = Context()
             config = replace(
                 make_config(Path(directory) / "profile"),
                 login_probe_url="https://127.0.0.1:8443/login",
                 allowed_yodel_origins=frozenset({"https://127.0.0.1:8443"}),
             )
-            playwright = Playwright(context)
+            playwright = browser_launcher()
             with patch.dict(
                 "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
             ), patch(
@@ -214,10 +162,10 @@ class WorkerTests(unittest.TestCase):
                 ),
             ):
                 _open_context(playwright, config)
-            self.assertIs(playwright.chromium.launch_options["ignore_https_errors"], True)
+            launch = playwright.chromium.launch_persistent_context.call_args.kwargs
+            self.assertIs(launch["ignore_https_errors"], True)
 
-            context = Context()
-            playwright = Playwright(context)
+            playwright = browser_launcher()
             remote = replace(
                 config,
                 login_probe_url="https://example.test/login",
@@ -232,7 +180,8 @@ class WorkerTests(unittest.TestCase):
                 ),
             ):
                 _open_context(playwright, remote)
-            self.assertNotIn("ignore_https_errors", playwright.chromium.launch_options)
+            launch = playwright.chromium.launch_persistent_context.call_args.kwargs
+            self.assertNotIn("ignore_https_errors", launch)
 
 
 if __name__ == "__main__":

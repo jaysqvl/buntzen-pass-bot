@@ -33,7 +33,7 @@ func (s *Store) CreateProfile(ctx context.Context, userID int64, input ProfileIn
 		return model.Profile{}, ErrUserRequired
 	}
 	profile := profileFromInput(0, userID, input)
-	if err := model.ValidateProfile(profile); err != nil {
+	if err := profile.Validate(); err != nil {
 		return model.Profile{}, err
 	}
 	if input.Credentials == nil {
@@ -78,7 +78,7 @@ func (s *Store) UpdateProfile(ctx context.Context, userID, id int64, input Profi
 		return model.Profile{}, ErrUserRequired
 	}
 	profile := profileFromInput(id, userID, input)
-	if err := model.ValidateProfile(profile); err != nil {
+	if err := profile.Validate(); err != nil {
 		return model.Profile{}, err
 	}
 	if profile.Enabled && input.Credentials == nil {

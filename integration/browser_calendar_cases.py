@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from playwright.sync_api import sync_playwright
 
+from buntzen_actions.calendar_dates import select_target_date
 from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown
 from buntzen_actions.pass_types import PASS_PREFERENCES
 from buntzen_actions.yodel import YodelAction
@@ -35,12 +36,14 @@ function chooseDate(button) {
 def stalled_checkout_server():
     headers_sent = threading.Event()
     release_body = threading.Event()
-    response_body = json.dumps({
-        "payment": {"succeeded": True, "errorMessage": None, "orderId": 123},
-        "walletItems": [{"summaryField1": {"value": "Synthetic pass"}}],
-    }).encode()
-    markup = b'''<button onclick="document.querySelector('#orderConfirmModal').style.display='block';fetch('/api/orders/checkout',{method:'POST'}).then(response=>response.json())">Yes</button>
-      <div id="orderConfirmModal" style="display:none"><h2 class="heading">Confirmed</h2><a>See My Pass</a></div>'''
+    response_body = json.dumps(
+        {
+            "payment": {"succeeded": True, "errorMessage": None, "orderId": 123},
+            "walletItems": [{"summaryField1": {"value": "Synthetic pass"}}],
+        }
+    ).encode()
+    markup = b"""<button onclick="document.querySelector('#orderConfirmModal').style.display='block';fetch('/api/orders/checkout',{method:'POST'}).then(response=>response.json())">Yes</button>
+      <div id="orderConfirmModal" style="display:none"><h2 class="heading">Confirmed</h2><a>See My Pass</a></div>"""
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -69,7 +72,9 @@ def stalled_checkout_server():
                 pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
+    thread = threading.Thread(
+        target=lambda: server.serve_forever(poll_interval=0.05), daemon=True
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}", headers_sent
@@ -129,56 +134,115 @@ class CalendarBrowserTests(unittest.TestCase):
         self.action._goto_allowed = lambda _: None
         self.action._settle_page = lambda **kwargs: None
         self.action._human_pause = lambda *args: None
-        self.action._capture_failure = lambda _: None
+        self.action.diagnostics = SimpleNamespace(screenshot=lambda *args: None)
 
     def tearDown(self) -> None:
         self.page.close()
 
-    def test_afternoon_uses_its_own_calendar_with_padded_and_two_digit_days(self) -> None:
+    def test_afternoon_uses_its_own_calendar_with_padded_and_two_digit_days(
+        self,
+    ) -> None:
         for current, target in ((5, 6), (14, 15)):
             with self.subTest(target=target):
                 self.page.set_content(
-                    _SELECT_DATE + pass_card("morning", (current, target))
+                    _SELECT_DATE
+                    + pass_card("morning", (current, target))
                     + pass_card("afternoon", (current, target))
                 )
                 self.action.config.target_date = date(2026, 9, target)
                 result = self.action._try_pass(PASS_PREFERENCES["afternoon"], "dry-run")
                 self.assertTrue(result.success, result.message)
-                self.assertEqual(self.page.locator("#morning").get_attribute("data-selected"), f"{current:02}")
-                self.assertEqual(self.page.locator("#afternoon").get_attribute("data-selected"), f"{target:02}")
-                self.assertTrue(self.page.locator('input[name="afternoon-vehicle"]').is_checked())
-                self.assertFalse(self.page.locator('input[name="morning-vehicle"]').is_checked())
-                self.assertEqual(self.page.locator("body").get_attribute("data-date-clicks"), "1")
+                self.assertEqual(
+                    self.page.locator("#morning").get_attribute("data-selected"),
+                    f"{current:02}",
+                )
+                self.assertEqual(
+                    self.page.locator("#afternoon").get_attribute("data-selected"),
+                    f"{target:02}",
+                )
+                self.assertTrue(
+                    self.page.locator('input[name="afternoon-vehicle"]').is_checked()
+                )
+                self.assertFalse(
+                    self.page.locator('input[name="morning-vehicle"]').is_checked()
+                )
+                self.assertEqual(
+                    self.page.locator("body").get_attribute("data-date-clicks"), "1"
+                )
 
-    def test_absent_wrong_month_day_prefix_and_duplicate_dates_never_click(self) -> None:
+    def test_absent_wrong_month_day_prefix_and_duplicate_dates_never_click(
+        self,
+    ) -> None:
         cases = (
             ("absent", date(2026, 9, 7), pass_card("afternoon", (5, 6))),
             ("wrong month", date(2026, 10, 6), pass_card("afternoon", (5, 6))),
-            ("January 1 versus 10", date(2030, 1, 1), pass_card("afternoon", (10,), "January-2030")),
+            (
+                "January 1 versus 10",
+                date(2030, 1, 1),
+                pass_card("afternoon", (10,), "January-2030"),
+            ),
             ("duplicate target", date(2026, 9, 6), pass_card("afternoon", (6, 6))),
-            ("conflicting metadata", date(2026, 9, 6), pass_card("afternoon", (5, 6)).replace('aria-label="Sunday 06"', 'aria-label="Sunday 06" data-date="2026-10-06"')),
+            (
+                "conflicting metadata",
+                date(2026, 9, 6),
+                pass_card("afternoon", (5, 6)).replace(
+                    'aria-label="Sunday 06"',
+                    'aria-label="Sunday 06" data-date="2026-10-06"',
+                ),
+            ),
         )
         for name, target, markup in cases:
             with self.subTest(case=name):
                 self.page.set_content(_SELECT_DATE + markup)
                 self.action.config.target_date = target
-                self.assertFalse(self.action._select_target_date(self.page.locator("#afternoon")))
-                self.assertIsNone(self.page.locator("body").get_attribute("data-date-clicks"))
+                self.assertFalse(
+                    select_target_date(
+                        self.page,
+                        self.page.locator("#afternoon"),
+                        self.action.config.target_date,
+                        self.action.control.inbox.check_cancelled,
+                    )
+                )
+                self.assertIsNone(
+                    self.page.locator("body").get_attribute("data-date-clicks")
+                )
 
     def test_click_without_selected_state_is_not_verified(self) -> None:
-        self.page.set_content(pass_card("afternoon", (5, 6)).replace('onclick="chooseDate(this)"', 'onclick="void 0"'))
-        self.assertFalse(self.action._select_target_date(self.page.locator("#afternoon")))
+        self.page.set_content(
+            pass_card("afternoon", (5, 6)).replace(
+                'onclick="chooseDate(this)"', 'onclick="void 0"'
+            )
+        )
+        self.assertFalse(
+            select_target_date(
+                self.page,
+                self.page.locator("#afternoon"),
+                self.action.config.target_date,
+                self.action.control.inbox.check_cancelled,
+            )
+        )
 
     def test_waits_for_delayed_selected_state(self) -> None:
         self.page.set_content(
-            _SELECT_DATE + pass_card("afternoon", (5, 6)).replace(
-                'onclick="chooseDate(this)"', 'onclick="setTimeout(() => chooseDate(this), 100)"'
+            _SELECT_DATE
+            + pass_card("afternoon", (5, 6)).replace(
+                'onclick="chooseDate(this)"',
+                'onclick="setTimeout(() => chooseDate(this), 100)"',
             )
         )
-        self.assertTrue(self.action._select_target_date(self.page.locator("#afternoon")))
+        self.assertTrue(
+            select_target_date(
+                self.page,
+                self.page.locator("#afternoon"),
+                self.action.config.target_date,
+                self.action.control.inbox.check_cancelled,
+            )
+        )
 
     def test_visible_locator_skips_hidden_first_match(self) -> None:
-        self.page.set_content('<div class="popup" style="display:none">Hidden</div><div class="popup" id="visible">Visible</div>')
+        self.page.set_content(
+            '<div class="popup" style="display:none">Hidden</div><div class="popup" id="visible">Visible</div>'
+        )
         locator = self.action._visible_locator((".popup",), timeout_ms=500)
         self.assertIsNotNone(locator)
         self.assertEqual(locator.get_attribute("id"), "visible")
@@ -191,7 +255,12 @@ class CalendarBrowserTests(unittest.TestCase):
 
         self.action.control.inbox.check_cancelled = cancelled
         with self.assertRaises(Cancelled):
-            self.action._select_target_date(self.page.locator("#afternoon"))
+            select_target_date(
+                self.page,
+                self.page.locator("#afternoon"),
+                self.action.config.target_date,
+                self.action.control.inbox.check_cancelled,
+            )
 
     def prepare_confirmation(self, markup: str) -> list[str]:
         self.page.set_content(markup)
@@ -206,25 +275,30 @@ class CalendarBrowserTests(unittest.TestCase):
         self.action.control.emit = lambda kind, **kwargs: events.append(kind)
         return events
 
-    def test_confirmation_requires_fresh_response_even_when_dialog_looks_successful(self) -> None:
-        events = self.prepare_confirmation('''
+    def test_confirmation_requires_fresh_response_even_when_dialog_looks_successful(
+        self,
+    ) -> None:
+        events = self.prepare_confirmation("""
           <button onclick="document.body.dataset.clicked='yes';document.querySelector('#orderConfirmModal').style.display='block'">Yes</button>
           <div id="orderConfirmModal" style="display:none"><h2 class="heading">Confirmed</h2><a>See My Pass</a></div>
-        ''')
+        """)
         with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
             with self.assertRaises(OutcomeUnknown):
                 self.action._click_final_confirmation(
-                    self.page.get_by_role("button", name="Yes"), PASS_PREFERENCES["all_day"]
+                    self.page.get_by_role("button", name="Yes"),
+                    PASS_PREFERENCES["all_day"],
                 )
         self.assertTrue(self.page.locator("#orderConfirmModal").is_visible())
         self.assertEqual(self.page.locator("body").get_attribute("data-clicked"), "yes")
         self.assertEqual(events, ["confirmation.starting", "confirmation.ready"])
 
-    def test_stale_confirmation_dialog_prevents_the_click_and_durable_gate(self) -> None:
-        events = self.prepare_confirmation('''
+    def test_stale_confirmation_dialog_prevents_the_click_and_durable_gate(
+        self,
+    ) -> None:
+        events = self.prepare_confirmation("""
           <button onclick="document.body.dataset.clicked='yes'">Yes</button>
           <div id="orderConfirmModal"><h2 class="heading">Confirmed</h2><a>See My Pass</a></div>
-        ''')
+        """)
         with self.assertRaises(ActionError) as failure:
             self.action._click_final_confirmation(
                 self.page.get_by_role("button", name="Yes"), PASS_PREFERENCES["all_day"]
@@ -234,17 +308,22 @@ class CalendarBrowserTests(unittest.TestCase):
         self.assertEqual(events, [])
 
     def test_confirmation_timeout_never_emits_completed(self) -> None:
-        events = self.prepare_confirmation('<button onclick="document.body.dataset.clicked=\'yes\'">Yes</button>')
+        events = self.prepare_confirmation(
+            "<button onclick=\"document.body.dataset.clicked='yes'\">Yes</button>"
+        )
         with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
             with self.assertRaises(OutcomeUnknown) as failure:
                 self.action._click_final_confirmation(
-                    self.page.get_by_role("button", name="Yes"), PASS_PREFERENCES["all_day"]
+                    self.page.get_by_role("button", name="Yes"),
+                    PASS_PREFERENCES["all_day"],
                 )
         self.assertIn("confirmation timeout", str(failure.exception.__cause__))
         self.assertEqual(events, ["confirmation.starting", "confirmation.ready"])
 
     def test_confirmation_cancel_after_click_remains_outcome_unknown(self) -> None:
-        events = self.prepare_confirmation('<button onclick="document.body.dataset.clicked=\'yes\'">Yes</button>')
+        events = self.prepare_confirmation(
+            "<button onclick=\"document.body.dataset.clicked='yes'\">Yes</button>"
+        )
 
         def cancel_after_click():
             if self.page.locator("body").get_attribute("data-clicked"):
@@ -254,13 +333,16 @@ class CalendarBrowserTests(unittest.TestCase):
         with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
             with self.assertRaises(OutcomeUnknown) as failure:
                 self.action._click_final_confirmation(
-                    self.page.get_by_role("button", name="Yes"), PASS_PREFERENCES["all_day"]
+                    self.page.get_by_role("button", name="Yes"),
+                    PASS_PREFERENCES["all_day"],
                 )
         self.assertIsInstance(failure.exception.__cause__, Cancelled)
         self.assertEqual(events, ["confirmation.starting", "confirmation.ready"])
 
     def test_confirmation_cancel_before_click_never_enters_the_gate(self) -> None:
-        events = self.prepare_confirmation('<button onclick="document.body.dataset.clicked=\'yes\'">Yes</button>')
+        events = self.prepare_confirmation(
+            "<button onclick=\"document.body.dataset.clicked='yes'\">Yes</button>"
+        )
 
         def cancelled():
             raise Cancelled("synthetic cancellation before submission")
@@ -277,15 +359,22 @@ class CalendarBrowserTests(unittest.TestCase):
         events = self.prepare_confirmation("")
         with stalled_checkout_server() as (origin, headers_sent):
             self.page.goto(origin)
-            self.action.config.allows_yodel_url = lambda value: value.startswith(origin + "/")
+            self.action.config.allows_yodel_url = lambda value: value.startswith(
+                origin + "/"
+            )
             started = time.monotonic()
             with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
                 with self.assertRaises(OutcomeUnknown) as failure:
                     self.action._click_final_confirmation(
-                        self.page.get_by_role("button", name="Yes"), PASS_PREFERENCES["all_day"]
+                        self.page.get_by_role("button", name="Yes"),
+                        PASS_PREFERENCES["all_day"],
                     )
-            self.assertTrue(headers_sent.is_set(), "fixture never sent the checkout headers")
-            self.assertLess(time.monotonic() - started, 2.0, "stalled body blocked the deadline")
+            self.assertTrue(
+                headers_sent.is_set(), "fixture never sent the checkout headers"
+            )
+            self.assertLess(
+                time.monotonic() - started, 2.0, "stalled body blocked the deadline"
+            )
             self.assertIn("confirmation timeout", str(failure.exception.__cause__))
             self.assertEqual(events, ["confirmation.starting", "confirmation.ready"])
 
@@ -293,7 +382,9 @@ class CalendarBrowserTests(unittest.TestCase):
         events = self.prepare_confirmation("")
         with stalled_checkout_server() as (origin, headers_sent):
             self.page.goto(origin)
-            self.action.config.allows_yodel_url = lambda value: value.startswith(origin + "/")
+            self.action.config.allows_yodel_url = lambda value: value.startswith(
+                origin + "/"
+            )
 
             def cancel_when_headers_arrive():
                 if headers_sent.is_set():
@@ -304,10 +395,15 @@ class CalendarBrowserTests(unittest.TestCase):
             with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
                 with self.assertRaises(OutcomeUnknown) as failure:
                     self.action._click_final_confirmation(
-                        self.page.get_by_role("button", name="Yes"), PASS_PREFERENCES["all_day"]
+                        self.page.get_by_role("button", name="Yes"),
+                        PASS_PREFERENCES["all_day"],
                     )
-            self.assertTrue(headers_sent.is_set(), "fixture never sent the checkout headers")
-            self.assertLess(time.monotonic() - started, 2.0, "stalled body blocked cancellation")
+            self.assertTrue(
+                headers_sent.is_set(), "fixture never sent the checkout headers"
+            )
+            self.assertLess(
+                time.monotonic() - started, 2.0, "stalled body blocked cancellation"
+            )
             self.assertIsInstance(failure.exception.__cause__, Cancelled)
             self.assertEqual(events, ["confirmation.starting", "confirmation.ready"])
 

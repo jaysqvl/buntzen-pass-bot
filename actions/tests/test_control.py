@@ -63,19 +63,39 @@ class ControlTests(unittest.TestCase):
             ["otp.prepare", "otp.triggered", "otp.submitted"],
         )
 
-    def test_provider_expiry_is_a_safe_failure(self) -> None:
-        stream = FakeStream()
-        inbox = FakeInbox([])
-        control = ControlPort(stream, inbox, SecretRedactor())
+    def test_provider_failure_closes_the_challenge_at_both_wait_stages(self) -> None:
+        for stage in ("prepare", "receive"):
+            for response_type in ("otp.expired", "otp.error"):
+                with self.subTest(stage=stage, response_type=response_type):
+                    stream = FakeStream()
+                    inbox = FakeInbox([{
+                        "v": 2, "type": response_type, "challenge_id": "challenge",
+                    }])
+                    control = ControlPort(stream, inbox, SecretRedactor())
+                    with patch("buntzen_actions.control.uuid.uuid4") as identifier:
+                        identifier.return_value.hex = "challenge"
+                        with self.assertRaises(ActionError):
+                            if stage == "prepare":
+                                control.prepare_otp("resend")
+                            else:
+                                control.wait_for_otp("challenge")
+                    self.assertEqual(stream.events[-1][0], "otp.failed")
+                    self.assertEqual(inbox.ignored, ["challenge"])
 
-        def receive(expected, timeout=None, predicate=None):
-            challenge_id = stream.events[0][1]["challenge_id"]
-            return {"v": 2, "type": "otp.expired", "challenge_id": challenge_id}
-
-        inbox.receive = receive
-        with self.assertRaises(ActionError):
-            control.prepare_otp("resend")
-        self.assertEqual(stream.events[-1][0], "otp.failed")
+    def test_otp_contract_accepts_only_four_to_eight_ascii_digits(self) -> None:
+        for value in ("0000", "12345678", "123", "123456789", "１２３４", "١٢٣٤", "12a4", 1234):
+            with self.subTest(value=value):
+                stream = FakeStream()
+                inbox = FakeInbox([{
+                    "v": 2, "type": "otp.provide", "challenge_id": "challenge", "code": value,
+                }])
+                control = ControlPort(stream, inbox, SecretRedactor())
+                if value in ("0000", "12345678"):
+                    self.assertEqual(control.wait_for_otp("challenge"), value)
+                else:
+                    with self.assertRaisesRegex(ProtocolError, "ASCII digits"):
+                        control.wait_for_otp("challenge")
+                self.assertEqual(stream.events, [], "receiving a code must never echo it")
 
     def test_auth_deadline_stops_otp_wait_and_clears_challenge(self) -> None:
         stream = FakeStream()

@@ -5,17 +5,17 @@ import random
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any, Iterable, Optional
 
-from .calendar_dates import resolve_button_date
+from .calendar_dates import select_target_date
 from .config import ActionConfig
 from .checkout import CheckoutConfirmation
 from .cart import require_empty_cart, require_single_pass_cart
 from .control import ControlPort
 from .diagnostics import SafeDiagnostics
 from .errors import ActionError, OutcomeUnknown
-from .pass_types import PassPreference, build_pass_order
+from .pass_types import PASS_PREFERENCES, PassPreference
 
 
 logger = logging.getLogger("buntzen_actions.yodel")
@@ -112,13 +112,11 @@ class YodelAction:
     def __init__(
         self,
         page: Any,
-        context: Any,
         config: ActionConfig,
         control: ControlPort,
         diagnostics: SafeDiagnostics,
     ) -> None:
         self.page = page
-        self.context = context
         self.config = config
         self.control = control
         self.diagnostics = diagnostics
@@ -408,7 +406,8 @@ class YodelAction:
             raise ActionError("Yodel session keepalive failed") from exc
 
     def try_booking_once(self, mode: str) -> BookingResult:
-        for preference in build_pass_order(self.config.pass_order):
+        for key in self.config.pass_order:
+            preference = PASS_PREFERENCES[key]
             self.control.inbox.check_cancelled()
             result = self._try_pass(preference, mode=mode)
             if result.success:
@@ -438,7 +437,7 @@ class YodelAction:
                 remaining,
             )
             self._cancellable_sleep(sleep_for, phase="booking_poll")
-        self._capture_failure("poll-deadline")
+        self.diagnostics.screenshot(self.page, "poll-deadline")
         return BookingResult(
             False, f"Polling deadline reached. Last status: {last_message}"
         )
@@ -457,7 +456,9 @@ class YodelAction:
             return BookingResult(
                 False, f"{preference.label} pass card was not found.", preference.key
             )
-        if not self._select_target_date(container):
+        if not select_target_date(
+            self.page, container, self.config.target_date, self.control.inbox.check_cancelled
+        ):
             return BookingResult(
                 False,
                 f"Target date {self.config.target_date} was not selectable.",
@@ -469,7 +470,7 @@ class YodelAction:
                 False, f"{preference.label} pass is not available.", preference.key
             )
         if not self._select_vehicle(container):
-            self._capture_failure(f"{preference.key}-vehicle-not-found")
+            self.diagnostics.screenshot(self.page, f"{preference.key}-vehicle-not-found")
             return BookingResult(
                 False,
                 f"{preference.label} pass was available, but the vehicle was not selected.",
@@ -477,19 +478,19 @@ class YodelAction:
             )
 
         if mode == "dry-run":
-            self._capture_failure(f"{preference.key}-dry-run-ready")
+            self.diagnostics.screenshot(self.page, f"{preference.key}-dry-run-ready")
             return BookingResult(
                 True,
                 f"{preference.label} pass and vehicle selection were verified in dry-run.",
                 preference.key,
             )
 
-        self._check_cart(empty=True)
+        require_empty_cart(self.page, self.control)
         if not self._click_first(container, ADD_TO_CART_SELECTORS, timeout_ms=5_000):
             if not self._click_first(
                 self.page, ADD_TO_CART_SELECTORS, timeout_ms=5_000
             ):
-                self._capture_failure(f"{preference.key}-add-to-cart-failed")
+                self.diagnostics.screenshot(self.page, f"{preference.key}-add-to-cart-failed")
                 return BookingResult(
                     False,
                     f"{preference.label} Add To Cart was not clickable.",
@@ -497,9 +498,9 @@ class YodelAction:
                 )
 
         self._human_pause(0.4, 1.2)
-        self._check_cart(empty=False)
+        require_single_pass_cart(self.page, self.control)
         if not self._click_first(self.page, CHECKOUT_SELECTORS, timeout_ms=15_000):
-            self._capture_failure(f"{preference.key}-checkout-failed")
+            self.diagnostics.screenshot(self.page, f"{preference.key}-checkout-failed")
             return BookingResult(
                 False, f"{preference.label} checkout was not clickable.", preference.key
             )
@@ -508,7 +509,7 @@ class YodelAction:
             FINAL_CONFIRM_SELECTORS, timeout_ms=30_000
         )
         if final_confirm is None:
-            self._capture_failure(f"{preference.key}-final-confirm-not-found")
+            self.diagnostics.screenshot(self.page, f"{preference.key}-final-confirm-not-found")
             return BookingResult(
                 False,
                 f"{preference.label} final confirmation was not available.",
@@ -517,7 +518,7 @@ class YodelAction:
 
         if mode == "manual":
             logger.debug("Manual confirmation wait started pass_key=%s", preference.key)
-            self._capture_failure(f"{preference.key}-manual-confirm-ready")
+            self.diagnostics.screenshot(self.page, f"{preference.key}-manual-confirm-ready")
             self.diagnostics.suspend_trace()
             self.control.wait_for_approval(
                 pass_key=preference.key,
@@ -531,18 +532,12 @@ class YodelAction:
         elif mode != "auto":
             raise ActionError("Unsupported booking mode")
 
-        self._check_cart(empty=False)
+        require_single_pass_cart(self.page, self.control)
         self._click_final_confirmation(final_confirm, preference)
-        self._capture_failure(f"{preference.key}-confirmed")
+        self.diagnostics.screenshot(self.page, f"{preference.key}-confirmed")
         return BookingResult(
             True, f"{preference.label} pass checkout was confirmed.", preference.key
         )
-
-    def _check_cart(self, *, empty: bool) -> None:
-        if empty:
-            require_empty_cart(self.page, self.control)
-        else:
-            require_single_pass_cart(self.page, self.control)
 
     def _click_final_confirmation(
         self, locator: Any, preference: PassPreference
@@ -727,81 +722,6 @@ class YodelAction:
                 continue
         return False
 
-    def _calendar_dates(
-        self, container: Any
-    ) -> Optional[list[tuple[Any, date, bool, bool]]]:
-        """Read only this pass card's dates, failing on ambiguous metadata."""
-
-        self.control.inbox.check_cancelled()
-        try:
-            headings = container.locator(".month")
-            if headings.count() > 4:
-                return None
-            months = [
-                headings.nth(index).inner_text(timeout=500).strip()
-                for index in range(headings.count())
-                if headings.nth(index).is_visible()
-            ]
-            buttons = container.locator("button.date")
-            count = buttons.count()
-            if count < 1 or count > 62:
-                return None
-        except Exception:
-            return None
-
-        entries = []
-        for index in range(count):
-            self.control.inbox.check_cancelled()
-            try:
-                button = buttons.nth(index)
-                if not button.is_visible():
-                    continue
-                attributes = {
-                    name: button.get_attribute(name, timeout=500)
-                    for name in ("aria-label", "title", "data-date", "datetime")
-                }
-                value = resolve_button_date(
-                    button.inner_text(timeout=500), attributes, months
-                )
-                if value is None:
-                    return None
-                selected = (
-                    "active" in (button.get_attribute("class", timeout=500) or "").split()
-                    or button.get_attribute("aria-selected", timeout=500) == "true"
-                    or button.get_attribute("aria-pressed", timeout=500) == "true"
-                )
-                entries.append((button, value, selected, button.is_enabled()))
-            except Exception:
-                return None
-        return entries
-
-    def _select_target_date(self, container: Any) -> bool:
-        target = self.config.target_date
-        entries = self._calendar_dates(container)
-        if entries is None:
-            return False
-        matches = [entry for entry in entries if entry[1] == target]
-        if len(matches) != 1 or not matches[0][3]:
-            return False
-        self.control.inbox.check_cancelled()
-        try:
-            matches[0][0].click(timeout=3_000)
-        except Exception:
-            return False
-
-        # A click alone does not prove the card's independent calendar changed.
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            self.control.inbox.check_cancelled()
-            entries = self._calendar_dates(container)
-            if entries is not None:
-                matches = [entry for entry in entries if entry[1] == target]
-                selected = [entry[1] for entry in entries if entry[2]]
-                if len(matches) == 1 and selected == [target]:
-                    return True
-            self.page.wait_for_timeout(100)
-        return False
-
     def _find_pass_container(self, preference: PassPreference) -> Optional[Any]:
         for pattern in preference.text_patterns:
             selectors = (
@@ -959,9 +879,6 @@ class YodelAction:
             self.page.wait_for_timeout(500)
         except Exception:
             logger.debug("Page did not fully settle before its bounded deadline")
-
-    def _capture_failure(self, name: str) -> None:
-        self.diagnostics.screenshot(self.page, name)
 
     def _human_pause(self, minimum: float = 0.15, maximum: float = 0.65) -> None:
         time.sleep(random.uniform(minimum, maximum))

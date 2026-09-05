@@ -13,7 +13,7 @@ from .protocol import ControlInbox, JsonLineStream
 from .secrets import SecretRedactor
 
 
-_OTP_PATTERN = re.compile(r"^\d{4,8}$")
+_OTP_PATTERN = re.compile(r"[0-9]{4,8}")
 
 
 @dataclass
@@ -81,18 +81,12 @@ class ControlPort:
                 "Authentication deadline passed while arming the OTP provider"
             )
         if frame["type"] == "otp.expired":
-            self.emit(
-                "otp.failed", challenge_id=challenge_id, reason="expired_before_trigger"
-            )
+            self.otp_failed(challenge_id, "expired_before_trigger")
             raise ActionError(
                 "OTP provider expired before the login action was triggered"
             )
         if frame["type"] == "otp.error":
-            self.emit(
-                "otp.failed",
-                challenge_id=challenge_id,
-                reason="provider_error_before_trigger",
-            )
+            self.otp_failed(challenge_id, "provider_error_before_trigger")
             raise ActionError("OTP provider could not arm for a new login code")
         return challenge_id
 
@@ -121,14 +115,14 @@ class ControlPort:
             self.otp_failed(challenge_id, "auth_deadline")
             raise ActionError("Authentication deadline passed while waiting for an OTP")
         if frame["type"] == "otp.expired":
-            self.emit("otp.failed", challenge_id=challenge_id, reason="expired")
+            self.otp_failed(challenge_id, "expired")
             raise ActionError("No fresh OTP arrived before the provider deadline")
         if frame["type"] == "otp.error":
-            self.emit("otp.failed", challenge_id=challenge_id, reason="provider_error")
+            self.otp_failed(challenge_id, "provider_error")
             raise ActionError("OTP provider failed while waiting for a login code")
         value = frame.get("code")
         if not isinstance(value, str) or _OTP_PATTERN.fullmatch(value) is None:
-            raise ProtocolError("OTP must contain 4 to 8 digits")
+            raise ProtocolError("OTP must contain 4 to 8 ASCII digits")
         self.redactor.add(value)
         return value
 

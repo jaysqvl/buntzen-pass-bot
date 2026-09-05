@@ -130,6 +130,7 @@ See [Browser integration tests](integration/README.md) for the real Go/Python/Pl
 
 ## Documentation
 
+- [Development guidelines and test expectations](CONTRIBUTING.md)
 - [Security scope and invariants](SECURITY.md)
 - [Python action protocol and artifact rules](actions/README.md)
 - [Browser integration tests](integration/README.md)

@@ -3,7 +3,6 @@
 package integration_test
 
 import (
-	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,11 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -48,7 +44,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 	}
 
 	repoRoot := repositoryRoot(t)
-	python, pythonArgs := pythonWorker(t, repoRoot)
+	python, pythonArgs := pythonCommand(t, repoRoot, "-m", "buntzen_actions")
 	browserExecutable := browserPath()
 	flow := &e2eFlow{}
 
@@ -187,8 +183,8 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 			t.Errorf("durable event stream did not observe %s", expected)
 		}
 	}
-	assertExcludesSecrets(t, []byte(observedOutput), "worker stderr and durable events")
-	assertTreeExcludesSecrets(t, artifactDir)
+	assertExcludesValues(t, []byte(observedOutput), "worker stderr and durable events", testPhone, testOTP, testBBPassword)
+	assertTreeExcludesValues(t, artifactDir, testPhone, testOTP, testBBPassword)
 	artifacts, err := os.ReadDir(artifactDir)
 	if err != nil || len(artifacts) == 0 {
 		t.Errorf("safe post-authentication trace was not produced: entries=%d error=%v", len(artifacts), err)
@@ -374,106 +370,4 @@ func writeHTMLStatus(response http.ResponseWriter, status int, body string) {
 	response.Header().Set("Cache-Control", "no-store")
 	response.WriteHeader(status)
 	_, _ = io.WriteString(response, body)
-}
-
-func repositoryRoot(t *testing.T) string {
-	t.Helper()
-	_, filename, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate integration test source")
-	}
-	return filepath.Clean(filepath.Join(filepath.Dir(filename), ".."))
-}
-
-func pythonWorker(t *testing.T, repoRoot string) (string, []string) {
-	t.Helper()
-	if configured := strings.TrimSpace(os.Getenv("BUNTZEN_E2E_PYTHON")); configured != "" {
-		return configured, []string{"-m", "buntzen_actions"}
-	}
-	venvPython := filepath.Join(repoRoot, "actions", ".venv", "bin", "python")
-	if info, err := os.Stat(venvPython); err == nil && !info.IsDir() {
-		return venvPython, []string{"-m", "buntzen_actions"}
-	}
-	uv, err := exec.LookPath("uv")
-	if err != nil {
-		t.Fatal("browser integration requires actions/.venv or uv on PATH")
-	}
-	return uv, []string{"run", "--project", filepath.Join(repoRoot, "actions"), "--locked", "python", "-m", "buntzen_actions"}
-}
-
-func browserPath() string {
-	if configured := strings.TrimSpace(os.Getenv("BUNTZEN_E2E_BROWSER_EXECUTABLE")); configured != "" {
-		return configured
-	}
-	for _, candidate := range []string{
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium",
-		"/usr/bin/chromium-browser",
-	} {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate
-		}
-	}
-	// The pinned Playwright runtime resolves its own bundled Chromium in CI.
-	return ""
-}
-
-func nullableString(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
-
-func assertTreeExcludesSecrets(t *testing.T, root string) {
-	t.Helper()
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(strings.ToLower(entry.Name()), ".zip") {
-			archive, err := zip.OpenReader(path)
-			if err != nil {
-				return err
-			}
-			defer archive.Close()
-			for _, item := range archive.File {
-				reader, err := item.Open()
-				if err != nil {
-					return err
-				}
-				contents, err := io.ReadAll(io.LimitReader(reader, 16<<20))
-				_ = reader.Close()
-				if err != nil {
-					return err
-				}
-				assertExcludesSecrets(t, contents, filepath.Base(path)+":"+item.Name)
-			}
-			return nil
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		assertExcludesSecrets(t, contents, filepath.Base(path))
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("inspect integration artifacts: %v", err)
-	}
-}
-
-func assertExcludesSecrets(t *testing.T, contents []byte, label string) {
-	t.Helper()
-	secrets := []string{testPhone, testOTP, testBBPassword}
-	sort.Strings(secrets)
-	for _, secret := range secrets {
-		if strings.Contains(string(contents), secret) {
-			t.Errorf("%s retained synthetic secret %q", label, secret)
-		}
-	}
 }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -9,12 +8,12 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from .errors import ProtocolError
+from .pass_types import PASS_PREFERENCES
 from .protocol import validate_start_has_no_secrets
 
 
 COMMANDS = frozenset({"auth-check", "dry-run", "book"})
 MODES = frozenset({"auto", "manual", "dry-run"})
-PASS_KEYS = frozenset({"all_day", "afternoon", "morning"})
 
 
 @dataclass(frozen=True)
@@ -41,10 +40,6 @@ class ActionConfig:
     artifacts_dir: Optional[Path]
     release_at: Optional[datetime]
     auth_deadline_at: Optional[datetime]
-
-    @property
-    def timezone(self) -> ZoneInfo:
-        return ZoneInfo(self.timezone_name)
 
     def allows_yodel_url(self, value: str) -> bool:
         try:
@@ -90,7 +85,7 @@ class ActionConfig:
             raise ProtocolError("pass_order must be an array of pass keys")
         pass_order = tuple(raw_order)
         if len(set(pass_order)) != len(pass_order) or any(
-            item not in PASS_KEYS for item in pass_order
+            item not in PASS_PREFERENCES for item in pass_order
         ):
             raise ProtocolError(
                 "pass_order contains duplicate or unsupported pass keys"
@@ -133,13 +128,15 @@ class ActionConfig:
         vehicle_keyword = _required_text(config, "vehicle_keyword")
         headless = _optional_bool(config, "headless", False)
         default_timeout_ms = _bounded_number(
-            config, "default_timeout_ms", 15_000, 1_000, 120_000, int
+            config, "default_timeout_ms", 15_000, 1_000, 120_000
         )
+        if int(default_timeout_ms) != default_timeout_ms:
+            raise ProtocolError("default_timeout_ms must be a whole number")
         poll_deadline = _bounded_number(
-            config, "poll_deadline_seconds", 120.0, 1.0, 900.0, float
+            config, "poll_deadline_seconds", 120.0, 1.0, 900.0
         )
-        poll_min = _bounded_number(config, "poll_min_seconds", 1.4, 0.05, 60.0, float)
-        poll_max = _bounded_number(config, "poll_max_seconds", 3.6, 0.05, 60.0, float)
+        poll_min = _bounded_number(config, "poll_min_seconds", 1.4, 0.05, 60.0)
+        poll_max = _bounded_number(config, "poll_max_seconds", 3.6, 0.05, 60.0)
         if poll_min > poll_max:
             raise ProtocolError("poll_min_seconds cannot exceed poll_max_seconds")
 
@@ -220,15 +217,13 @@ def _bounded_number(
     default: float,
     minimum: float,
     maximum: float,
-    cast: Any,
-) -> float:
+) -> int | float:
     value = values.get(key, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ProtocolError(f"{key} must be a number")
-    result = cast(value)
-    if not math.isfinite(result) or result < minimum or result > maximum:
+    if not minimum <= value <= maximum:
         raise ProtocolError(f"{key} is outside the supported range")
-    return result
+    return value
 
 
 def _parse_date(value: str) -> date:

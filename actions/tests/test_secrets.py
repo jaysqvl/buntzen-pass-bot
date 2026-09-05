@@ -51,11 +51,14 @@ class SecretRedactorTests(unittest.TestCase):
         self.assertNotIn("482913", rendered)
 
     def test_debug_environment_controls_python_log_level(self) -> None:
+        root = logging.getLogger()
+        previous_handlers, previous_level = root.handlers[:], root.level
+        self.addCleanup(root.setLevel, previous_level)
+        self.addCleanup(setattr, root, "handlers", previous_handlers)
         redactor = SecretRedactor()
         stream = io.StringIO()
         with patch.dict(os.environ, {"BUNTZEN_ACTION_LOG_LEVEL": "debug"}):
             configure_logging(redactor)
-        root = logging.getLogger()
         self.assertEqual(root.level, logging.DEBUG)
         # Replace the configured stderr stream before emitting so the test
         # never writes through unittest's captured process stderr.

@@ -14,13 +14,6 @@ import (
 	"time"
 )
 
-const (
-	// MinCodeDigits and MaxCodeDigits match the code lengths accepted by the
-	// previous bot while rejecting digits embedded in longer identifiers.
-	MinCodeDigits = 4
-	MaxCodeDigits = 8
-)
-
 var (
 	ErrPollWindowExceeded = errors.New("otp polling window exceeded")
 	codePattern           = regexp.MustCompile(`(?:^|[^0-9])([0-9]{4,8})(?:[^0-9]|$)`)
@@ -108,7 +101,8 @@ type RawMessage struct {
 	Inbound    bool
 }
 
-// ExtractCode returns the first standalone 4-8 digit code in body.
+// ExtractCode prefers a standalone 4-8 digit sequence near a code keyword,
+// then falls back to the first standalone sequence of that length.
 func ExtractCode(body string) (string, bool) {
 	for _, pattern := range []*regexp.Regexp{codeAfterKeyword, codeBeforeKeyword, codePattern} {
 		match := pattern.FindStringSubmatch(body)

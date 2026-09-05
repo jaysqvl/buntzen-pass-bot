@@ -105,13 +105,15 @@ type Result struct {
 }
 
 type Session struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	events    chan Frame
-	done      chan Result
-	writeMu   sync.Mutex
-	cancelOne sync.Once
-	ended     chan struct{}
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	events     chan Frame
+	done       chan Result
+	writeMu    sync.Mutex
+	cancelOnce sync.Once
+	killOnce   sync.Once
+	killed     chan struct{}
+	ended      chan struct{}
 }
 
 func Start(ctx context.Context, config Config) (*Session, error) {
@@ -150,6 +152,7 @@ func Start(ctx context.Context, config Config) (*Session, error) {
 		stdin:  stdin,
 		events: make(chan Frame, 128),
 		done:   make(chan Result, 1),
+		killed: make(chan struct{}),
 		ended:  make(chan struct{}),
 	}
 	stdoutDone := make(chan error, 1)
@@ -239,8 +242,10 @@ func (s *Session) Send(kind string, payload map[string]any) error {
 // Cancel first asks the worker to clean up its browser. If it does not exit
 // during grace, the child is killed. Repeated cancellation is idempotent.
 func (s *Session) Cancel(grace time.Duration) {
-	s.cancelOne.Do(func() {
-		_ = s.Send("control.cancel", nil)
+	s.cancelOnce.Do(func() {
+		// A worker that stops reading stdin can block Send. Start the kill
+		// deadline independently so cancellation never waits on that pipe.
+		go func() { _ = s.Send("control.cancel", nil) }()
 		go func() {
 			timer := time.NewTimer(grace)
 			defer timer.Stop()
@@ -264,7 +269,14 @@ func (s *Session) readFrames(reader io.Reader, finished chan<- error) {
 			finished <- err
 			return
 		}
-		s.events <- frame
+		select {
+		case s.events <- frame:
+		case <-s.killed:
+			// Forced cleanup cannot depend on a caller still consuming events.
+			// Graceful cancellation keeps delivering frames until its deadline.
+			finished <- nil
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
@@ -282,7 +294,15 @@ func (s *Session) forceKill() {
 	if s == nil || s.cmd == nil || s.cmd.Process == nil {
 		return
 	}
-	_ = killProcessGroup(s.cmd)
+	select {
+	case <-s.ended:
+		return
+	default:
+	}
+	s.killOnce.Do(func() {
+		_ = killProcessGroup(s.cmd)
+		close(s.killed)
+	})
 }
 
 func (s *Session) wait(stdoutDone <-chan error, stderrDone <-chan struct{}) {

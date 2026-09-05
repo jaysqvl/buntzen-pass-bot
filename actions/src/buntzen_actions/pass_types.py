@@ -31,7 +31,3 @@ PASS_PREFERENCES = {
         text_patterns=("Morning",),
     ),
 }
-
-
-def build_pass_order(keys: tuple[str, ...]) -> list[PassPreference]:
-    return [PASS_PREFERENCES[key] for key in keys]
