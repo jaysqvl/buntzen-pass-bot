@@ -118,7 +118,7 @@ func TestJobAdmissionAtomicallyBoundsEveryEnqueuePath(t *testing.T) {
 	}
 }
 
-func TestEquivalentPendingBookingRunIsRejectedUntilTerminal(t *testing.T) {
+func TestEquivalentBookingRunAllowsPreconfirmationRetryButBlocksSuccess(t *testing.T) {
 	ctx := context.Background()
 	database := ownedTestStore(t)
 	_, booking := fixtureProfileAndBooking(t, database, "equivalent-run")
@@ -171,8 +171,8 @@ func TestEquivalentPendingBookingRunIsRejectedUntilTerminal(t *testing.T) {
 		[]model.JobStatus{model.JobRunning}, model.JobSucceeded, JobTransition{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.EnqueueJob(ctx, testUserID, params); err != nil {
-		t.Fatalf("enqueue after successful terminal state: %v", err)
+	if _, err := database.EnqueueJob(ctx, testUserID, params); !errors.Is(err, ErrConflict) {
+		t.Fatalf("enqueue after successful terminal state error=%v", err)
 	}
 }
 

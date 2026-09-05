@@ -173,3 +173,108 @@ func TestCoordinatorRequiresExplicitProtocolV2Negotiation(t *testing.T) {
 		}
 	}
 }
+
+func TestCoordinatorCancelsChildLifetimeWhenWorkerEnds(t *testing.T) {
+	for _, invalidProtocol := range []bool{false, true} {
+		process := newFakeProcess()
+		var childContext context.Context
+		finished := make(chan error, 1)
+		go func() {
+			_, err := Run(context.Background(), RunInput{
+				JobID: 7, Command: model.CommandAuthCheck, Mode: model.RunModeManual,
+				Provider: &fakeProvider{}, Hub: NewHub(),
+				NewProcess: func(ctx context.Context) (ActionProcess, error) {
+					childContext = ctx
+					return process, nil
+				},
+			})
+			finished <- err
+		}()
+		protocol := float64(actionproc.ProtocolVersion)
+		if invalidProtocol {
+			protocol = 1
+		}
+		process.events <- frame("worker.ready", map[string]any{"action": "yodel", "protocol": protocol})
+		if !invalidProtocol {
+			<-process.sent
+			process.events <- frame("run.complete", map[string]any{"status": "succeeded", "message": "Authenticated"})
+			close(process.events)
+			process.done <- actionproc.Result{ExitCode: 0}
+			close(process.done)
+		}
+		select {
+		case err := <-finished:
+			if (err != nil) != invalidProtocol {
+				t.Fatalf("invalidProtocol=%v error=%v", invalidProtocol, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("coordinator did not finish")
+		}
+		if childContext == nil || childContext.Err() == nil {
+			t.Fatal("worker process retained a live context after Run returned")
+		}
+	}
+}
+
+type waitingProvider struct {
+	fakeProvider
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func (p *waitingProvider) WaitForCode(ctx context.Context, _ otp.Armed) (otp.Message, error) {
+	close(p.started)
+	<-ctx.Done()
+	close(p.cancelled)
+	return otp.Message{}, ctx.Err()
+}
+
+func TestCoordinatorCancelsPendingOTPWhenWorkerExits(t *testing.T) {
+	process := newFakeProcess()
+	provider := &waitingProvider{started: make(chan struct{}), cancelled: make(chan struct{})}
+	// This parent stays alive until cleanup; the worker's completion must own
+	// cancellation of a provider that is still waiting for an incoming message.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	finished := make(chan error, 1)
+	go func() {
+		_, err := Run(ctx, RunInput{
+			JobID: 8, Command: model.CommandAuthCheck, Mode: model.RunModeManual,
+			Provider: provider, OTPTimeout: time.Minute, Hub: NewHub(),
+			NewProcess: func(context.Context) (ActionProcess, error) { return process, nil },
+		})
+		finished <- err
+	}()
+	process.events <- frame("worker.ready", map[string]any{"action": "yodel", "protocol": float64(actionproc.ProtocolVersion)})
+	<-process.sent
+	process.events <- frame("otp.prepare", map[string]any{"challenge_id": "pending"})
+	if sent := <-process.sent; sent.Type != "otp.ready" {
+		t.Fatalf("OTP arm response = %q", sent.Type)
+	}
+	process.events <- frame("otp.triggered", map[string]any{"challenge_id": "pending"})
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("OTP provider did not begin waiting")
+	}
+	process.events <- frame("run.complete", map[string]any{"status": "failed", "message": "Browser closed"})
+	close(process.events)
+	process.done <- actionproc.Result{ExitCode: 1}
+	close(process.done)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker completion did not finish the coordinator")
+	}
+	select {
+	case <-provider.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("OTP provider continued waiting after the worker exited")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("provider cancellation came from the parent context: %v", ctx.Err())
+	}
+}

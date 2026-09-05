@@ -9,7 +9,7 @@ No pull-request workflow targets the LAN runner, and a deployment never accepts 
 
 ## Release image
 
-`release-please.yml` calls `release-image.yml` in the same workflow run when Release Please creates a root `v*` release. This is intentional: tags and releases created with the repository `GITHUB_TOKEN` do not trigger a second workflow.
+`release-please.yml` calls `release-image.yml` in the same workflow run when Release Please creates a `buntzen-pass-bot-v*` release. This is intentional: tags and releases created with the repository `GITHUB_TOKEN` do not trigger a second workflow.
 
 The publication job:
 
@@ -26,7 +26,7 @@ The current temporary exceptions are recorded as exact package PURLs in `.trivyi
 
 All third-party actions in these workflows are pinned to full commit SHAs. Dependabot continues to propose reviewed updates.
 
-If a release job is interrupted, use **Re-run failed jobs** on that original run. A retry repeats all trust checks and may repeat the failed job's build; it never bypasses scanning or attestation. `release-image.yml` is reusable only by the reviewed Release Please workflow and has no independent manual-dispatch entry point.
+If a release job is interrupted, use **Re-run failed jobs** on that original run. A retry repeats all trust checks and may repeat the failed job's build; it never bypasses scanning or attestation. **Publish release image** also supports manual dispatch from `main` using an existing published component tag and its exact commit SHA. That path repeats the release checks and passes the resulting digest to the protected deployment workflow.
 
 The workflow summary prints the deployment coordinate:
 
@@ -85,7 +85,7 @@ Protect `main` with required pull-request review and passing CI checks before at
 
 Register one isolated runner with all four labels `self-hosted`, `linux`, `x64`, and `buntzen-deploy`. It needs outbound GitHub access, LAN access to Portainer and the Buntzen health endpoint, plus `bash`, `curl`, and `jq`. It does not need a Docker socket. Use a dedicated low-privilege host or VM and do not assign the `buntzen-deploy` label to a general-purpose runner.
 
-Every version published by Release Please passes its verified image digest directly to the protected deployment workflow. A GitHub-hosted job verifies the digest, signed release provenance, signed SPDX SBOM, and signed Trivy-gate attestation, then re-runs the strict Trivy scan against the current vulnerability database and the reviewed, expiring exception file. GitHub applies the environment approval only after those checks pass, before scheduling the LAN job. The LAN job checks out the exact `main` commit recorded for the release; pull-request code is never executed on that runner. `workflow_dispatch` remains available for an explicit redeploy of an already published digest.
+Every version published by Release Please passes its verified image digest directly to the protected deployment workflow. A GitHub-hosted job verifies the digest, signed release provenance, signed SPDX SBOM, and signed Trivy-gate attestation, then re-runs the strict Trivy scan against the current vulnerability database and the reviewed, expiring exception file. GitHub applies the environment approval only after those checks pass, before scheduling the LAN job. The LAN job checks out the workflow's exact `main` revision; a manual redeploy uses the selected current workflow revision even when the image was built from an older release. Pull-request code is never executed on that runner. `workflow_dispatch` remains available for an explicit redeploy of an already published digest.
 
 ## Existing Portainer stack setup
 
@@ -94,7 +94,7 @@ The workflow updates the existing `buntzen-pass-bot` standalone Docker Compose s
 - `BUNTZEN_IMAGE`: an initial `ghcr.io/<owner>/<repository>@sha256:<digest>` release coordinate;
 - `BUNTZEN_WEB_PORT`: the configured host port already used by Buntzen;
 - `BUNTZEN_APPDATA_PATH`: the configured absolute Buntzen appdata directory, owned by UID/GID 1001;
-- `BUNTZEN_SECCOMP_PROFILE_PATH`: absolute Docker-host path to this repository's `docker/seccomp_profile.json`;
+- `BUNTZEN_SECCOMP_PROFILE_PATH`: absolute path to this repository's `docker/seccomp_profile.json` as seen by Portainer's Compose process. For containerized Portainer, place the file inside its persistent `/data` mount and use a container-visible path such as `/data/buntzen/seccomp_profile.json`; a host-only path is not sufficient;
 - `BLUEBUBBLES_URL`;
 - `BUNTZEN_ALLOWED_HOSTS` and, only when required, `BUNTZEN_ALLOWED_ORIGINS`;
 - optional `BUNTZEN_SETUP_TOKEN`, `BUNTZEN_YODEL_ORIGINS`, `BUNTZEN_LOG_LEVEL`, `BUNTZEN_DEBUG`, and `MAX_CONCURRENT_JOBS`;

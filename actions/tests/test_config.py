@@ -90,6 +90,27 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             ActionConfig.from_start(frame)
 
+    def test_numeric_limits_reject_non_finite_values_without_coercion_errors(self) -> None:
+        for key in ("default_timeout_ms", "poll_deadline_seconds", "poll_min_seconds", "poll_max_seconds"):
+            for value in (float("nan"), float("inf"), float("-inf"), 10**1000, True):
+                with self.subTest(key=key, value_type=type(value).__name__):
+                    frame = start_frame()
+                    frame["config"][key] = value
+                    with self.assertRaises(ProtocolError):
+                        ActionConfig.from_start(frame)
+
+    def test_millisecond_timeout_is_not_silently_truncated(self) -> None:
+        frame = start_frame()
+        frame["config"]["default_timeout_ms"] = 15000.5
+        with self.assertRaisesRegex(ProtocolError, "whole number"):
+            ActionConfig.from_start(frame)
+        frame["config"]["default_timeout_ms"] = 15000.0
+        frame["config"]["poll_min_seconds"] = 0.125
+        config = ActionConfig.from_start(frame)
+        self.assertIsInstance(config.default_timeout_ms, int)
+        self.assertEqual(config.default_timeout_ms, 15000)
+        self.assertEqual(config.poll_min_seconds, 0.125)
+
 
 if __name__ == "__main__":
     unittest.main()

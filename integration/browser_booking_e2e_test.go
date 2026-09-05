@@ -3,15 +3,14 @@
 package integration_test
 
 import (
-	"archive/zip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,7 +26,7 @@ import (
 )
 
 const (
-	bookingTargetDate = "2030-01-15"
+	bookingTargetDate = "2030-01-06"
 	bookingVehicle    = "Synthetic vehicle"
 	// This is an unsigned, synthetic JWT with only a far-future exp claim. The
 	// fake Yodel page installs it before tracing starts so the real worker takes
@@ -51,16 +50,22 @@ func TestControlPlanePythonBrowserBooking(t *testing.T) {
 		mode     model.RunMode
 		decision model.ApprovalDecision
 		status   model.JobStatus
+		receipt  string
 	}{
 		{name: "dry-run stops before cart", jobID: 9101, command: model.CommandDryRun, mode: model.RunModeDryRun, status: model.JobSucceeded},
 		{name: "manual approval confirms once", jobID: 9102, command: model.CommandBook, mode: model.RunModeManual, decision: model.DecisionApprove, status: model.JobSucceeded},
 		{name: "manual cancellation never confirms", jobID: 9103, command: model.CommandBook, mode: model.RunModeManual, decision: model.DecisionCancel, status: model.JobCancelled},
 		{name: "automatic booking confirms once", jobID: 9104, command: model.CommandBook, mode: model.RunModeAuto, status: model.JobSucceeded},
+		{name: "sold out after click is unknown", jobID: 9105, command: model.CommandBook, mode: model.RunModeAuto, status: model.JobOutcomeUnknown, receipt: "sold_out"},
+		{name: "success dialog without an issued pass is unknown", jobID: 9106, command: model.CommandBook, mode: model.RunModeAuto, status: model.JobOutcomeUnknown, receipt: "empty_wallet"},
+		{name: "slow receipt body is awaited", jobID: 9107, command: model.CommandBook, mode: model.RunModeAuto, status: model.JobSucceeded, receipt: "slow_body"},
+		{name: "leftover cart is never submitted", jobID: 9108, command: model.CommandBook, mode: model.RunModeAuto, status: model.JobFailed, receipt: "stale_cart"},
+		{name: "extra cart quantity is never submitted", jobID: 9109, command: model.CommandBook, mode: model.RunModeAuto, status: model.JobFailed, receipt: "extra_cart"},
 	}
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			outcome := runSyntheticBrowserBooking(t, testCase.jobID, testCase.command, testCase.mode, testCase.decision)
+			outcome := runSyntheticBrowserBooking(t, testCase.jobID, testCase.command, testCase.mode, testCase.decision, testCase.receipt)
 			if outcome.err != nil {
 				t.Fatalf("run coordinated booking: %v\nworker stderr:\n%s", outcome.err, strings.Join(outcome.stderr, "\n"))
 			}
@@ -86,6 +91,22 @@ func TestControlPlanePythonBrowserBooking(t *testing.T) {
 			}
 
 			switch {
+			case testCase.status == model.JobFailed:
+				wantAdds := 1
+				if testCase.receipt == "stale_cart" {
+					wantAdds = 0
+				}
+				if snapshot.cartAdds != wantAdds || snapshot.checkouts != 0 || snapshot.confirmations != 0 || outcome.confirmationStarts != 0 {
+					t.Errorf("unsafe cart advanced: adds=%d checkout=%d confirmations=%d barriers=%d", snapshot.cartAdds, snapshot.checkouts, snapshot.confirmations, outcome.confirmationStarts)
+				}
+				assertEventKindsAbsent(t, outcome.events, "confirmation.starting", "confirmation.completed")
+			case testCase.status == model.JobOutcomeUnknown:
+				assertCheckoutCounts(t, snapshot, 1)
+				if outcome.confirmationStarts != 1 {
+					t.Errorf("unknown checkout had %d confirmation barriers, want 1", outcome.confirmationStarts)
+				}
+				assertEventKinds(t, outcome.events, "confirmation.starting")
+				assertEventKindsAbsent(t, outcome.events, "confirmation.completed")
 			case testCase.command == model.CommandDryRun:
 				if snapshot.cartAdds != 0 || snapshot.checkouts != 0 || snapshot.confirmations != 0 {
 					t.Errorf("dry-run crossed purchase boundary: cart=%d checkout=%d final=%d", snapshot.cartAdds, snapshot.checkouts, snapshot.confirmations)
@@ -131,10 +152,8 @@ func TestControlPlanePythonBrowserBooking(t *testing.T) {
 			}
 
 			observed := strings.Join(append(append([]string{}, outcome.stderr...), outcome.events...), "\n")
-			assertExcludesSecrets(t, []byte(observed), "booking worker stderr and durable events")
-			assertExcludesValue(t, []byte(observed), bookingBearerToken, "booking worker stderr and durable events")
-			assertTreeExcludesSecrets(t, outcome.artifactDir)
-			assertTreeExcludesValue(t, outcome.artifactDir, bookingBearerToken)
+			assertExcludesValues(t, []byte(observed), "booking worker stderr and durable events", testPhone, testOTP, testBBPassword, bookingBearerToken)
+			assertTreeExcludesValues(t, outcome.artifactDir, testPhone, testOTP, testBBPassword, bookingBearerToken)
 		})
 	}
 }
@@ -153,12 +172,12 @@ type bookingRunOutcome struct {
 	secondDecisionErr  error
 }
 
-func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobCommand, mode model.RunMode, decision model.ApprovalDecision) bookingRunOutcome {
+func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobCommand, mode model.RunMode, decision model.ApprovalDecision, receipt string) bookingRunOutcome {
 	t.Helper()
 	repoRoot := repositoryRoot(t)
-	python, pythonArgs := pythonWorker(t, repoRoot)
+	python, pythonArgs := pythonCommand(t, repoRoot, "-m", "buntzen_actions")
 	var confirmationBarrier atomic.Bool
-	flow := &bookingFlow{confirmationBarrier: &confirmationBarrier}
+	flow := &bookingFlow{confirmationBarrier: &confirmationBarrier, receipt: receipt}
 	yodel := httptest.NewUnstartedServer(http.HandlerFunc(flow.serveYodel))
 	yodel.Config.ErrorLog = log.New(io.Discard, "", 0)
 	yodel.StartTLS()
@@ -183,7 +202,7 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 
 	profileDir := filepath.Join(t.TempDir(), "browser-profile")
 	artifactDir := filepath.Join(t.TempDir(), "artifacts")
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	hub := control.NewHub()
 	jobKey := fmt.Sprint(jobID)
@@ -328,6 +347,7 @@ type bookingFlow struct {
 	mu sync.Mutex
 
 	confirmationBarrier *atomic.Bool
+	receipt             string
 	probeLoads          int
 	passLoads           int
 	dateSelections      int
@@ -373,7 +393,11 @@ func (f *bookingFlow) serveYodel(response http.ResponseWriter, request *http.Req
 		writeHTML(response, `<html><body><script>localStorage.setItem("BearerToken", "`+bookingBearerToken+`");</script><a href="/account">My Account</a></body></html>`)
 	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake/All-Day-Pass":
 		f.passLoads++
-		writeHTML(response, bookingPassPage)
+		page := bookingPassPage
+		if f.receipt == "stale_cart" {
+			page = strings.Replace(page, emptyBookingCart, singleBookingCart, 1)
+		}
+		writeHTML(response, page)
 	case request.Method == http.MethodPost && request.URL.Path == "/synthetic/date-selected":
 		f.dateSelections++
 		response.WriteHeader(http.StatusNoContent)
@@ -388,25 +412,61 @@ func (f *bookingFlow) serveYodel(response http.ResponseWriter, request *http.Req
 		if request.Form.Get("target_date") != bookingTargetDate || request.Form.Get("vehicle") != bookingVehicle || request.Form.Get("pass") != "all_day" {
 			f.errors = append(f.errors, "cart did not retain selected date, vehicle, and pass")
 		}
-		writeHTML(response, `<html><body><form method="post" action="/checkout"><button id="checkOutButton" type="submit">Checkout</button></form></body></html>`)
+		cart := singleBookingCart
+		if f.receipt == "extra_cart" {
+			cart = strings.ReplaceAll(cart, `value="1"`, `value="2"`)
+		}
+		writeHTML(response, `<html><body>`+cart+`<form method="post" action="/checkout"><button id="checkOutButton" type="submit">Checkout</button></form></body></html>`)
 	case request.Method == http.MethodPost && request.URL.Path == "/checkout":
 		f.checkouts++
-		writeHTML(response, `<html><body><form method="post" action="/confirm"><a href="#" onclick="this.closest('form').requestSubmit(); return false">Yes</a></form></body></html>`)
-	case request.Method == http.MethodPost && request.URL.Path == "/confirm":
+		writeHTML(response, `<html><body>`+singleBookingCart+`
+<div id="orderConfirmModel"><button onclick="submitOrder()">Yes</button></div>
+<div id="orderConfirmModal" style="display:none"><h2 class="heading">Confirmed</h2><a href="/wallet">See My Pass</a></div>
+<div id="orderErrorModal" style="display:none">Sorry, sold out. Booking failed.</div>
+<script>
+async function submitOrder() {
+  const result = await fetch('/api/orders/checkout', {method: 'POST'});
+  const order = await result.json();
+  document.getElementById('orderConfirmModel').style.display = 'none';
+  setTimeout(() => {
+    const id = order.payment.succeeded ? 'orderConfirmModal' : 'orderErrorModal';
+    document.getElementById(id).style.display = 'block';
+  }, 250);
+}
+</script></body></html>`)
+	case request.Method == http.MethodPost && request.URL.Path == "/api/orders/checkout":
 		f.confirmations++
 		if f.confirmationBarrier == nil || !f.confirmationBarrier.Load() {
 			f.errors = append(f.errors, "final confirmation arrived before the durable control-plane barrier")
 		}
-		writeHTML(response, `<html><body><h1>Booking confirmed</h1></body></html>`)
+		items := []any{map[string]any{"summaryField1": map[string]any{"value": "Synthetic pass"}}}
+		if f.receipt == "empty_wallet" {
+			items = []any{}
+		}
+		response.Header().Set("Content-Type", "application/json")
+		if f.receipt == "slow_body" {
+			response.WriteHeader(http.StatusOK)
+			response.(http.Flusher).Flush()
+			time.Sleep(time.Second)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"payment":     map[string]any{"succeeded": f.receipt != "sold_out", "orderId": 123, "errorMessage": nil},
+			"walletItems": items,
+		})
 	default:
 		f.errors = append(f.errors, fmt.Sprintf("unexpected fake Yodel request %s %s", request.Method, request.URL.Path))
 		http.NotFound(response, request)
 	}
 }
 
+const emptyBookingCart = `<div class="shoppingCard inactive"><div class="cartDigit"><div class="counter"><span class="count">0</span></div></div></div>`
+
+const singleBookingCart = `<div class="shoppingCard inactive"><div class="cartDigit"><div class="counter"><span class="count">1</span></div></div>
+<div class="shoppingMainList"><ul><li class="shoppingList singleItemList"><div class="CardListing"><div class="ClassificationInnerRow"><input class="count" value="1"></div></div></li></ul></div></div>`
+
 const bookingPassPage = `<!doctype html>
 <html>
-  <body>
+  <body>` + emptyBookingCart + `
     <script>
       function recordSelection(path) {
         const request = new XMLHttpRequest();
@@ -414,12 +474,16 @@ const bookingPassPage = `<!doctype html>
         request.send();
       }
     </script>
-    <div class="datelist">
-      <button class="date" type="button" data-date="2030-01-15"
-        onclick="document.getElementById('target-date').value='2030-01-15'; recordSelection('/synthetic/date-selected')">15</button>
-    </div>
     <div class="card ImageCard">
       <h2>All-day pass</h2>
+      <div class="dateMain">
+        <div class="dateHeader"><span class="month">January-2030</span></div>
+        <div class="datelist">
+          <button class="date active" type="button" aria-label="Saturday 05">05</button>
+          <button class="date" type="button" aria-label="Sunday 06"
+            onclick="this.previousElementSibling.classList.remove('active'); this.classList.add('active'); document.getElementById('target-date').value='2030-01-06'; recordSelection('/synthetic/date-selected')">06</button>
+        </div>
+      </div>
       <a class="smartSelectCustom" href="#" onclick="document.getElementById('vehicle-popup').style.display='block'; return false">Choose a vehicle</a>
       <div id="vehicle-popup" class="popup smart-select-popup" style="display:none">
         <label class="item-radio" onclick="document.getElementById('vehicle').value='Synthetic vehicle'; recordSelection('/synthetic/vehicle-selected')">
@@ -461,53 +525,5 @@ func assertEventKindsAbsent(t *testing.T, events []string, forbidden ...string) 
 		if strings.Contains(joined, kind+":") {
 			t.Errorf("durable event stream unexpectedly contained %s; events:\n%s", kind, joined)
 		}
-	}
-}
-
-func assertTreeExcludesValue(t *testing.T, root, forbidden string) {
-	t.Helper()
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		if strings.HasSuffix(strings.ToLower(entry.Name()), ".zip") {
-			archive, err := zip.OpenReader(path)
-			if err != nil {
-				return err
-			}
-			defer archive.Close()
-			for _, item := range archive.File {
-				reader, err := item.Open()
-				if err != nil {
-					return err
-				}
-				contents, err := io.ReadAll(io.LimitReader(reader, 16<<20))
-				_ = reader.Close()
-				if err != nil {
-					return err
-				}
-				assertExcludesValue(t, contents, forbidden, filepath.Base(path)+":"+item.Name)
-			}
-			return nil
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		assertExcludesValue(t, contents, forbidden, filepath.Base(path))
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("inspect booking integration artifacts: %v", err)
-	}
-}
-
-func assertExcludesValue(t *testing.T, contents []byte, forbidden, label string) {
-	t.Helper()
-	if strings.Contains(string(contents), forbidden) {
-		t.Errorf("%s retained a synthetic bearer credential", label)
 	}
 }

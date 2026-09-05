@@ -3,7 +3,6 @@
 package twilio
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -345,7 +344,7 @@ func (p *Provider) target(path string, query url.Values) *url.URL {
 }
 
 func (p *Provider) get(ctx context.Context, target *url.URL, op string) ([]byte, error) {
-	request, err := http.NewRequest(http.MethodGet, target.String(), bytes.NewReader(nil))
+	request, err := http.NewRequest(http.MethodGet, target.String(), nil)
 	if err != nil {
 		return nil, &httpguard.Error{Provider: Kind, Op: op, Reason: "could not build request"}
 	}

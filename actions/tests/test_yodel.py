@@ -191,6 +191,7 @@ class BookingAction(YodelAction):
         self.diagnostics = SimpleNamespace(
             suspend_trace=lambda: events.append(("trace", "suspended")),
             authenticated=lambda: events.append(("trace", "resumed")),
+            screenshot=lambda page, name: events.append(("diagnostic", name)),
         )
         self.config = SimpleNamespace(
             target_date=date(2030, 1, 15),
@@ -204,10 +205,6 @@ class BookingAction(YodelAction):
 
     def _settle_page(self, timeout_ms=15_000):
         self.events.append(("settle", timeout_ms))
-
-    def _select_target_date(self):
-        self.events.append(("date.select", None))
-        return True
 
     def _find_pass_container(self, preference):
         self.events.append(("pass.find", preference.key))
@@ -231,9 +228,6 @@ class BookingAction(YodelAction):
 
     def _click_final_confirmation(self, locator, preference):
         self.events.append(("confirmation.click", preference.key))
-
-    def _capture_failure(self, name):
-        self.events.append(("diagnostic", name))
 
 
 class ReleaseDiagnostics:
@@ -298,21 +292,32 @@ class YodelTests(unittest.TestCase):
     def test_visible_mobile_number_input_is_not_an_otp_challenge(self) -> None:
         class TestLocator:
             def __init__(self, visible: bool) -> None:
-                self.first = self
                 self.visible = visible
 
-            def wait_for(self, **kwargs) -> None:
-                if not self.visible:
-                    raise RuntimeError("not visible")
+            def count(self):
+                return 1
+
+            def nth(self, index):
+                return self
+
+            def is_visible(self):
+                return self.visible
 
         class PhoneOnlyPage:
+            elapsed = 0.0
+
             def locator(self, selector):
                 return TestLocator(selector in LOGIN_PHONE_SELECTORS)
 
+            def wait_for_timeout(self, milliseconds):
+                self.elapsed += milliseconds / 1_000
+
         action = object.__new__(YodelAction)
         action.page = PhoneOnlyPage()
-        self.assertTrue(action._has_login_form())
-        self.assertFalse(action._has_otp_challenge())
+        action.control = SimpleNamespace(inbox=Inbox())
+        with patch("buntzen_actions.yodel.time.monotonic", side_effect=lambda: action.page.elapsed):
+            self.assertTrue(action._has_login_form())
+            self.assertFalse(action._has_otp_challenge())
         self.assertNotIn("input[inputmode='numeric']", OTP_INPUT_SELECTORS)
 
     def test_auth_does_not_navigate_or_request_credentials_when_trace_stop_fails(self) -> None:
@@ -569,7 +574,8 @@ class YodelTests(unittest.TestCase):
         self.assertLess(resuspended, final_resume)
         self.assertIn(("release.ready", {}), events)
 
-    def test_final_click_is_bracketed(self) -> None:
+    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    def test_final_click_is_bracketed(self, receipt_type) -> None:
         events = []
         action = object.__new__(YodelAction)
         action.control = FakeControl(events)
@@ -581,8 +587,10 @@ class YodelTests(unittest.TestCase):
         self.assertEqual(events[2], ("click", "confirm"))
         self.assertEqual(events[3][0], "confirmation.completed")
         self.assertEqual(events[3][1]["confirmation_id"], "confirmation")
+        receipt_type.return_value.wait.assert_called_once_with(action.control)
 
-    def test_final_click_does_not_run_without_confirmation_ack(self) -> None:
+    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    def test_final_click_does_not_run_without_confirmation_ack(self, _receipt_type) -> None:
         failures = (
             Cancelled("stream closed before ack"),
             ProtocolError("wrong or mismatched ack"),
@@ -608,7 +616,8 @@ class YodelTests(unittest.TestCase):
                     )
                 self.assertNotIn(("click", "confirm"), events)
 
-    def test_final_click_failure_is_outcome_unknown(self) -> None:
+    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    def test_final_click_failure_is_outcome_unknown(self, _receipt_type) -> None:
         events = []
         action = object.__new__(YodelAction)
         action.control = FakeControl(events)
@@ -622,7 +631,19 @@ class YodelTests(unittest.TestCase):
         self.assertEqual(events[1][0], "confirmation.ready")
         self.assertNotIn("confirmation.completed", [event[0] for event in events])
 
-    def test_passes_are_tried_in_configured_order(self) -> None:
+    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    def test_successful_click_without_verified_receipt_is_unknown(self, receipt_type) -> None:
+        events = []
+        action = object.__new__(YodelAction)
+        action.control = FakeControl(events)
+        configure_example_origin(action)
+        receipt_type.return_value.wait.side_effect = ActionError("order rejected")
+        with self.assertRaises(OutcomeUnknown):
+            action._click_final_confirmation(Locator(events, "confirm"), PASS_PREFERENCES["all_day"])
+        self.assertIn(("click", "confirm"), events)
+        self.assertNotIn("confirmation.completed", [event[0] for event in events])
+
+    def test_pass_fallback_stops_after_the_first_available_preference(self) -> None:
         events = []
         action = object.__new__(YodelAction)
         action.config = SimpleNamespace(pass_order=("all_day", "afternoon", "morning"))
@@ -631,27 +652,21 @@ class YodelTests(unittest.TestCase):
         def try_pass(preference, mode):
             events.append(preference.key)
             return BookingResult(
-                preference.key == "morning", preference.key, preference.key
+                preference.key == "afternoon", preference.key, preference.key
             )
 
         action._try_pass = try_pass
         result = action.try_booking_once("auto")
         self.assertTrue(result.success)
-        self.assertEqual(events, ["all_day", "afternoon", "morning"])
+        self.assertEqual(result.pass_key, "afternoon")
+        self.assertEqual(events, ["all_day", "afternoon"])
 
-    def test_dry_run_stops_after_date_pass_and_vehicle_selection(self) -> None:
-        events = []
-        action = BookingAction(events)
-        result = action._try_pass(PASS_PREFERENCES["all_day"], mode="dry-run")
-        self.assertTrue(result.success)
-        names = [event[0] for event in events]
-        self.assertIn("date.select", names)
-        self.assertIn("pass.available", names)
-        self.assertIn("vehicle.select", names)
-        self.assertNotIn("checkout.click", names)
-        self.assertNotIn("confirmation.click", names)
-
-    def test_manual_pauses_before_confirmation_but_auto_does_not(self) -> None:
+    @patch("buntzen_actions.yodel.require_empty_cart")
+    @patch("buntzen_actions.yodel.require_single_pass_cart")
+    @patch("buntzen_actions.yodel.select_target_date", return_value=True)
+    def test_manual_approval_suspends_trace_until_submission(
+        self, _select_date, _single_pass_cart, _empty_cart
+    ) -> None:
         manual_events = []
         manual = BookingAction(manual_events)
         self.assertTrue(
@@ -670,17 +685,12 @@ class YodelTests(unittest.TestCase):
             manual_events.index(("confirmation.click", "all_day")),
         )
 
-        auto_events = []
-        automatic = BookingAction(auto_events)
-        self.assertTrue(
-            automatic._try_pass(PASS_PREFERENCES["all_day"], mode="auto").success
-        )
-        auto_names = [event[0] for event in auto_events]
-        self.assertNotIn("approval.wait", auto_names)
-        self.assertNotIn("trace", auto_names)
-        self.assertIn("confirmation.click", auto_names)
-
-    def test_manual_wait_does_not_begin_when_trace_stop_fails(self) -> None:
+    @patch("buntzen_actions.yodel.require_empty_cart")
+    @patch("buntzen_actions.yodel.require_single_pass_cart")
+    @patch("buntzen_actions.yodel.select_target_date", return_value=True)
+    def test_manual_wait_does_not_begin_when_trace_stop_fails(
+        self, _select_date, _single_pass_cart, _empty_cart
+    ) -> None:
         events = []
         action = BookingAction(events)
 
@@ -693,6 +703,7 @@ class YodelTests(unittest.TestCase):
             action._try_pass(PASS_PREFERENCES["all_day"], mode="manual")
 
         names = [event[0] for event in events]
+        self.assertIn(("trace", "suspended"), events)
         self.assertNotIn("approval.wait", names)
         self.assertNotIn("confirmation.click", names)
 

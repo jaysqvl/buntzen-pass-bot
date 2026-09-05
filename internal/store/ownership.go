@@ -22,13 +22,6 @@ func (s *Store) ForUser(userID int64) UserStore {
 	return UserStore{store: s, userID: userID}
 }
 
-func (u UserStore) valid() error {
-	if u.store == nil || u.userID <= 0 {
-		return ErrUserRequired
-	}
-	return nil
-}
-
 func (u UserStore) UserID() int64 { return u.userID }
 
 func (u UserStore) CreateOTPSource(ctx context.Context, input OTPSourceInput) (model.OTPSource, error) {

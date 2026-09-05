@@ -298,6 +298,9 @@ func mapWriteError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed: booking_reservations.profile_id") {
+		return fmt.Errorf("%w: this profile and date already have a pending, successful, or unresolved booking", ErrConflict)
+	}
 	if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
 		return fmt.Errorf("%w: %v", ErrConflict, err)
 	}
@@ -354,4 +357,19 @@ func (s *Store) classifyOwnedGuardedUpdate(
 		return ErrNotFound
 	}
 	return fmt.Errorf("%w: record has a queued or active job", ErrConflict)
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func requireAffected(result sql.Result) error {
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read affected row count: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

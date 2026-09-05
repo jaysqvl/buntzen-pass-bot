@@ -41,7 +41,7 @@ func (s *Store) CreateOTPSource(ctx context.Context, userID int64, input OTPSour
 		PairingSender:   strings.TrimSpace(input.PairingSender),
 		PairingService:  strings.TrimSpace(input.PairingService),
 	}
-	if err := model.ValidateOTPSource(source); err != nil {
+	if err := source.Validate(); err != nil {
 		return model.OTPSource{}, err
 	}
 	if err := validatePairing(source.Provider, source.PairingChatGUID, source.PairingSender, source.PairingService); err != nil {
@@ -96,7 +96,7 @@ func (s *Store) UpdateOTPSource(ctx context.Context, userID, id int64, input OTP
 		// on the same identity may retain it; changing servers must re-pair.
 		source.PairingChatGUID, source.PairingSender, source.PairingService = "", "", ""
 	}
-	if err := model.ValidateOTPSource(source); err != nil {
+	if err := source.Validate(); err != nil {
 		return model.OTPSource{}, err
 	}
 	if err := validatePairing(source.Provider, source.PairingChatGUID, source.PairingSender, source.PairingService); err != nil {
@@ -319,10 +319,6 @@ func (s *Store) DeleteOTPSource(ctx context.Context, userID, id int64) error {
 	return requireAffected(result)
 }
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
 func scanOTPSource(scanner rowScanner) (model.OTPSource, error) {
 	var source model.OTPSource
 	var created, updated string
@@ -362,17 +358,6 @@ func (s *Store) encryptJSON(value any) (string, error) {
 		return "", errors.New("encrypted provider configuration is too large")
 	}
 	return ciphertext, nil
-}
-
-func requireAffected(result sql.Result) error {
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read affected row count: %w", err)
-	}
-	if count == 0 {
-		return ErrNotFound
-	}
-	return nil
 }
 
 func validatePairing(provider model.OTPProvider, chatGUID, sender, service string) error {

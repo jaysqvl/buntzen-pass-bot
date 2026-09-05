@@ -395,9 +395,6 @@ type queryResponse struct {
 }
 
 func (p *Provider) query(ctx context.Context, request queryRequest) (queryResponse, error) {
-	if err := validateQuery(request); err != nil {
-		return queryResponse{}, err
-	}
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return queryResponse{}, safeShapeError("query")
@@ -432,44 +429,13 @@ func (p *Provider) query(ctx context.Context, request queryRequest) (queryRespon
 	return queryResponse{Messages: messages, Total: metadata.Total}, nil
 }
 
-func validateQuery(request queryRequest) error {
-	if request.Limit < 1 || request.Limit > maxPageLimit || request.Offset < 0 {
-		return safeShapeError("query")
-	}
-	if request.Sort != "ASC" && request.Sort != "DESC" {
-		return safeShapeError("query")
-	}
-	if len(request.With) != 1 || request.With[0] != "chat" {
-		return safeShapeError("query")
-	}
-	if len(request.Where) > 1 {
-		return safeShapeError("query")
-	}
-	if len(request.Where) == 1 {
-		where := request.Where[0]
-		if where.Statement != "message.ROWID > :minRowID" || len(where.Args) != 1 {
-			return safeShapeError("query")
-		}
-		if _, ok := where.Args["minRowID"]; !ok {
-			return safeShapeError("query")
-		}
-	}
-	return nil
-}
-
 func (p *Provider) do(ctx context.Context, method, path string, payload []byte, op string) ([]byte, error) {
 	target := *p.base
 	target.Path = path
 	query := target.Query()
 	query.Set("password", p.config.Password)
 	target.RawQuery = query.Encode()
-	var body *bytes.Reader
-	if payload == nil {
-		body = bytes.NewReader(nil)
-	} else {
-		body = bytes.NewReader(payload)
-	}
-	request, err := http.NewRequest(method, target.String(), body)
+	request, err := http.NewRequest(method, target.String(), bytes.NewReader(payload))
 	if err != nil {
 		return nil, &httpguard.Error{Provider: Kind, Op: op, Reason: "could not build request"}
 	}

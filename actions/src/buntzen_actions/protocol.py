@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from collections import deque
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Optional
 
@@ -159,14 +160,15 @@ class ControlInbox:
                 return
 
     def _next(self, timeout: Optional[float]) -> dict[str, Any]:
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             with self._deferred_lock:
                 item = self._deferred.popleft() if self._deferred else None
             if item is None:
-                try:
-                    item = self._queue.get(timeout=timeout)
-                except queue.Empty:
-                    raise
+                remaining = (
+                    None if deadline is None else max(0.0, deadline - time.monotonic())
+                )
+                item = self._queue.get(timeout=remaining)
             if isinstance(item, EOFError):
                 raise Cancelled("control stream closed") from item
             if isinstance(item, BaseException):
@@ -174,6 +176,8 @@ class ControlInbox:
             with self._deferred_lock:
                 ignored = item.get("challenge_id") in self._ignored_otp_challenges
             if ignored and item.get("type", "").startswith("otp."):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise queue.Empty
                 continue
             return item
 
@@ -184,17 +188,16 @@ class ControlInbox:
         predicate: Optional[Callable[[dict[str, Any]], bool]] = None,
     ) -> dict[str, Any]:
         expected_set = frozenset(expected)
-        while True:
-            frame = self._next(timeout)
-            frame_type = frame["type"]
-            if frame_type == "control.cancel":
-                raise Cancelled("cancelled by control plane")
-            if frame_type not in expected_set:
-                names = ", ".join(sorted(expected_set))
-                raise ProtocolError(f"expected {names}; received {frame_type}")
-            if predicate is not None and not predicate(frame):
-                raise ProtocolError(f"received mismatched {frame_type} correlation id")
-            return frame
+        frame = self._next(timeout)
+        frame_type = frame["type"]
+        if frame_type == "control.cancel":
+            raise Cancelled("cancelled by control plane")
+        if frame_type not in expected_set:
+            names = ", ".join(sorted(expected_set))
+            raise ProtocolError(f"expected {names}; received {frame_type}")
+        if predicate is not None and not predicate(frame):
+            raise ProtocolError(f"received mismatched {frame_type} correlation id")
+        return frame
 
     def check_cancelled(self) -> None:
         """Raise promptly for cancellation without consuming future replies."""

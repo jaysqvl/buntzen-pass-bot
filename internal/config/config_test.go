@@ -6,16 +6,7 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	t.Setenv("APPDATA_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("MAX_CONCURRENT_JOBS", "")
-	t.Setenv("SCHEDULES_ENABLED", "")
-	t.Setenv("BUNTZEN_LISTEN", "")
-	t.Setenv("BUNTZEN_ALLOWED_HOSTS", "")
-	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "")
-	t.Setenv("BUNTZEN_YODEL_ORIGINS", "")
-	t.Setenv("BUNTZEN_SETUP_TOKEN", "")
-	t.Setenv("BUNTZEN_LOG_LEVEL", "")
-	t.Setenv("BUNTZEN_DEBUG", "")
+	isolateEnvironment(t)
 
 	cfg, err := Load()
 	if err != nil {
@@ -39,7 +30,7 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadLogLevelAndDebugOverride(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_LOG_LEVEL", "warning")
 	t.Setenv("BUNTZEN_DEBUG", "")
 	cfg, err := Load()
@@ -62,7 +53,7 @@ func TestLoadLogLevelAndDebugOverride(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidLoggingConfiguration(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_LOG_LEVEL", "trace")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid log level to be rejected")
@@ -76,7 +67,7 @@ func TestLoadRejectsInvalidLoggingConfiguration(t *testing.T) {
 }
 
 func TestLoadTrustedYodelOrigins(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_YODEL_ORIGINS", "https://example.test:443,https://second.example.test")
 	cfg, err := Load()
 	if err != nil {
@@ -89,7 +80,7 @@ func TestLoadTrustedYodelOrigins(t *testing.T) {
 }
 
 func TestLoadRejectsInsecureYodelOrigin(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_YODEL_ORIGINS", "http://example.test")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected insecure Yodel origin to be rejected")
@@ -97,7 +88,7 @@ func TestLoadRejectsInsecureYodelOrigin(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidConcurrency(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("MAX_CONCURRENT_JOBS", "99")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid concurrency error")
@@ -105,7 +96,7 @@ func TestLoadRejectsInvalidConcurrency(t *testing.T) {
 }
 
 func TestLoadAllowedOrigins(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "http://buntzen.example, https://buntzen.example")
 	cfg, err := Load()
 	if err != nil {
@@ -120,7 +111,7 @@ func TestLoadAllowedOrigins(t *testing.T) {
 }
 
 func TestLoadAllowedHostsAndSetupToken(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_ALLOWED_HOSTS", "Example.Test:8080, [::1]:8080")
 	t.Setenv("BUNTZEN_SETUP_TOKEN", "operator-setup-token")
 	cfg, err := Load()
@@ -136,7 +127,7 @@ func TestLoadAllowedHostsAndSetupToken(t *testing.T) {
 }
 
 func TestLoadRejectsEmptyAllowedOrigin(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "http://buntzen.example,")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid allowed-origin list")
@@ -144,7 +135,7 @@ func TestLoadRejectsEmptyAllowedOrigin(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidAllowedOrigin(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "https://buntzen.example/path")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid allowed origin")
@@ -152,9 +143,23 @@ func TestLoadRejectsInvalidAllowedOrigin(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidAllowedHost(t *testing.T) {
-	t.Setenv("APPDATA_DIR", t.TempDir())
+	isolateEnvironment(t)
 	t.Setenv("BUNTZEN_ALLOWED_HOSTS", "https://buntzen.example/path")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid allowed host")
 	}
+}
+
+// Each test starts from production defaults, regardless of the developer's shell.
+func isolateEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"BUNTZEN_LISTEN", "MAX_CONCURRENT_JOBS", "SCHEDULES_ENABLED",
+		"BUNTZEN_DEBUG", "BUNTZEN_LOG_LEVEL", "BUNTZEN_PYTHON",
+		"BUNTZEN_ACTIONS_MODULE", "BLUEBUBBLES_URL", "BUNTZEN_ALLOWED_ORIGINS",
+		"BUNTZEN_YODEL_ORIGINS", "BUNTZEN_ALLOWED_HOSTS", "BUNTZEN_SETUP_TOKEN",
+	} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("APPDATA_DIR", filepath.Join(t.TempDir(), "state"))
 }
