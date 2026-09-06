@@ -206,7 +206,7 @@ func TestAdminCreatesMemberAndMemberChangesTemporaryPassword(t *testing.T) {
 	}
 }
 
-func TestPasswordChangeRejectsConcurrentAndRepeatedArgonWork(t *testing.T) {
+func TestAccountChangesSharePasswordAdmissionAndRateLimit(t *testing.T) {
 	fixture := newWebFixture(t)
 	cookies := loginCookies(t, fixture)
 	form := url.Values{
@@ -214,27 +214,33 @@ func TestPasswordChangeRejectsConcurrentAndRepeatedArgonWork(t *testing.T) {
 		"current_password": {"wrong current password"},
 		"new_password":     {"a different valid password"},
 		"password_confirm": {"a different valid password"},
+		"username":         {"new-admin-name"},
 	}
 
-	release := fixture.server.tryPasswordChange(fixture.admin.ID)
+	release := fixture.server.tryAccountChange(fixture.admin.ID)
 	if release == nil {
 		t.Fatal("could not reserve password-change admission")
 	}
-	recorder := serveForm(fixture, http.MethodPost, "/account/password", cookies, form)
-	release()
-	if recorder.Code != http.StatusTooManyRequests {
-		t.Fatalf("concurrent password change = %d: %s", recorder.Code, recorder.Body.String())
+	for _, path := range []string{"/account/password", "/account/username"} {
+		recorder := serveForm(fixture, http.MethodPost, path, cookies, form)
+		if recorder.Code != http.StatusTooManyRequests {
+			t.Fatalf("concurrent %s = %d: %s", path, recorder.Code, recorder.Body.String())
+		}
 	}
+	release()
 
 	for attempt := 0; attempt < passwordLimit; attempt++ {
-		recorder = serveForm(fixture, http.MethodPost, "/account/password", cookies, form)
+		path := []string{"/account/password", "/account/username"}[attempt%2]
+		recorder := serveForm(fixture, http.MethodPost, path, cookies, form)
 		if recorder.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("password attempt %d = %d: %s", attempt+1, recorder.Code, recorder.Body.String())
 		}
 	}
-	recorder = serveForm(fixture, http.MethodPost, "/account/password", cookies, form)
-	if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Body.String(), "too many password attempts") {
-		t.Fatalf("rate-limited password change = %d: %s", recorder.Code, recorder.Body.String())
+	for _, path := range []string{"/account/password", "/account/username"} {
+		recorder := serveForm(fixture, http.MethodPost, path, cookies, form)
+		if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Body.String(), "too many password attempts") {
+			t.Fatalf("rate-limited %s = %d: %s", path, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 
@@ -501,7 +507,7 @@ func TestBookingFormCannotExpandYodelCredentialOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{
+	profile, err := resources.CreateProfile(context.Background(), store.ProfileInput{LoginProbeURL: "https://example.test/login",
 		Name: "Profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},

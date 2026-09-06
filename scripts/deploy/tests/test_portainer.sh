@@ -173,13 +173,16 @@ run_case() {
   local case_dir="$test_tmp/$scenario"
   local port
   local status=0
+  local attempts=3
+
+  [[ "$scenario" != 'status-request-timeout' ]] || attempts=1
 
   start_mock "$scenario" "$case_dir"
   port="$(<"$case_dir/port")"
 
   env \
     BUNTZEN_CONFIRM_STACK=buntzen-pass-bot \
-    BUNTZEN_HEALTH_ATTEMPTS=3 \
+    BUNTZEN_HEALTH_ATTEMPTS="$attempts" \
     BUNTZEN_HEALTH_INTERVAL_SECONDS=0 \
     BUNTZEN_HEALTH_URL="http://127.0.0.1:$port/healthz" \
     BUNTZEN_IMAGE="$new_image" \
@@ -211,15 +214,29 @@ run_case() {
   }
   python3 "$test_dir/assert_portainer_state.py" \
     "$scenario" "$case_dir/state.json" "$compose_file" "$new_image"
+  if [[ "$scenario" == 'status-request-timeout' ]]; then
+    grep -Fq 'curl: (28)' "$case_dir/output.log" || {
+      printf 'slow status request did not hit its verification timeout\n' >&2
+      return 1
+    }
+  fi
   stop_mock
 }
 
 run_case success success 'Buntzen deployment is healthy and schedules remain disabled.'
 run_case rollback failure 'rollback was verified healthy'
-run_case rollback-failure failure 'rollback did not become healthy'
+run_case rollback-failure failure 'rollback verification failed: stack deployment ended with status 2'
 run_case update-rejected failure 'stack update failed: Portainer API returned HTTP 500; rollback was verified healthy'
 run_case status-query-failure failure 'stack status verification failed: Portainer API returned HTTP 500; rollback was verified healthy'
 run_case status-query-malformed failure 'stack status verification returned a malformed response; rollback was verified healthy'
+run_case async-success success 'Buntzen deployment is healthy and schedules remain disabled.'
+run_case async-failure failure 'stack deployment ended with status 4; rollback was verified healthy'
+run_case async-timeout failure 'rollback was not attempted because the stack is still deploying'
+run_case async-rollback-timeout failure 'rollback verification failed: the stack is still deploying'
+run_case update-ambiguous failure 'stack update failed: Portainer API returned HTTP 500; rollback was verified healthy'
+run_case unexpected-status failure 'rollback was not attempted because stack status verification returned an unsupported status'
+run_case status-query-persistent failure 'rollback was not attempted because stack status verification failed'
+run_case status-request-timeout failure 'rollback was not attempted because stack status verification failed'
 run_case identity-mismatch failure 'Portainer stack identity, source, or environment shape did not match'
 run_case git-backed failure 'Portainer stack identity, source, or environment shape did not match'
 run_case preflight-unhealthy failure 'the selected Buntzen stack was not healthy before deployment'

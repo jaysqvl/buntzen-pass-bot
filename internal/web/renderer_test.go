@@ -1,9 +1,13 @@
 package web
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"html/template"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -34,6 +38,37 @@ func TestEmbeddedTemplatesAndStaticAssets(t *testing.T) {
 	renderer.Static(staticRecorder, request)
 	if staticRecorder.Code != http.StatusOK || staticRecorder.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("embedded client response: status=%d headers=%v", staticRecorder.Code, staticRecorder.Header())
+	}
+}
+
+func TestPageAssetURLsMatchTheEmbeddedContent(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	if err := renderer.Render(recorder, http.StatusOK, "login", authPageData{}); err != nil {
+		t.Fatal(err)
+	}
+	links := regexp.MustCompile(`(?:src|href)="(/static/[^\"]+)"`).FindAllStringSubmatch(recorder.Body.String(), -1)
+	if len(links) != 4 {
+		t.Fatalf("expected favicon, stylesheet and both scripts, got %v", links)
+	}
+	for _, link := range links {
+		assetURL, err := url.Parse(link[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		assetURL.Path = strings.TrimPrefix(assetURL.Path, "/static")
+		response := httptest.NewRecorder()
+		renderer.Static(response, httptest.NewRequest(http.MethodGet, assetURL.String(), nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("asset %s status=%d", link[1], response.Code)
+		}
+		digest := sha256.Sum256(response.Body.Bytes())
+		if version := assetURL.Query().Get("v"); version != fmt.Sprintf("%x", digest[:8]) {
+			t.Fatalf("asset %s version does not match its content: %q", assetURL.Path, version)
+		}
 	}
 }
 

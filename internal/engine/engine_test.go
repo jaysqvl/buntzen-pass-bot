@@ -54,7 +54,8 @@ func newEngineTestFixture(t *testing.T) engineTestFixture {
 		t.Fatal(err)
 	}
 	profile, err := resources.CreateProfile(ctx, store.ProfileInput{
-		Name: "Example profile", DefaultVehicle: "Example Vehicle",
+		LoginProbeURL: "https://example.test/login",
+		Name:          "Example profile", DefaultVehicle: "Example Vehicle",
 		OTPSourceID: source.ID, Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
@@ -273,7 +274,8 @@ func TestManagedProfileDirectoriesUseImmutableOwnedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherProfile, err := memberStore.CreateProfile(ctx, store.ProfileInput{
-		Name: "Other profile", DefaultVehicle: "Other Vehicle", OTPSourceID: source.ID,
+		LoginProbeURL: "https://example.test/login",
+		Name:          "Other profile", DefaultVehicle: "Other Vehicle", OTPSourceID: source.ID,
 		Headless: true, DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
 	})
@@ -398,16 +400,20 @@ func TestStartSchedulesSessionAndArtifactMaintenance(t *testing.T) {
 func TestCredentialDecryptionFailsClosedOnPersistedUnapprovedOrigin(t *testing.T) {
 	fixture := newEngineTestFixture(t)
 	ctx := context.Background()
-	booking := fixture.booking
-	booking.LoginProbeURL = "https://attacker.example/login"
-	booking.AllDayPassURL = "https://attacker.example/pass"
-	booking, err := fixture.resources.UpdateBookingRequest(ctx, booking)
+	profile, err := fixture.resources.GetProfile(ctx, fixture.booking.ProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bookingID := booking.ID
+	_, err = fixture.resources.UpdateProfile(ctx, profile.ID, store.ProfileInput{
+		Name: profile.Name, DefaultVehicle: profile.DefaultVehicle, OTPSourceID: profile.OTPSourceID,
+		LoginProbeURL: "https://attacker.example/login", Enabled: true,
+		Headless: profile.Headless, DefaultTimeoutMS: profile.DefaultTimeoutMS,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	job, err := fixture.resources.EnqueueJob(ctx, store.EnqueueJobParams{
-		BookingRequestID: &bookingID, Command: model.CommandAuthCheck, RunMode: model.RunModeManual,
+		ProfileID: profile.ID, Command: model.CommandAuthCheck, RunMode: model.RunModeManual,
 	})
 	if err != nil {
 		t.Fatal(err)

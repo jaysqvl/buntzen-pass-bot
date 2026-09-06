@@ -14,14 +14,14 @@ import (
 )
 
 type Server struct {
-	config       config.Config
-	store        *store.Store
-	engine       *engine.Engine
-	renderer     *Renderer
-	mux          *http.ServeMux
-	loginMu      sync.Mutex
-	passwordMu   sync.Mutex
-	passwordBusy map[int64]struct{}
+	config            config.Config
+	store             *store.Store
+	engine            *engine.Engine
+	renderer          *Renderer
+	mux               *http.ServeMux
+	loginMu           sync.Mutex
+	accountChangeMu   sync.Mutex
+	accountChangeBusy map[int64]struct{}
 }
 
 func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) (*Server, error) {
@@ -34,7 +34,7 @@ func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) 
 	}
 	server := &Server{
 		config: cfg, store: database, engine: runner, renderer: renderer,
-		mux: http.NewServeMux(), passwordBusy: make(map[int64]struct{}),
+		mux: http.NewServeMux(), accountChangeBusy: make(map[int64]struct{}),
 	}
 	server.routes()
 	return server, nil
@@ -54,6 +54,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /logout", s.authenticated(s.logout))
 	s.mux.HandleFunc("GET /account", s.authenticated(s.accountPage))
 	s.mux.HandleFunc("POST /account/password", s.authenticated(s.accountPassword))
+	s.mux.HandleFunc("POST /account/username", s.authenticated(s.accountUsername))
 
 	s.mux.HandleFunc("GET /admin/users", s.authenticated(s.adminOnly(s.usersPage)))
 	s.mux.HandleFunc("GET /admin/users/new", s.authenticated(s.adminOnly(s.userNewPage)))
@@ -102,7 +103,8 @@ func flashFor(value string) *Flash {
 		"created": "Saved successfully.", "updated": "Changes saved.", "queued": "Job queued.",
 		"healthy": "Provider authentication succeeded.", "cancelled": "Cancellation requested.", "decided": "Decision sent to the waiting browser.",
 		"setup": "Administrator account created.", "user-created": "User account created.",
-		"user-updated": "User access updated.", "user-password": "Temporary password set and existing sessions revoked.",
+		"username-changed": "Username changed. Use the new username the next time you sign in.",
+		"user-updated":     "User access updated.", "user-password": "Temporary password set and existing sessions revoked.",
 		"user-deleted":         "Member account and database records were deleted; managed local files were reconciled.",
 		"user-deleted-cleanup": "Member account and database records were deleted; managed local-file cleanup will retry automatically.",
 	}

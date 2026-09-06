@@ -139,6 +139,24 @@ class CalendarBrowserTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.page.close()
 
+    def test_configured_priority_selects_the_first_available_pass(self) -> None:
+        for order in (("morning", "afternoon"), ("afternoon", "morning")):
+            with self.subTest(order=order):
+                self.page.set_content(
+                    _SELECT_DATE
+                    + pass_card("afternoon", (5, 6))
+                    + pass_card("morning", (5, 6))
+                )
+                self.action.config.pass_order = order
+                result = self.action.try_booking_once("dry-run")
+                self.assertTrue(result.success, result.message)
+                self.assertTrue(
+                    self.page.locator(f'input[name="{order[0]}-vehicle"]').is_checked()
+                )
+                self.assertFalse(
+                    self.page.locator(f'input[name="{order[1]}-vehicle"]').is_checked()
+                )
+
     def test_afternoon_uses_its_own_calendar_with_padded_and_two_digit_days(
         self,
     ) -> None:

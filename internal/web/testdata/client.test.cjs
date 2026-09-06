@@ -23,9 +23,13 @@ class Element {
 
 function openJob(fetchResult = async () => ({ok: true})) {
   const ids = ['live-job', 'otp-code', 'otp-panel', 'pairing-candidates', 'pairing-panel',
-    'job-message', 'job-pill', 'approval-panel', 'job-events'];
+    'job-message', 'job-pill', 'approval-panel', 'job-events', 'job-status', 'job-started',
+    'job-finished', 'job-confirmation', 'cancel-job'];
   const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
-  nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf'};
+  nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf', lastEventId: '7'};
+  nodes['job-status'].textContent = 'queued';
+  nodes['cancel-job'].hidden = false;
+  nodes['cancel-job'].dataset.decision = 'cancel-job';
   const listeners = {};
   const events = {};
   const alerts = [];
@@ -33,7 +37,7 @@ function openJob(fetchResult = async () => ({ok: true})) {
   let closed = false;
   let destination = null;
   class EventSource {
-    constructor(url) { assert.equal(url, '/jobs/42/events'); }
+    constructor(url) { assert.equal(url, '/jobs/42/events?after=7'); }
     addEventListener(name, handler) { events[name] = handler; }
     close() { closed = true; }
   }
@@ -80,10 +84,57 @@ for (const signal of ['error', 'terminal', 'auth_expired', 'pagehide']) {
     else if (signal === 'pagehide') job.listeners.pagehide();
     else job.emit(signal, {});
     assertSensitiveStateCleared(job);
-    if (signal === 'terminal' || signal === 'auth_expired') assert.equal(job.closed, true);
+    if (signal === 'terminal') assert.equal(job.closed, false, 'final events may still be in transit');
+    if (signal === 'auth_expired') assert.equal(job.closed, true);
     if (signal === 'auth_expired') assert.equal(job.destination, '/login');
   });
 }
+
+test('live completion updates all details and controls before waiting for the final events', async () => {
+  const job = openJob();
+  const running = {status: 'running', label: 'running', class_name: 'active', message: 'Checking passes',
+    started: 'Started now', finished: '—', confirmation_started: '—', can_cancel: true, awaiting_approval: false, terminal: false};
+  job.emit('state', running);
+  assert.equal(job.nodes['cancel-job'].hidden, false);
+  assert.equal(job.nodes['job-status'].textContent, 'running');
+  assert.equal(job.nodes['job-started'].textContent, 'Started now');
+  showSensitiveState(job);
+
+  job.emit('state', {...running, status: 'succeeded', label: 'succeeded', class_name: 'ok',
+    message: 'Booking confirmed', finished: 'Finished now', confirmation_started: 'Confirmed now',
+    terminal: true, can_cancel: false});
+  assert.equal(job.nodes['job-pill'].textContent, 'succeeded');
+  assert.equal(job.nodes['job-pill'].className, 'pill ok');
+  assert.equal(job.nodes['job-status'].textContent, 'succeeded');
+  assert.equal(job.nodes['job-message'].textContent, 'Booking confirmed');
+  assert.equal(job.nodes['job-finished'].textContent, 'Finished now');
+  assert.equal(job.nodes['job-confirmation'].textContent, 'Confirmed now');
+  assert.equal(job.nodes['cancel-job'].hidden, true);
+  assert.equal(job.nodes['cancel-job'].disabled, true);
+  assert.equal(job.nodes['approval-panel'].hidden, true);
+  assertSensitiveStateCleared(job);
+  assert.equal(job.closed, false, 'terminal state must not drop the final durable events');
+
+  job.emit('otp', {active: true, code: '123456'});
+  job.emit('pairing', {active: true, candidates: [{id: 'late', code: '123456'}]});
+  assertSensitiveStateCleared(job);
+  await job.click(job.nodes['cancel-job']);
+  assert.equal(job.requests.length, 0);
+
+  job.emit('job_event', {id: 8, time: '12:00:00', type: 'job.succeeded', message: 'Booking confirmed'});
+  assert.equal(job.nodes['job-events'].children.length, 1);
+  assert.equal(job.nodes['job-events'].children[0].children[1].children[1].textContent, 'Booking confirmed');
+  job.emit('complete', {});
+  assert.equal(job.closed, true);
+});
+
+test('replayed events do not duplicate server-rendered or already received history', () => {
+  const job = openJob();
+  for (const id of [6, 7, 8, 8, 9]) {
+    job.emit('job_event', {id, time: '12:00:00', type: 'progress', message: `Event ${id}`});
+  }
+  assert.equal(job.nodes['job-events'].children.length, 2);
+});
 
 test('pairing decision submits only the chosen message ID and CSRF token', async () => {
   const job = openJob();
@@ -117,4 +168,16 @@ test('a rejected decision reports the server response and reenables the control'
   await job.click(button);
   assert.equal(button.disabled, false);
   assert.deepEqual(job.alerts, ['Approval expired']);
+});
+
+test('a late rejected decision cannot reenable cancellation after the job finishes', async () => {
+  let resolveRequest;
+  const job = openJob(() => new Promise(resolve => { resolveRequest = resolve; }));
+  const button = job.nodes['cancel-job'];
+  const pending = job.click(button);
+  job.emit('state', {status: 'succeeded', terminal: true, can_cancel: false});
+  resolveRequest({ok: false, text: async () => 'Job already finished'});
+  await pending;
+  assert.equal(button.hidden, true);
+  assert.equal(button.disabled, true);
 });

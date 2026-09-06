@@ -22,7 +22,7 @@ class ActionConfig:
     command: str
     mode: str
     profile_dir: Path
-    target_date: date
+    target_date: Optional[date]
     timezone_name: str
     login_probe_url: str
     allowed_yodel_origins: frozenset[str]
@@ -71,8 +71,13 @@ class ActionConfig:
         profile_dir = Path(_required_text(config, "profile_dir")).expanduser()
         if not profile_dir.is_absolute():
             raise ProtocolError("profile_dir must be absolute")
-        target_date = _parse_date(_required_text(config, "target_date"))
-        timezone_name = _required_text(config, "timezone")
+        if command == "auth-check":
+            target_value = _optional_text(config, "target_date")
+            target_date = _parse_date(target_value) if target_value else None
+            timezone_name = _optional_text(config, "timezone") or "UTC"
+        else:
+            target_date = _parse_date(_required_text(config, "target_date"))
+            timezone_name = _required_text(config, "timezone")
         try:
             ZoneInfo(timezone_name)
         except Exception as exc:

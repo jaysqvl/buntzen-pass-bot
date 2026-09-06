@@ -11,6 +11,7 @@ type Profile struct {
 	UserID            int64
 	Name              string
 	DefaultVehicle    string
+	LoginProbeURL     string
 	OTPSourceID       int64
 	Headless          bool
 	BrowserChannel    string
@@ -53,5 +54,12 @@ func (p Profile) Validate() error {
 	if p.DefaultTimeoutMS < 1_000 || p.DefaultTimeoutMS > 120_000 {
 		return errors.New("default timeout must be between 1000 and 120000 milliseconds")
 	}
-	return nil
+	return validateHTTPURL(p.LoginProbeURL, "Yodel login URL")
+}
+
+func (p Profile) ValidateForOrigins(allowedOrigins []string) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	return validateYodelURLs(allowedOrigins, yodelURL{p.LoginProbeURL, "Yodel login URL"})
 }

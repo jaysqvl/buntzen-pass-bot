@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
@@ -25,44 +26,39 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 	}
 	data := listData{
 		BaseData:     base(r, "Profiles"),
-		Eyebrow:      "Yodel identities",
+		Eyebrow:      "Step 2 · Yodel login",
 		Heading:      "Profiles",
-		Description:  "Each profile has one persistent browser directory and one exclusive OTP source.",
+		Description:  "Choose the OTP source that receives codes for this Yodel mobile number. Save the profile and its login URL, then pair BlueBubbles from the linked OTP source. No booking request is needed for pairing.",
 		CreateURL:    "/profiles/new",
 		CreateLabel:  "New profile",
 		EmptyMessage: "Create an OTP source first, then add a Yodel profile.",
 	}
 	for _, profile := range profiles {
-		status, class := "Disabled", ""
-		if profile.Enabled {
-			status, class = "Enabled", "ok"
-		}
-		data.Cards = append(data.Cards, listCard{
-			Title:       profile.Name,
-			Subtitle:    fmt.Sprintf("Browser identity %d", profile.ID),
-			Status:      status,
-			StatusClass: class,
-			URL:         fmt.Sprintf("/profiles/%d", profile.ID),
-			Fields:      []labelValue{{"Vehicle", profile.DefaultVehicle}, {"OTP source", sourceNames[profile.OTPSourceID]}, {"Browser", browserLabel(profile)}},
-			Actions:     []cardAction{{"Edit", fmt.Sprintf("/profiles/%d", profile.ID), ""}},
-		})
+		data.Cards = append(data.Cards, profileCard(profile, sourceNames[profile.OTPSourceID]))
 	}
 	s.render(w, http.StatusOK, "list", data)
 }
 
-func browserLabel(profile model.Profile) string {
-	if profile.BrowserExecutable != "" {
-		return profile.BrowserExecutable
+func profileCard(profile model.Profile, sourceName string) listCard {
+	status, class := "Disabled", ""
+	if profile.Enabled {
+		status, class = "Enabled", "ok"
 	}
-	if profile.BrowserChannel != "" {
-		return profile.BrowserChannel
+	return listCard{
+		Title: profile.Name, Subtitle: "Yodel login and vehicle", Status: status, StatusClass: class,
+		URL:    fmt.Sprintf("/profiles/%d", profile.ID),
+		Fields: []labelValue{{"Vehicle", profile.DefaultVehicle}, {"Linked OTP source", sourceName}},
+		Actions: []cardAction{
+			{"Edit profile", fmt.Sprintf("/profiles/%d", profile.ID), ""},
+			{"View OTP source", fmt.Sprintf("/sources/%d", profile.OTPSourceID), ""},
+			{"New booking", fmt.Sprintf("/bookings/new?profile_id=%d", profile.ID), "primary"},
+		},
 	}
-	return "Bundled Chromium"
 }
 
 func (s *Server) profileNew(w http.ResponseWriter, r *http.Request) { s.profileForm(w, r, nil, "") }
 func (s *Server) profileCreate(w http.ResponseWriter, r *http.Request) {
-	input, err := profileInput(r, true)
+	input, err := s.profileInput(r, true)
 	if err == nil {
 		_, err = s.userStore(r).CreateProfile(r.Context(), input)
 	}
@@ -94,7 +90,7 @@ func (s *Server) profileUpdate(w http.ResponseWriter, r *http.Request) {
 		s.notFoundOrInternal(w, err)
 		return
 	}
-	input, err := profileInput(r, false)
+	input, err := s.profileInput(r, false)
 	if err == nil {
 		_, err = s.userStore(r).UpdateProfile(r.Context(), id, input)
 	}
@@ -105,7 +101,7 @@ func (s *Server) profileUpdate(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/profiles?ok=updated", http.StatusSeeOther)
 }
 
-func profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
+func (s *Server) profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
 	timeout, err := strconv.Atoi(r.Form.Get("default_timeout_ms"))
 	if err != nil {
 		return store.ProfileInput{}, errors.New("browser timeout must be a number")
@@ -113,6 +109,7 @@ func profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
 	input := store.ProfileInput{
 		Name:              r.Form.Get("name"),
 		DefaultVehicle:    r.Form.Get("default_vehicle"),
+		LoginProbeURL:     strings.TrimSpace(r.Form.Get("login_probe_url")),
 		OTPSourceID:       parseInt64(r.Form.Get("otp_source_id")),
 		Headless:          checked(r, "headless"),
 		BrowserChannel:    r.Form.Get("browser_channel"),
@@ -127,7 +124,7 @@ func profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
 		}
 		input.Credentials = &model.ProfileCredentials{Phone: phone}
 	}
-	return input, nil
+	return input, input.ValidateForOrigins(s.config.YodelOrigins)
 }
 
 func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *model.Profile, formError string) {
@@ -137,12 +134,26 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 		return
 	}
 	creating := profile == nil
-	value := model.Profile{Headless: true, Enabled: true, DefaultTimeoutMS: 15000}
+	yodelOrigin := config.DefaultYodelOrigin
+	if len(s.config.YodelOrigins) > 0 {
+		yodelOrigin = s.config.YodelOrigins[0]
+	}
+	value := model.Profile{Headless: true, Enabled: true, DefaultTimeoutMS: 15000, LoginProbeURL: yodelOrigin + "/buntzen-lake"}
 	if profile != nil {
 		value = *profile
 	}
+	if creating && r.Method == http.MethodGet {
+		requestedSource := parseInt64(r.URL.Query().Get("source_id"))
+		for _, source := range sources {
+			if source.ID == requestedSource {
+				value.OTPSourceID = source.ID
+				break
+			}
+		}
+	}
 	if r.Method == http.MethodPost {
 		value.Name, value.DefaultVehicle = r.Form.Get("name"), r.Form.Get("default_vehicle")
+		value.LoginProbeURL = r.Form.Get("login_probe_url")
 		value.OTPSourceID, value.Headless, value.Enabled = parseInt64(r.Form.Get("otp_source_id")), checked(r, "headless"), checked(r, "enabled")
 		value.BrowserChannel, value.BrowserExecutable = r.Form.Get("browser_channel"), r.Form.Get("browser_executable")
 		value.DefaultTimeoutMS, _ = strconv.Atoi(r.Form.Get("default_timeout_ms"))
@@ -159,7 +170,7 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 		BaseData:    base(r, heading),
 		Eyebrow:     "Browser identity",
 		Heading:     heading,
-		Description: "The mobile login is write-only, encrypted at rest, and passed to Python only when Yodel displays its sign-in form.",
+		Description: "Use the phone number on your Yodel account and choose the OTP source that receives its login codes. Save this profile, then choose Pair with Yodel on the linked OTP source. A booking request is not required.",
 		CancelURL:   "/profiles",
 		ActionURL:   actionURL,
 		SubmitLabel: submit,
@@ -168,7 +179,7 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 	data.Sections = []formSection{
 		{
 			Title: "Profile",
-			Help:  "Buntzen assigns a private persistent browser identity automatically.",
+			Help:  "Choose your saved OTP source. Each source can be linked to only one profile.",
 			Fields: []formField{
 				{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true},
 				{Name: "default_vehicle", Label: "Vehicle keyword", Type: "text", Value: value.DefaultVehicle, Required: true},
@@ -177,9 +188,12 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 			},
 		},
 		{
-			Title:  "Yodel sign-in",
-			Help:   "Enter the 10-digit Canadian/US mobile number used by Yodel. A leading +1 and common separators are accepted. If this profile predates mobile login support, re-enter the number before enabling it.",
-			Fields: []formField{{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: secretPlaceholder(creating), Required: creating}},
+			Title: "Yodel sign-in",
+			Help:  "Enter the 10-digit Canadian/US mobile number used by Yodel. A leading +1 and common separators are accepted. If this profile predates mobile login support, re-enter the number before enabling it.",
+			Fields: []formField{
+				{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: secretPlaceholder(creating), Required: creating},
+				{Name: "login_probe_url", Label: "Yodel login URL", Type: "url", Value: value.LoginProbeURL, Required: true, Help: "Used for pairing and signing in. Keep the default Buntzen Lake URL unless your host uses another approved Yodel site."},
+			},
 		},
 		{
 			Title: "Browser",

@@ -49,7 +49,7 @@ type RunInput struct {
 type RunHooks struct {
 	Event                func(kind, message string)
 	Diagnostic           func(operation string, err error)
-	AwaitingApproval     func(approvalID string) error
+	AwaitingApproval     func(approvalID string, pass model.PassType) error
 	ApprovalResolved     func(decision model.ApprovalDecision) error
 	ConfirmationStarting func() error
 }
@@ -347,15 +347,25 @@ func handleFrame(
 		challengeMu.Unlock()
 		events(frame.Type, "OTP challenge ended and transient code state was cleared.")
 	case "approval.request":
+		if input.Command != model.CommandBook || input.Mode != model.RunModeManual {
+			return errors.New("approval requests require a manual booking")
+		}
 		approvalID, err := correlation(frame.Payload, "approval_id")
 		if err != nil {
 			return err
+		}
+		passKey, _ := frame.Payload["pass_key"].(string)
+		pass := model.PassType(passKey)
+		switch pass {
+		case model.PassAllDay, model.PassAfternoon, model.PassMorning:
+		default:
+			return errors.New("approval request must identify a supported pass")
 		}
 		if err := input.Hub.BeginDecision(jobKey); err != nil {
 			return err
 		}
 		if input.Hooks.AwaitingApproval != nil {
-			if err := input.Hooks.AwaitingApproval(approvalID); err != nil {
+			if err := input.Hooks.AwaitingApproval(approvalID, pass); err != nil {
 				return err
 			}
 		}

@@ -3,7 +3,9 @@
   if (!root || !window.EventSource) return;
   const jobID = root.dataset.jobId;
   const csrf = root.dataset.csrf;
-  const source = new EventSource(`/jobs/${encodeURIComponent(jobID)}/events`);
+  const source = new EventSource(`/jobs/${encodeURIComponent(jobID)}/events?after=${encodeURIComponent(root.dataset.lastEventId || '0')}`);
+  let terminal = false;
+  let lastEventID = Number(root.dataset.lastEventId || 0);
   const clearSensitive = () => {
     const code = document.getElementById('otp-code');
     if (code) code.textContent = '';
@@ -18,16 +20,26 @@
     clearSensitive(); source.close(); window.location.replace('/login');
   });
   source.addEventListener('error', clearSensitive);
+  source.addEventListener('complete', () => { clearSensitive(); source.close(); });
   source.addEventListener('state', event => {
     const data = JSON.parse(event.data);
     document.getElementById('job-message').textContent = data.message || '';
     const pill = document.getElementById('job-pill');
     pill.textContent = data.label;
     pill.className = `pill ${data.class_name || ''}`;
+    document.getElementById('job-status').textContent = data.status;
+    document.getElementById('job-started').textContent = data.started;
+    document.getElementById('job-finished').textContent = data.finished;
+    document.getElementById('job-confirmation').textContent = data.confirmation_started;
+    const cancel = document.getElementById('cancel-job');
+    cancel.hidden = !data.can_cancel;
+    if (!data.can_cancel) cancel.disabled = true;
     document.getElementById('approval-panel').hidden = !data.awaiting_approval;
-    if (data.terminal) { clearSensitive(); source.close(); }
+    terminal = data.terminal;
+    if (terminal) clearSensitive();
   });
   source.addEventListener('otp', event => {
+    if (terminal) return;
     const data = JSON.parse(event.data);
     const panel = document.getElementById('otp-panel');
     const code = document.getElementById('otp-code');
@@ -35,6 +47,7 @@
     else { code.textContent = ''; panel.hidden = true; }
   });
   source.addEventListener('pairing', event => {
+    if (terminal) return;
     const data = JSON.parse(event.data);
     const panel = document.getElementById('pairing-panel');
     const candidates = document.getElementById('pairing-candidates');
@@ -51,6 +64,8 @@
   });
   source.addEventListener('job_event', event => {
     const data = JSON.parse(event.data);
+    if (data.id <= lastEventID) return;
+    lastEventID = data.id;
     const item = document.createElement('li');
     const time = document.createElement('time');
     time.textContent = data.time;
@@ -64,18 +79,18 @@
   });
   root.addEventListener('click', async event => {
     const button = event.target.closest('[data-decision]');
-    if (!button) return;
+    if (!button || terminal || button.disabled) return;
     button.disabled = true;
     const body = new URLSearchParams({csrf_token: csrf, decision: button.dataset.decision});
     if (button.dataset.messageId) body.set('message_id', button.dataset.messageId);
     try {
       const response = await fetch(`/jobs/${encodeURIComponent(jobID)}/decision`, {method:'POST', body, credentials:'same-origin', headers:{'Content-Type':'application/x-www-form-urlencoded'}});
       if (!response.ok) {
-        button.disabled = false;
+        button.disabled = terminal;
         alert(await response.text() || 'Request failed');
       }
     } catch {
-      button.disabled = false;
+      button.disabled = terminal;
       alert('Connection lost. Check the job status before retrying.');
     }
   });

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 )
 
@@ -29,40 +30,51 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 		BaseData:     base(r, "Bookings"),
 		Eyebrow:      "Release schedule",
 		Heading:      "Booking requests",
-		Description:  "Target dates release one day earlier. Session warming begins at the preparation time.",
+		Description:  "Queue for the next release, or book available passes now with manual approval. Book now expires after 15 minutes.",
 		CreateURL:    "/bookings/new",
 		CreateLabel:  "New booking",
 		EmptyMessage: "Create a profile, then add a booking request.",
 	}
 	for _, booking := range bookings {
-		status, class := "Manual queue", ""
-		if booking.Enabled && booking.ScheduleEnabled {
-			status, class = "Scheduled", "ok"
-		} else if !booking.Enabled {
-			status = "Disabled"
-		}
-		url := fmt.Sprintf("/bookings/%d", booking.ID)
-		data.Cards = append(data.Cards, listCard{
-			Title:       booking.Name,
-			Subtitle:    names[booking.ProfileID],
-			Status:      status,
-			StatusClass: class,
-			URL:         url,
-			Fields: []labelValue{
-				{"Target date", booking.TargetDate},
-				{"Release", booking.ReleaseTime + " · " + booking.Timezone},
-				{"Confirmation", string(booking.ConfirmationMode)},
-				{"Pass order", strings.Join(passNames(booking.PassOrder()), " → ")},
-			},
-			Actions: []cardAction{{"Edit", url, ""}},
-			PostActions: []postAction{
-				{Label: "Auth check", URL: url + "/run", Fields: []hiddenField{{"command", "auth-check"}}},
-				{Label: "Dry run", URL: url + "/run", Fields: []hiddenField{{"command", "dry-run"}}},
-				{Label: "Queue booking", URL: url + "/run", Class: "primary", Fields: []hiddenField{{"command", "book"}}},
-			},
-		})
+		data.Cards = append(data.Cards, bookingCard(booking, names[booking.ProfileID], s.config.SchedulesEnabled))
 	}
 	s.render(w, http.StatusOK, "list", data)
+}
+
+func bookingCard(booking model.BookingRequest, profileName string, schedulesEnabled bool) listCard {
+	status, class := "Manual queue", ""
+	if !booking.Enabled {
+		status = "Disabled"
+	} else if booking.ScheduleEnabled {
+		status = "Schedule paused"
+		if schedulesEnabled {
+			status, class = "Scheduled", "ok"
+		}
+	}
+	url := fmt.Sprintf("/bookings/%d", booking.ID)
+	return listCard{
+		Title:       booking.Name,
+		Subtitle:    profileName,
+		Status:      status,
+		StatusClass: class,
+		URL:         url,
+		Fields: []labelValue{
+			{"Target date", booking.TargetDate},
+			{"Release", booking.ReleaseTime + " · " + booking.Timezone},
+			{"Release confirmation", string(booking.ConfirmationMode)},
+			{"Pass order", strings.Join(passNames(booking.PassOrder()), " → ")},
+		},
+		Actions: []cardAction{{"Edit", url, ""}},
+		PostActions: []postAction{
+			{Label: "Auth check", URL: url + "/run", Fields: []hiddenField{{"command", "auth-check"}}},
+			{Label: "Dry run", URL: url + "/run", Fields: []hiddenField{{"command", "dry-run"}}},
+			{Label: "Queue for release", URL: url + "/run", Fields: []hiddenField{{"command", "book"}}},
+			{
+				Label: "Book now · manual approval", URL: url + "/run", Class: "primary",
+				Fields: []hiddenField{{"command", "book"}, {"timing", "now"}},
+			},
+		},
+	}
 }
 
 func passNames(values []model.PassType) []string {
@@ -135,10 +147,28 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	if command == model.CommandDryRun {
 		mode = model.RunModeDryRun
 	}
-	job, err := s.engine.QueueBooking(r.Context(), requestAuth(r).Authenticated.User.ID, id, command, mode)
+	timing := r.Form.Get("timing")
+	if timing != "" && (timing != "now" || command != model.CommandBook) {
+		http.Error(w, "invalid booking timing", http.StatusBadRequest)
+		return
+	}
+	userID := requestAuth(r).Authenticated.User.ID
+	var job model.Job
+	var err error
+	if timing == "now" {
+		job, err = s.engine.QueueBookingNow(r.Context(), userID, id)
+	} else {
+		job, err = s.engine.QueueBooking(r.Context(), userID, id, command, mode)
+	}
 	if err != nil {
 		slog.Warn("booking job could not be queued", "booking_id", id, "command", command, "error", err)
-		http.Error(w, "job could not be queued", http.StatusConflict)
+		message := "job could not be queued"
+		if errors.Is(err, engine.ErrBookingNotReleased) {
+			message = "Passes for this date have not been released. Queue for release instead."
+		} else if errors.Is(err, engine.ErrBookingDatePassed) {
+			message = "Choose today or a future released date."
+		}
+		http.Error(w, message, http.StatusConflict)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d?ok=queued", job.ID), http.StatusSeeOther)
@@ -182,12 +212,24 @@ func (s *Server) bookingInput(r *http.Request, id int64) (model.BookingRequest, 
 		PollMinSeconds:            pollMin,
 		PollMaxSeconds:            pollMax,
 		ConfirmationMode:          model.RunMode(r.Form.Get("confirmation_mode")),
-		LoginProbeURL:             r.Form.Get("login_probe_url"),
 		AllDayPassURL:             r.Form.Get("all_day_pass_url"),
 		HalfDayPassURL:            r.Form.Get("half_day_pass_url"),
 		CheckAllDay:               checked(r, "check_all_day"),
 		CheckAfternoon:            checked(r, "check_afternoon"),
 		CheckMorning:              checked(r, "check_morning"),
+	}
+	for slot := 1; slot <= 3; slot++ {
+		if r.Form.Has(fmt.Sprintf("pass_priority_%d", slot)) {
+			request.PreferredPasses = []model.PassType{}
+			break
+		}
+	}
+	if request.PreferredPasses != nil {
+		for slot := 1; slot <= 3; slot++ {
+			if value := r.Form.Get(fmt.Sprintf("pass_priority_%d", slot)); value != "" {
+				request.PreferredPasses = append(request.PreferredPasses, model.PassType(value))
+			}
+		}
 	}
 	return request, request.ValidateForOrigins(s.config.YodelOrigins)
 }
@@ -219,23 +261,49 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		PollMinSeconds:            1.4,
 		PollMaxSeconds:            3.6,
 		ConfirmationMode:          model.RunModeManual,
-		LoginProbeURL:             yodelBaseURL,
 		AllDayPassURL:             yodelBaseURL + "/All-Day-Pass",
 		HalfDayPassURL:            yodelBaseURL + "/Half-Day-Pass",
-		CheckAllDay:               true,
-		CheckAfternoon:            true,
-		CheckMorning:              true,
+		PreferredPasses:           []model.PassType{model.PassAllDay, model.PassAfternoon, model.PassMorning},
 	}
 	if booking != nil {
 		value = *booking
+	} else if r.Method == http.MethodGet {
+		selectedID := parseInt64(r.URL.Query().Get("profile_id"))
+		for _, profile := range profiles {
+			if profile.Enabled && profile.ID == selectedID {
+				value.ProfileID = selectedID
+				break
+			}
+		}
 	}
 	if r.Method == http.MethodPost {
 		parsed, _ := s.bookingInput(r, value.ID)
 		value = parsed
 	}
-	profileOptions := make([]selectOption, 0, len(profiles))
+	profileOptions := []selectOption{{Value: "", Label: "Choose a profile", Selected: value.ProfileID == 0}}
 	for _, profile := range profiles {
+		if !profile.Enabled && (booking == nil || profile.ID != booking.ProfileID) {
+			continue
+		}
 		profileOptions = append(profileOptions, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name, Selected: profile.ID == value.ProfileID})
+	}
+	passFields := make([]formField, 3)
+	order := value.PassOrder()
+	for i, label := range []string{"First choice", "Second choice", "Third choice"} {
+		selected := ""
+		if i < len(order) {
+			selected = string(order[i])
+		}
+		options := []selectOption{
+			{Value: string(model.PassAllDay), Label: "All-day"},
+			{Value: string(model.PassAfternoon), Label: "Afternoon"},
+			{Value: string(model.PassMorning), Label: "Morning"},
+			{Value: "", Label: "None"},
+		}
+		for j := range options {
+			options[j].Selected = options[j].Value == selected
+		}
+		passFields[i] = formField{Name: fmt.Sprintf("pass_priority_%d", i+1), Label: label, Type: "select", Options: options}
 	}
 	actionURL, heading, submit := "/bookings/new", "New booking request", "Create booking"
 	if !creating {
@@ -277,19 +345,14 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		{
 			Title: "Yodel URLs",
 			Fields: []formField{
-				{Name: "login_probe_url", Label: "Login probe URL", Type: "url", Value: value.LoginProbeURL, Required: true},
 				{Name: "all_day_pass_url", Label: "All-day pass URL", Type: "url", Value: value.AllDayPassURL},
 				{Name: "half_day_pass_url", Label: "Half-day pass URL", Type: "url", Value: value.HalfDayPassURL},
 			},
 		},
 		{
-			Title: "Pass order",
-			Help:  "Selection order is fixed: all-day, then afternoon, then morning.",
-			Fields: []formField{
-				{Name: "check_all_day", Label: "All-day", Type: "checkbox", Checked: value.CheckAllDay},
-				{Name: "check_afternoon", Label: "Afternoon", Type: "checkbox", Checked: value.CheckAfternoon},
-				{Name: "check_morning", Label: "Morning", Type: "checkbox", Checked: value.CheckMorning},
-			},
+			Title:  "Pass order",
+			Help:   "Try choices in order. Choose None to skip a slot; select each pass only once.",
+			Fields: passFields,
 		},
 		{
 			Title: "Timing",
@@ -346,6 +409,25 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				},
 			},
 		},
+	}
+	if r.Method == http.MethodPost {
+		// Render submitted values even when parsing an earlier numeric field
+		// failed. In particular, keep None gaps and duplicate choices visible.
+		for i := range data.Sections {
+			for j := range data.Sections[i].Fields {
+				field := &data.Sections[i].Fields[j]
+				if field.Type == "select" {
+					selected := r.Form.Get(field.Name)
+					for k := range field.Options {
+						field.Options[k].Selected = field.Options[k].Value == selected
+					}
+				} else if field.Type == "checkbox" {
+					field.Checked = checked(r, field.Name)
+				} else {
+					field.Value = r.Form.Get(field.Name)
+				}
+			}
+		}
 	}
 	s.render(w, formStatus(formError), "form", data)
 }

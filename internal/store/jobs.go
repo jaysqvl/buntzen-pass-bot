@@ -372,7 +372,7 @@ func pruneJobHistory(
 
 const jobColumns = `id, user_id, booking_request_id, profile_id, otp_source_id, command, run_mode,
 	status, due_at, expires_at, dedup_key, worker_owner, cancel_requested, message, exit_code, confirmation_started_at,
-	created_at, updated_at, started_at, finished_at`
+	created_at, updated_at, started_at, finished_at, run_immediately`
 
 func scanJob(scanner rowScanner) (model.Job, error) {
 	var job model.Job
@@ -383,7 +383,7 @@ func scanJob(scanner rowScanner) (model.Job, error) {
 	if err := scanner.Scan(&job.ID, &job.UserID, &bookingID, &job.ProfileID, &job.OTPSourceID,
 		&job.Command, &job.RunMode, &job.Status, &dueAt, &expiresAt, &job.DedupKey, &job.WorkerOwner,
 		&job.CancelRequested, &job.Message, &exitCode, &confirmationAt, &createdAt, &updatedAt,
-		&startedAt, &finishedAt); errors.Is(err, sql.ErrNoRows) {
+		&startedAt, &finishedAt, &job.RunImmediately); errors.Is(err, sql.ErrNoRows) {
 		return model.Job{}, ErrNotFound
 	} else if err != nil {
 		return model.Job{}, fmt.Errorf("scan job: %w", err)

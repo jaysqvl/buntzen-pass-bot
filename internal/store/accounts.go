@@ -31,6 +31,42 @@ type UserUpdateInput struct {
 	Status   model.UserStatus
 }
 
+// ChangeUsername confirms the current password and keeps the account ID and
+// existing sessions. A concurrent password reset or disable makes the
+// confirmation stale, so the conditional update cannot overwrite that change.
+func (s *Store) ChangeUsername(ctx context.Context, id int64, currentPassword, username string) (bool, error) {
+	user, passwordHash, err := getUserWith(ctx, s.db, "id = ?", id)
+	if err != nil {
+		return false, err
+	}
+	if user.Status != model.UserActive || user.MustChangePassword {
+		return false, nil
+	}
+	ok, err := auth.VerifyPassword(passwordHash, currentPassword)
+	if err != nil {
+		return false, fmt.Errorf("verify current password: %w", err)
+	}
+	if !ok {
+		return false, nil
+	}
+	display, normalized, err := normalizeUsername(username)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE users SET username = ?, username_normalized = ?, updated_at = ?
+		WHERE id = ? AND status = 'active' AND must_change_password = 0 AND password_hash = ?
+	`, display, normalized, formatTime(s.now()), id, passwordHash)
+	if err != nil {
+		return false, mapUserWriteError(err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read username change result: %w", err)
+	}
+	return count > 0, nil
+}
+
 func (s *Store) HasUsers(ctx context.Context) (bool, error) {
 	var exists bool
 	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users)").Scan(&exists); err != nil {

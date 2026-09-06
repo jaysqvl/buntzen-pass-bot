@@ -17,6 +17,7 @@ type postAction struct {
 }
 type listCard struct {
 	Title, Subtitle, Status, StatusClass, URL string
+	Description                               string
 	Fields                                    []labelValue
 	Actions                                   []cardAction
 	PostActions                               []postAction

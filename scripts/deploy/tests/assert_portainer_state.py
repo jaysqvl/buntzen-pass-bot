@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mock_portainer import ORIGINAL_ENV, ROLLBACK_COMPOSE
+from mock_portainer import ORIGINAL_ENV, ROLLBACK_COMPOSE, SCENARIOS
 
 
 def check_update(payload: dict[str, Any], compose: str, image: str) -> None:
@@ -38,17 +38,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "scenario",
-        choices=(
-            "success",
-            "rollback",
-            "rollback-failure",
-            "update-rejected",
-            "status-query-failure",
-            "status-query-malformed",
-            "identity-mismatch",
-            "git-backed",
-            "preflight-unhealthy",
-        ),
+        choices=SCENARIOS,
     )
     parser.add_argument("record", type=Path)
     parser.add_argument("compose", type=Path)
@@ -57,6 +47,8 @@ def main() -> None:
 
     state = json.loads(args.record.read_text(encoding="utf-8"))
     puts = state["puts"]
+    assert state["overlap_attempts"] == 0, state
+    assert all(item["status"] == 1 for item in state["health_observations"]), state
     if args.scenario in {"identity-mismatch", "git-backed", "preflight-unhealthy"}:
         assert puts == [], puts
         return
@@ -64,9 +56,28 @@ def main() -> None:
     assert len(puts) >= 1, puts
     check_update(puts[0], args.compose.read_text(encoding="utf-8"), args.image)
 
-    if args.scenario == "success":
+    if args.scenario in {"success", "async-success"}:
         assert len(puts) == 1, puts
         assert state["health_requests"] == 2, state
+        if args.scenario == "async-success":
+            assert [entry["status"] for entry in state["status_history"]] == [
+                3,
+                3,
+                1,
+            ], state
+        return
+
+    if args.scenario in {
+        "async-timeout",
+        "unexpected-status",
+        "status-query-persistent",
+        "status-request-timeout",
+    }:
+        assert len(puts) == 1, puts
+        assert state["health_requests"] == 1, state
+        if args.scenario == "async-timeout":
+            assert len(state["status_history"]) == 6, state
+            assert all(entry["status"] == 3 for entry in state["status_history"]), state
         return
 
     assert len(puts) == 2, puts
@@ -83,10 +94,23 @@ def main() -> None:
         "update-rejected",
         "status-query-failure",
         "status-query-malformed",
+        "async-failure",
+        "update-ambiguous",
     }:
         assert state["health_requests"] == 2, state
+    elif args.scenario == "async-rollback-timeout":
+        assert state["health_requests"] == 1, state
+        rollback_states = [
+            entry["status"] for entry in state["status_history"] if entry["puts"] == 2
+        ]
+        assert rollback_states == [3, 3, 3], state
     else:
         assert state["health_requests"] == 4, state
+    if args.scenario in {"async-failure", "update-ambiguous"}:
+        rollback_states = [
+            entry["status"] for entry in state["status_history"] if entry["puts"] == 2
+        ]
+        assert rollback_states == [3, 3, 1], state
 
 
 if __name__ == "__main__":

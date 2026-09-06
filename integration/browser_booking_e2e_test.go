@@ -270,7 +270,10 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 				durableEvents = append(durableEvents, kind+":"+message)
 				outputMu.Unlock()
 			},
-			AwaitingApproval: func(string) error {
+			AwaitingApproval: func(_ string, pass model.PassType) error {
+				if pass != model.PassAllDay {
+					return fmt.Errorf("unexpected selected pass for approval: %s", pass)
+				}
 				approvalRequests.Add(1)
 				approvalReady <- struct{}{}
 				return nil
