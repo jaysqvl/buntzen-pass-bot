@@ -9,7 +9,7 @@ Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking pass
 
 - Scheduled and on-demand bookings with dry-run, manual approval, and automatic confirmation modes.
 - Configurable pass priority and an immediate, manually approved checkout for passes already released.
-- Administrator and member accounts with isolated OTP sources, Yodel profiles, requests, and job history.
+- Administrator and member accounts with isolated OTP sources, Yodel profiles, requests, and job history. Change your own username or password from Account.
 - Read-only inbound OTP retrieval through either BlueBubbles or Twilio, with no provider fallback or outbound messaging.
 - Durable jobs, restart recovery, and an `outcome_unknown` state that prevents unsafe retries after an ambiguous confirmation.
 
@@ -70,8 +70,8 @@ Keep `SCHEDULES_ENABLED=false` while completing these steps:
 6. For already released passes, choose **Book now · manual approval**. Approve only the intended reservation, then verify the issued pass in Yodel. See [Testing a live booking](docs/live-testing.md) for timing, expiry, cancellation and retry behavior.
 7. Test **Queue for release** separately before relying on release timing or automatic confirmation. Verify the OTP provider still works after its host restarts before enabling unattended schedules.
 
-Home shows OTP sources first and profiles second, with their links and setup
-order. Booking dates, pass URLs and priorities stay on the separate Bookings
+The **Setup** tab opens Home with OTP sources first and profiles second,
+with their links and setup order. Booking dates, pass URLs and priorities stay on the separate Bookings
 page; the login URL belongs to the profile.
 
 Before a booking, the Yodel cart must be empty. The bot checks that adding the

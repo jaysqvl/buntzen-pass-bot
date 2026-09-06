@@ -15,6 +15,7 @@ import (
 type accountPageData struct {
 	BaseData
 	Error            string
+	FormUsername     string
 	PasswordRequired bool
 }
 
@@ -28,23 +29,11 @@ func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
 		s.renderAccount(w, r, "The new passwords do not match.")
 		return
 	}
-	userID := requestAuth(r).Authenticated.User.ID
-	release := s.tryPasswordChange(userID)
+	userID, rateKey, release := s.beginAccountChange(w, r)
 	if release == nil {
-		http.Error(w, "another password change is already running for this account", http.StatusTooManyRequests)
 		return
 	}
 	defer release()
-	rateKey := loginRateKey("password-change", strconv.FormatInt(userID, 10))
-	allowed, _, err := s.store.LoginRateLimit(r.Context(), rateKey, time.Now().UTC(), loginWindow, passwordLimit)
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	if !allowed {
-		http.Error(w, "too many password attempts; wait before trying again", http.StatusTooManyRequests)
-		return
-	}
 	changed, err := s.store.ChangeUserPassword(r.Context(), userID, r.Form.Get("current_password"), password)
 	if recordErr := s.store.RecordLoginAttempt(r.Context(), rateKey, err == nil && changed); recordErr != nil {
 		s.internal(w)
@@ -66,28 +55,78 @@ func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login?ok=password-changed", http.StatusSeeOther)
 }
 
-func (s *Server) tryPasswordChange(userID int64) func() {
-	s.passwordMu.Lock()
-	defer s.passwordMu.Unlock()
+func (s *Server) accountUsername(w http.ResponseWriter, r *http.Request) {
+	userID, rateKey, release := s.beginAccountChange(w, r)
+	if release == nil {
+		return
+	}
+	defer release()
+	changed, err := s.store.ChangeUsername(r.Context(), userID, r.Form.Get("current_password"), r.Form.Get("username"))
+	if recordErr := s.store.RecordLoginAttempt(r.Context(), rateKey, err == nil && changed); recordErr != nil {
+		s.internal(w)
+		return
+	}
+	if err != nil {
+		s.renderAccount(w, r, accountFormError(err))
+		return
+	}
+	if !changed {
+		s.renderAccount(w, r, "The current password was not accepted.")
+		return
+	}
+	http.Redirect(w, r, "/account?ok=username-changed", http.StatusSeeOther)
+}
+
+// Both self-service changes verify a password, so they share admission and
+// attempt limits rather than providing two independent password-guess budgets.
+func (s *Server) beginAccountChange(w http.ResponseWriter, r *http.Request) (int64, string, func()) {
+	userID := requestAuth(r).Authenticated.User.ID
+	release := s.tryAccountChange(userID)
+	if release == nil {
+		http.Error(w, "another account change is already running for this account", http.StatusTooManyRequests)
+		return 0, "", nil
+	}
+	rateKey := loginRateKey("password-change", strconv.FormatInt(userID, 10))
+	allowed, _, err := s.store.LoginRateLimit(r.Context(), rateKey, time.Now().UTC(), loginWindow, passwordLimit)
+	if err != nil || !allowed {
+		release()
+		if err != nil {
+			s.internal(w)
+		} else {
+			http.Error(w, "too many password attempts; wait before trying again", http.StatusTooManyRequests)
+		}
+		return 0, "", nil
+	}
+	return userID, rateKey, release
+}
+
+func (s *Server) tryAccountChange(userID int64) func() {
+	s.accountChangeMu.Lock()
+	defer s.accountChangeMu.Unlock()
 	if userID <= 0 {
 		return nil
 	}
-	if _, busy := s.passwordBusy[userID]; busy {
+	if _, busy := s.accountChangeBusy[userID]; busy {
 		return nil
 	}
-	s.passwordBusy[userID] = struct{}{}
+	s.accountChangeBusy[userID] = struct{}{}
 	return func() {
-		s.passwordMu.Lock()
-		delete(s.passwordBusy, userID)
-		s.passwordMu.Unlock()
+		s.accountChangeMu.Lock()
+		delete(s.accountChangeBusy, userID)
+		s.accountChangeMu.Unlock()
 	}
 }
 
 func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, formError string) {
 	user := requestAuth(r).Authenticated.User
+	username := user.Username
+	if r.Method == http.MethodPost && r.URL.Path == "/account/username" {
+		username = strings.TrimSpace(r.Form.Get("username"))
+	}
 	s.render(w, formStatus(formError), "account", accountPageData{
 		BaseData:         base(r, "Account"),
 		Error:            formError,
+		FormUsername:     username,
 		PasswordRequired: user.MustChangePassword || r.URL.Query().Get("password") == "required",
 	})
 }

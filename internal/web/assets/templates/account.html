@@ -1,9 +1,23 @@
 {{define "content"}}
 <section class="section-head">
-  <div><p class="eyebrow">Account security</p><h1>{{.Username}}</h1><p>Change the password for your signed-in account.</p></div>
+  <div><p class="eyebrow">Account security</p><h1>{{.Username}}</h1><p>Manage the username and password for your signed-in account.</p></div>
 </section>
 {{if .PasswordRequired}}<div class="flash">Set a new password before continuing.</div>{{end}}
 {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
+{{if not .PasswordRequired}}
+<form method="post" action="/account/username" class="form-card account-form" autocomplete="on">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <fieldset>
+    <legend>Change username</legend>
+    <p class="field-help">Use the new username the next time you sign in. Your profiles, bookings, and current sessions stay with this account.</p>
+    <div class="form-grid">
+      <label><span>Username</span><input name="username" value="{{.FormUsername}}" required maxlength="128" autocomplete="username"><small>Letters, numbers, dot, underscore, @, +, and hyphen. Usernames are not case-sensitive.</small></label>
+      <label><span>Current password</span><input type="password" name="current_password" required autocomplete="current-password"></label>
+    </div>
+  </fieldset>
+  <div class="actions"><button class="primary" type="submit">Change username</button></div>
+</form>
+{{end}}
 <form method="post" action="/account/password" class="form-card account-form" autocomplete="on">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <fieldset>
