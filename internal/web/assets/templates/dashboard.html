@@ -32,7 +32,7 @@
   <p class="field-help">Start with a Dry run. To check available passes at checkout, use Book now with manual approval. The final reservation waits for your approval.</p>
   <div class="actions"><a class="button primary" href="/bookings">Open Bookings{{if .BookingCount}} · {{.BookingCount}}{{end}}</a>{{if .Profiles}}<a class="button" href="/bookings/new">New booking</a>{{end}}</div>
 </section>
-{{if not .SchedulesEnabled}}<p class="setup-note">Automatic schedules are off. Manual tests and bookings remain available.</p>{{end}}
+{{if not .SchedulesEnabled}}<p class="setup-note">{{.AutoQueueNotice}}</p>{{end}}
 <section class="section-head"><div><p class="eyebrow">Recent activity</p><h2>Jobs</h2></div><a href="/jobs">View all</a></section>
 {{template "jobs_table" .}}
 {{end}}

@@ -43,7 +43,7 @@ func TestHomeShowsSetupOrderAndOnlyOwnedLinkedResources(t *testing.T) {
 	if sourceSection < 0 || profileSection <= sourceSection {
 		t.Fatal("home does not show OTP sources before profiles")
 	}
-	for _, text := range []string{"Owned inbox", "Owned vehicle", "Linked OTP source", "3. Pair with Yodel", "4. Booking request", "Automatic schedules are off", `href="/bookings/new?profile_id=1"`} {
+	for _, text := range []string{"Owned inbox", "Owned vehicle", "Linked OTP source", "3. Pair with Yodel", "4. Booking request", "Already queued jobs remain scheduled", `href="/bookings/new?profile_id=1"`} {
 		if !strings.Contains(body, text) {
 			t.Fatalf("home missing %q", text)
 		}

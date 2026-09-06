@@ -3,6 +3,7 @@
   <div><p class="eyebrow">{{.Eyebrow}}</p><h1>{{.Heading}}</h1><p>{{.Description}}</p></div>
   {{if .CreateURL}}<a class="button primary" href="{{.CreateURL}}">{{.CreateLabel}}</a>{{end}}
 </section>
+{{if .Notice}}<p class="flash">{{.Notice}}</p>{{end}}
 <div class="card-grid">
 {{range .Cards}}
   <article class="card">

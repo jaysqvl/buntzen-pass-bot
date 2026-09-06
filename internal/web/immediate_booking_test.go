@@ -70,7 +70,7 @@ func TestBookNowHTTPForcesManualApprovalAndRejectsDuplicate(t *testing.T) {
 	}
 }
 
-func TestBookNowFormsShowPausedScheduleAndOwnedProfilePreselection(t *testing.T) {
+func TestBookNowFormsExplainAutoQueueingAndOwnedProfilePreselection(t *testing.T) {
 	fixture := newWebFixture(t)
 	profile, booking := createImmediateWebBooking(t, fixture, fixture.admin.ID, "selected", true)
 	disabled, _ := createImmediateWebBooking(t, fixture, fixture.admin.ID, "disabled", false)
@@ -81,7 +81,7 @@ func TestBookNowFormsShowPausedScheduleAndOwnedProfilePreselection(t *testing.T)
 	foreign, _ := createImmediateWebBooking(t, fixture, member.ID, "foreign", true)
 	cookies := loginCookies(t, fixture)
 	page := serveForm(fixture, http.MethodGet, "/bookings", cookies, nil)
-	for _, want := range []string{"Schedule paused", "Book now · manual approval", `name="timing" value="now"`, `name="command" value="book"`, fmt.Sprintf(`action="/bookings/%d/run"`, booking.ID)} {
+	for _, want := range []string{"Auto-queueing is off for this server", "Already queued jobs remain scheduled", "No booking queued", "Book now · manual approval", `name="timing" value="now"`, `name="command" value="book"`, fmt.Sprintf(`action="/bookings/%d/run"`, booking.ID)} {
 		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), want) {
 			t.Fatalf("booking page missing %q: %d body=%q", want, page.Code, page.Body.String())
 		}

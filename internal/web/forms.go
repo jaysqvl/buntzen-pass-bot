@@ -25,6 +25,7 @@ type listCard struct {
 type listData struct {
 	BaseData
 	Eyebrow, Heading, Description, CreateURL, CreateLabel, EmptyMessage string
+	Notice                                                              string
 	Cards                                                               []listCard
 }
 

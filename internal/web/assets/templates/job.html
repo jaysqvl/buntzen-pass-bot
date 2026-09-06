@@ -14,11 +14,11 @@
     <button id="cancel-job" class="danger" data-decision="cancel-job" {{if not .Job.CanCancel}}hidden disabled{{end}}>Cancel job</button>
   </article>
   <article class="card"><h2>Details</h2><dl>
-    <div><dt>Mode</dt><dd>{{.Job.Mode}}</dd></div>
+    <div><dt>Confirmation</dt><dd>{{.Job.Mode}}</dd></div>
     {{if .Job.TimingLabel}}<div><dt>Timing</dt><dd>{{.Job.TimingLabel}}</dd></div>{{end}}
     {{if .Job.TimingLabel}}<div><dt>Expires</dt><dd>{{.Job.ExpiresLabel}}</dd></div>{{end}}
-    <div><dt>Status</dt><dd id="job-status">{{.Job.Status}}</dd></div>
-    <div><dt>Due</dt><dd>{{.Job.DueLabel}}</dd></div>
+    <div><dt>Status</dt><dd id="job-status">{{.Job.StatusLabel}}</dd></div>
+    <div><dt>Earliest start</dt><dd>{{.Job.DueLabel}}</dd></div>
     <div><dt>Started</dt><dd id="job-started">{{.Job.StartedLabel}}</dd></div>
     <div><dt>Finished</dt><dd id="job-finished">{{.Job.FinishedLabel}}</dd></div>
     <div><dt>Final confirmation</dt><dd id="job-confirmation">{{.Job.ConfirmationLabel}}</dd></div>
