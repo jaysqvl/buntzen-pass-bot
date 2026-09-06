@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,36 @@ ROLLBACK_COMPOSE = (
 )
 
 
+SCENARIOS = (
+    "success",
+    "rollback",
+    "rollback-failure",
+    "update-rejected",
+    "status-query-failure",
+    "status-query-malformed",
+    "identity-mismatch",
+    "git-backed",
+    "preflight-unhealthy",
+    "async-success",
+    "async-failure",
+    "async-timeout",
+    "async-rollback-timeout",
+    "update-ambiguous",
+    "unexpected-status",
+    "status-query-persistent",
+    "status-request-timeout",
+)
+ASYNC_SCENARIOS = {
+    "async-success",
+    "async-failure",
+    "async-timeout",
+    "async-rollback-timeout",
+    "update-ambiguous",
+    "status-query-persistent",
+    "status-request-timeout",
+}
+
+
 class State:
     def __init__(self, scenario: str, record_file: Path) -> None:
         self.scenario = scenario
@@ -39,7 +70,42 @@ class State:
         self.api_requests: list[dict[str, Any]] = []
         self.health_requests = 0
         self.failed_status_once = False
+        self.current_status = 1
+        self.phase_reads = 0
+        self.status_history: list[dict[str, int]] = []
+        self.health_observations: list[dict[str, int]] = []
+        self.overlap_attempts = 0
         self.write()
+
+    def next_status(self) -> int:
+        puts = len(self.puts)
+        if puts == 0:
+            return 1
+        self.phase_reads += 1
+        status = 1
+        if self.scenario == "async-success" and puts == 1:
+            status = 3 if self.phase_reads < 3 else 1
+        elif self.scenario in {
+            "async-failure",
+            "async-rollback-timeout",
+            "update-ambiguous",
+        }:
+            if puts == 1:
+                status = 3 if self.phase_reads < 3 else 4
+            elif self.scenario == "async-rollback-timeout":
+                status = 3
+            else:
+                status = 3 if self.phase_reads < 3 else 1
+        elif self.scenario == "async-timeout":
+            status = 3
+        elif self.scenario == "unexpected-status":
+            status = 99
+        elif puts >= 2 and self.scenario == "rollback-failure":
+            status = 2
+        self.current_status = status
+        self.status_history.append({"puts": puts, "status": status})
+        self.write()
+        return status
 
     def write(self) -> None:
         value = {
@@ -48,6 +114,9 @@ class State:
             "api_requests": self.api_requests,
             "health_requests": self.health_requests,
             "failed_status_once": self.failed_status_once,
+            "status_history": self.status_history,
+            "health_observations": self.health_observations,
+            "overlap_attempts": self.overlap_attempts,
         }
         temporary = self.record_file.with_suffix(".tmp")
         temporary.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
@@ -66,7 +135,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass  # A deadline test intentionally stops reading a slow response.
 
     def _text(self, status: int, value: str) -> None:
         body = value.encode("utf-8")
@@ -74,7 +146,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass  # A deadline test intentionally stops reading a slow response.
 
     def _record_api(self, parsed: Any) -> bool:
         self.server.state.api_requests.append(
@@ -89,23 +164,32 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urlparse(self.path)
         if parsed.path == "/healthz":
-            self.server.state.health_requests += 1
-            self.server.state.write()
-            puts = len(self.server.state.puts)
-            if puts == 0 and self.server.state.scenario != "preflight-unhealthy":
-                self._text(200, "ok\n")
-            elif self.server.state.scenario == "success" and puts >= 1:
-                self._text(200, "ok\n")
-            elif self.server.state.scenario == "rollback" and puts >= 2:
-                self._text(200, "ok\n")
-            elif self.server.state.scenario == "update-rejected" and puts >= 2:
-                self._text(200, "ok\n")
-            elif self.server.state.scenario == "status-query-failure" and puts >= 2:
-                self._text(200, "ok\n")
-            elif self.server.state.scenario == "status-query-malformed" and puts >= 2:
-                self._text(200, "ok\n")
-            else:
-                self._text(503, "not ready\n")
+            state = self.server.state
+            state.health_requests += 1
+            puts = len(state.puts)
+            state.health_observations.append(
+                {"puts": puts, "status": state.current_status}
+            )
+            state.write()
+            # While an async update runs, its old container can still answer ok.
+            healthy = (
+                (puts == 0 and state.scenario != "preflight-unhealthy")
+                or state.scenario
+                in {"success", "async-success", "async-timeout", "unexpected-status"}
+                or (
+                    puts >= 2
+                    and state.scenario
+                    in {
+                        "rollback",
+                        "update-rejected",
+                        "status-query-failure",
+                        "status-query-malformed",
+                        "async-failure",
+                        "update-ambiguous",
+                    }
+                )
+            )
+            self._text(200 if healthy else 503, "ok\n" if healthy else "not ready\n")
             return
 
         if not self._record_api(parsed):
@@ -115,6 +199,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path != "/api/stacks/2":
             self._json(404, {"message": "not found"})
+            return
+
+        if self.server.state.puts and self.server.state.scenario in {
+            "status-query-persistent",
+            "status-request-timeout",
+        }:
+            if self.server.state.scenario == "status-request-timeout":
+                time.sleep(3)
+            self._json(500, {"message": "synthetic unavailable status"})
             return
 
         if (
@@ -136,11 +229,7 @@ class Handler(BaseHTTPRequestHandler):
             self._text(200, '{"Status":')
             return
 
-        status = 1
-        if self.server.state.puts:
-            puts = len(self.server.state.puts)
-            if puts >= 2 and self.server.state.scenario == "rollback-failure":
-                status = 2
+        status = self.server.state.next_status()
 
         name = (
             "wrong-stack"
@@ -187,15 +276,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"message": "invalid JSON"})
             return
 
+        if self.server.state.current_status == 3:
+            self.server.state.overlap_attempts += 1
+            self.server.state.write()
+            self._json(409, {"message": "stack is already deploying"})
+            return
+        self.server.state.phase_reads = 0
+        self.server.state.current_status = (
+            3 if self.server.state.scenario in ASYNC_SCENARIOS else 1
+        )
         self.server.state.puts.append(payload)
         self.server.state.write()
         if (
-            self.server.state.scenario == "update-rejected"
+            self.server.state.scenario in {"update-rejected", "update-ambiguous"}
             and len(self.server.state.puts) == 1
         ):
             self._json(500, {"message": "synthetic deployment failure"})
             return
-        self._json(200, {"Status": 1})
+        self._json(200, {"Status": self.server.state.current_status})
 
 
 class MockServer(ThreadingHTTPServer):
@@ -208,17 +306,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--scenario",
-        choices=(
-            "success",
-            "rollback",
-            "rollback-failure",
-            "update-rejected",
-            "status-query-failure",
-            "status-query-malformed",
-            "identity-mismatch",
-            "git-backed",
-            "preflight-unhealthy",
-        ),
+        choices=SCENARIOS,
         required=True,
     )
     parser.add_argument("--port-file", type=Path, required=True)

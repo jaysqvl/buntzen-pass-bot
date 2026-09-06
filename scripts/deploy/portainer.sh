@@ -67,13 +67,14 @@ api_request_raw() {
   local output="$3"
   local payload="${4:-}"
   local status
+  local timeout="${5:-180}"
   local -a args=(
     --silent
     --show-error
     --noproxy '*'
     --proto '=http,https'
     --connect-timeout 10
-    --max-time 180
+    --max-time "$timeout"
     --max-filesize 2097152
     --request "$method"
     --header "X-API-Key: $PORTAINER_API_KEY"
@@ -101,13 +102,14 @@ api_request() {
 
 health_request() {
   local output="$1"
+  local timeout="${2:-5}"
   curl \
     --silent \
     --show-error \
     --noproxy '*' \
     --proto '=http,https' \
     --connect-timeout 3 \
-    --max-time 5 \
+    --max-time "$timeout" \
     --max-filesize 64 \
     --output "$output" \
     --fail \
@@ -165,40 +167,82 @@ jq -n \
     }
   ' >"$deploy_tmp/rollback.json"
 
+# Portainer 2.45 uses Active=1, Inactive=2, Deploying=3, Error=4.
+# PUT returns before its asynchronous deployment ends. Poll within one shared
+# time budget, including HTTP requests, and never treat an old healthy container
+# as proof that a stack still marked Deploying has completed.
+wait_failure=''
+wait_for_stack() {
+  local requirement="$1"
+  local phase="$2"
+  local deadline=$((SECONDS + health_attempts * (health_interval > 0 ? health_interval : 1)))
+  local remaining status_value='' health_timeout pause
+  local stack_status="$deploy_tmp/$phase-stack.json"
+  local health_body="$deploy_tmp/$phase-health.txt"
+
+  wait_failure='stack verification deadline expired'
+  for attempt in $(seq 1 "$health_attempts"); do
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || break
+    if ! api_request_raw GET "/api/stacks/$PORTAINER_STACK_ID" "$stack_status" "" "$remaining"; then
+      wait_failure="stack status verification failed: $api_request_error"
+      return 1
+    fi
+    if ! status_value="$(read_stack_status "$stack_status")"; then
+      wait_failure='stack status verification returned a malformed response'
+      return 1
+    fi
+    case "$status_value" in
+      3)
+        wait_failure='the stack is still deploying after the verification deadline'
+        ;;
+      1|2|4)
+        if [[ "$requirement" == 'settled' ]]; then
+          return 0
+        fi
+        if [[ "$status_value" != '1' ]]; then
+          wait_failure="stack deployment ended with status $status_value"
+          return 1
+        fi
+        remaining=$((deadline - SECONDS))
+        ((remaining > 0)) || break
+        health_timeout="$remaining"
+        ((health_timeout <= 5)) || health_timeout=5
+        if health_request "$health_body" "$health_timeout"; then
+          return 0
+        fi
+        wait_failure='health check failed after deployment'
+        ;;
+      *)
+        wait_failure='stack status verification returned an unsupported status'
+        return 1
+        ;;
+    esac
+    remaining=$((deadline - SECONDS))
+    ((attempt < health_attempts && remaining > 0)) || break
+    pause="$health_interval"
+    ((pause <= remaining)) || pause="$remaining"
+    sleep "$pause"
+  done
+  return 1
+}
+
 rollback_and_fail() {
   local cause="$1"
-  local rollback_ok=false
-  local stack_status status_value health_body
 
+  # A failed/ambiguous update response does not mean the deployment stopped.
+  # Re-establish a known settled state before issuing any compensating PUT.
+  if ! wait_for_stack settled rollback-preflight; then
+    die "$cause; rollback was not attempted because $wait_failure; inspect the stack in Portainer before retrying"
+  fi
   printf '%s; restoring the previous Portainer stack revision.\n' "$cause" >&2
   if ! api_request_raw PUT "/api/stacks/$PORTAINER_STACK_ID?endpointId=$PORTAINER_ENDPOINT_ID" "$deploy_tmp/rollback-response.json" "$deploy_tmp/rollback.json"; then
     die "$cause and the rollback request failed: $api_request_error"
   fi
-
-  for attempt in $(seq 1 "$health_attempts"); do
-    stack_status="$deploy_tmp/rollback-stack-status-$attempt.json"
-    if ! api_request_raw GET "/api/stacks/$PORTAINER_STACK_ID" "$stack_status"; then
-      die "$cause and rollback verification failed: $api_request_error"
-    fi
-    if ! status_value="$(read_stack_status "$stack_status")"; then
-      die "$cause and rollback verification returned a malformed stack status"
-    fi
-    if [[ "$status_value" != "1" ]]; then
-      break
-    fi
-
-    health_body="$deploy_tmp/rollback-health-$attempt.txt"
-    if health_request "$health_body"; then
-      rollback_ok=true
-      break
-    fi
-    sleep "$health_interval"
-  done
-
-  if [[ "$rollback_ok" == "true" ]]; then
+  if wait_for_stack healthy rollback; then
     die "$cause; rollback was verified healthy"
   fi
-  die "$cause and the rollback did not become healthy"
+  die "$cause and rollback verification failed: $wait_failure; inspect the stack in Portainer before retrying"
 }
 
 printf 'Updating the protected Buntzen stack in place with an immutable image digest.\n'
@@ -206,29 +250,8 @@ if ! api_request_raw PUT "/api/stacks/$PORTAINER_STACK_ID?endpointId=$PORTAINER_
   rollback_and_fail "stack update failed: $api_request_error"
 fi
 
-health_ok=false
-for attempt in $(seq 1 "$health_attempts"); do
-  stack_status="$deploy_tmp/stack-status-$attempt.json"
-  if ! api_request_raw GET "/api/stacks/$PORTAINER_STACK_ID" "$stack_status"; then
-    rollback_and_fail "stack status verification failed: $api_request_error"
-  fi
-  if ! status_value="$(read_stack_status "$stack_status")"; then
-    rollback_and_fail "stack status verification returned a malformed response"
-  fi
-  if [[ "$status_value" != "1" ]]; then
-    break
-  fi
-
-  health_body="$deploy_tmp/health-$attempt.txt"
-  if health_request "$health_body"; then
-    health_ok=true
-    break
-  fi
-  sleep "$health_interval"
-done
-
-if [[ "$health_ok" != "true" ]]; then
-  rollback_and_fail "health check failed after deployment"
+if ! wait_for_stack healthy deployment; then
+  rollback_and_fail "$wait_failure"
 fi
 
 printf 'Buntzen deployment is healthy and schedules remain disabled.\n'
