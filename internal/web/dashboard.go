@@ -38,7 +38,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		s.internal(w)
 		return
 	}
-	data := dashboardData{BaseData: base(r, "Home"), SchedulesEnabled: s.config.SchedulesEnabled, BookingCount: len(bookings)}
+	data := dashboardData{BaseData: base(r, "Setup"), SchedulesEnabled: s.config.SchedulesEnabled, BookingCount: len(bookings)}
 	sourceNames := make(map[int64]string, len(sources))
 	for _, source := range sources {
 		card, err := s.sourceCard(r.Context(), userStore.UserID(), source)

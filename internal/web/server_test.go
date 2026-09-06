@@ -421,7 +421,7 @@ func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookies := loginCookies(t, fixture)
-	page := serveForm(fixture, http.MethodGet, "/sources", cookies, nil)
+	page := serveForm(fixture, http.MethodGet, "/", cookies, nil)
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), fmt.Sprintf(`href="/profiles/new?source_id=%d"`, source.ID)) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
 		t.Fatalf("unassigned source guidance = %d body=%q", page.Code, page.Body.String())
 	}

@@ -13,30 +13,7 @@ import (
 )
 
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
-	userStore := s.userStore(r)
-	profiles, err := userStore.ListProfiles(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	sources, _ := userStore.ListOTPSources(r.Context())
-	sourceNames := map[int64]string{}
-	for _, source := range sources {
-		sourceNames[source.ID] = source.Name
-	}
-	data := listData{
-		BaseData:     base(r, "Profiles"),
-		Eyebrow:      "Step 2 · Yodel login",
-		Heading:      "Profiles",
-		Description:  "Choose the OTP source that receives codes for this Yodel mobile number. Save the profile and its login URL, then pair BlueBubbles from the linked OTP source. No booking request is needed for pairing.",
-		CreateURL:    "/profiles/new",
-		CreateLabel:  "New profile",
-		EmptyMessage: "Create an OTP source first, then add a Yodel profile.",
-	}
-	for _, profile := range profiles {
-		data.Cards = append(data.Cards, profileCard(profile, sourceNames[profile.OTPSourceID]))
-	}
-	s.render(w, http.StatusOK, "list", data)
+	http.Redirect(w, r, "/#profiles", http.StatusSeeOther)
 }
 
 func profileCard(profile model.Profile, sourceName string) listCard {
@@ -66,7 +43,7 @@ func (s *Server) profileCreate(w http.ResponseWriter, r *http.Request) {
 		s.profileForm(w, r, nil, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/profiles?ok=created", http.StatusSeeOther)
+	http.Redirect(w, r, "/?ok=created#profiles", http.StatusSeeOther)
 }
 func (s *Server) profileEdit(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
@@ -98,7 +75,7 @@ func (s *Server) profileUpdate(w http.ResponseWriter, r *http.Request) {
 		s.profileForm(w, r, &current, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/profiles?ok=updated", http.StatusSeeOther)
+	http.Redirect(w, r, "/?ok=updated#profiles", http.StatusSeeOther)
 }
 
 func (s *Server) profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
@@ -171,7 +148,7 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 		Eyebrow:     "Browser identity",
 		Heading:     heading,
 		Description: "Use the phone number on your Yodel account and choose the OTP source that receives its login codes. Save this profile, then choose Pair with Yodel on the linked OTP source. A booking request is not required.",
-		CancelURL:   "/profiles",
+		CancelURL:   "/#profiles",
 		ActionURL:   actionURL,
 		SubmitLabel: submit,
 		FormError:   formError,
