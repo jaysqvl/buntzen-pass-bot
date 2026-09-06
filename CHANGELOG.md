@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.0...buntzen-pass-bot-v0.4.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **web:** return source and profile flows to Setup ([#63](https://github.com/jaysqvl/buntzen-pass-bot/issues/63)) ([e4f312e](https://github.com/jaysqvl/buntzen-pass-bot/commit/e4f312e04c416c3a605c154e6bc7dbde952c6346))
+
 ## [0.4.0](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.3.2...buntzen-pass-bot-v0.4.0) (2026-09-06)
 
 
