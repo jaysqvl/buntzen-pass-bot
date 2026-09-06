@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.3.2...buntzen-pass-bot-v0.4.0) (2026-09-06)
+
+
+### Features
+
+* clarify setup and enable immediate manual checkout ([#61](https://github.com/jaysqvl/buntzen-pass-bot/issues/61)) ([32f602a](https://github.com/jaysqvl/buntzen-pass-bot/commit/32f602af52323b36b228e0b6bd4f118db717b795))
+
 ## [0.3.2](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.3.1...buntzen-pass-bot-v0.3.2) (2026-09-05)
 
 
