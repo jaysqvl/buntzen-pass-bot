@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.1...buntzen-pass-bot-v0.4.2) (2026-09-06)
+
+
+### Bug Fixes
+
+* **web:** clarify queued bookings and automatic confirmation ([#65](https://github.com/jaysqvl/buntzen-pass-bot/issues/65)) ([7aa52ea](https://github.com/jaysqvl/buntzen-pass-bot/commit/7aa52ea81e2489c47f3e9b6af4292797d12f27cf))
+
 ## [0.4.1](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.0...buntzen-pass-bot-v0.4.1) (2026-09-06)
 
 
