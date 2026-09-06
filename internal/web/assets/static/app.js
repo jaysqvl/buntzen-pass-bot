@@ -27,7 +27,7 @@
     const pill = document.getElementById('job-pill');
     pill.textContent = data.label;
     pill.className = `pill ${data.class_name || ''}`;
-    document.getElementById('job-status').textContent = data.status;
+    document.getElementById('job-status').textContent = data.label;
     document.getElementById('job-started').textContent = data.started;
     document.getElementById('job-finished').textContent = data.finished;
     document.getElementById('job-confirmation').textContent = data.confirmation_started;

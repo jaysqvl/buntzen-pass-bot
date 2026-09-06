@@ -104,6 +104,10 @@ func (u UserStore) ListJobs(ctx context.Context, limit int) ([]model.Job, error)
 	return u.store.ListJobs(ctx, u.userID, limit)
 }
 
+func (u UserStore) ListPendingBookingJobs(ctx context.Context) ([]model.Job, error) {
+	return u.store.ListPendingBookingJobs(ctx, u.userID)
+}
+
 func (u UserStore) RequestJobCancellation(ctx context.Context, id int64) error {
 	return u.store.RequestJobCancellation(ctx, u.userID, id)
 }

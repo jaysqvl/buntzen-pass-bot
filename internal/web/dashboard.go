@@ -8,6 +8,7 @@ type dashboardData struct {
 	Profiles         []dashboardCard
 	BookingCount     int
 	SchedulesEnabled bool
+	AutoQueueNotice  string
 	Jobs             []jobRow
 }
 
@@ -39,6 +40,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := dashboardData{BaseData: base(r, "Setup"), SchedulesEnabled: s.config.SchedulesEnabled, BookingCount: len(bookings)}
+	data.AutoQueueNotice = autoQueueOffNotice
 	sourceNames := make(map[int64]string, len(sources))
 	for _, source := range sources {
 		card, err := s.sourceCard(r.Context(), userStore.UserID(), source)

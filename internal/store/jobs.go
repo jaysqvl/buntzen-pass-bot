@@ -262,6 +262,31 @@ func (s *Store) SystemGetJob(ctx context.Context, id int64) (model.Job, error) {
 	return scanJob(s.db.QueryRowContext(ctx, "SELECT "+jobColumns+" FROM jobs WHERE id = ?", id))
 }
 
+// ListPendingBookingJobs keeps future bookings visible even when newer test
+// jobs have pushed them outside the recent job history.
+func (s *Store) ListPendingBookingJobs(ctx context.Context, userID int64) ([]model.Job, error) {
+	if userID <= 0 {
+		return nil, ErrUserRequired
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT "+jobColumns+` FROM jobs
+		WHERE user_id = ? AND command = 'book'
+		AND status IN ('queued', 'running', 'awaiting_approval')
+		ORDER BY due_at, id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending booking jobs: %w", err)
+	}
+	defer rows.Close()
+	var result []model.Job
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, job)
+	}
+	return result, rows.Err()
+}
+
 func (s *Store) SystemListJobs(ctx context.Context, limit int) ([]model.Job, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100

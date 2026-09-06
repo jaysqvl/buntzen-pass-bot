@@ -28,7 +28,10 @@ inspect and clear it yourself before another attempt.
 window, including its saved manual or automatic confirmation mode. Testing Book
 now verifies the immediate checkout path. A separate release-time test is needed
 to verify session warming and the release polling window. Keep unattended
-scheduling disabled while testing.
+scheduling disabled while testing. `SCHEDULES_ENABLED=false` only prevents
+automatic creation of jobs. Jobs created with **Queue for release** still run
+with their saved confirmation mode, including automatic final confirmation.
+Use **Cancel job** on the job page to stop a queued booking.
 
 BC Hydro says cancelled passes may become available throughout the day, so a
 checkout test does not require waiting for the 7 a.m. release. For 2026,

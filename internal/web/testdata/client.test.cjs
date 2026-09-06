@@ -90,6 +90,21 @@ for (const signal of ['error', 'terminal', 'auth_expired', 'pagehide']) {
   });
 }
 
+test('queued and cancellation display labels remain distinct from raw wire statuses', () => {
+  const job = openJob();
+  const queued = {status: 'queued', label: 'Waiting to start', class_name: 'active',
+    message: 'Earliest start: Mon, Sep 7, 2026 at 6:30 AM UTC-07:00. The job may start later.',
+    started: '—', finished: '—', confirmation_started: '—', can_cancel: true, awaiting_approval: false, terminal: false};
+  job.emit('state', queued);
+  assert.equal(job.nodes['job-status'].textContent, 'Waiting to start');
+  assert.equal(job.nodes['job-pill'].textContent, 'Waiting to start');
+  assert.equal(job.nodes['job-message'].textContent, queued.message);
+  job.emit('state', {...queued, label: 'Cancellation requested', message: 'Cancellation requested.'});
+  assert.equal(job.nodes['job-status'].textContent, 'Cancellation requested');
+  assert.equal(job.nodes['job-message'].textContent, 'Cancellation requested.');
+  assert.equal(job.closed, false);
+});
+
 test('live completion updates all details and controls before waiting for the final events', async () => {
   const job = openJob();
   const running = {status: 'running', label: 'running', class_name: 'active', message: 'Checking passes',

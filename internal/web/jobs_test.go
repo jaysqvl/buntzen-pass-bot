@@ -161,8 +161,8 @@ func TestJobStreamDeliversFinalEventsBeforeClosingAndUpdatesDetails(t *testing.T
 	}
 	for key, want := range map[string]any{
 		"status": "succeeded", "label": "succeeded", "message": "Confirmed", "can_cancel": false,
-		"awaiting_approval": false, "terminal": true, "started": optionalTime(finished.StartedAt),
-		"finished": optionalTime(finished.FinishedAt), "confirmation_started": optionalTime(finished.ConfirmationStartedAt),
+		"awaiting_approval": false, "terminal": true, "started": formatOptionalJobTime(finished.StartedAt, time.UTC),
+		"finished": formatOptionalJobTime(finished.FinishedAt, time.UTC), "confirmation_started": formatOptionalJobTime(finished.ConfirmationStartedAt, time.UTC),
 	} {
 		if state.kind != "state" || state.data[key] != want {
 			t.Fatalf("terminal state %s=%v, want %v: %+v", key, state.data[key], want, state)

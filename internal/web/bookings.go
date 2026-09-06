@@ -12,6 +12,7 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/scheduler"
 )
 
 func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
@@ -22,46 +23,75 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profiles, _ := userStore.ListProfiles(r.Context())
+	jobs, err := userStore.ListPendingBookingJobs(r.Context())
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	pending := make(map[int64]*model.Job, len(jobs))
+	for i := range jobs {
+		job := &jobs[i]
+		if job.BookingRequestID != nil && pending[*job.BookingRequestID] == nil {
+			pending[*job.BookingRequestID] = job
+		}
+	}
 	names := map[int64]string{}
 	for _, profile := range profiles {
 		names[profile.ID] = profile.Name
 	}
 	data := listData{
 		BaseData:     base(r, "Bookings"),
-		Eyebrow:      "Release schedule",
+		Eyebrow:      "Pass bookings",
 		Heading:      "Booking requests",
-		Description:  "Queue for the next release, or book available passes now with manual approval. Book now expires after 15 minutes.",
+		Description:  "Queue for release creates a job that waits until preparation starts. Book now checks already released passes and requires your approval; it expires after 15 minutes.",
 		CreateURL:    "/bookings/new",
 		CreateLabel:  "New booking",
 		EmptyMessage: "Create a profile, then add a booking request.",
 	}
+	if !s.config.SchedulesEnabled {
+		data.Notice = autoQueueOffNotice
+	}
 	for _, booking := range bookings {
-		data.Cards = append(data.Cards, bookingCard(booking, names[booking.ProfileID], s.config.SchedulesEnabled))
+		data.Cards = append(data.Cards, bookingCard(booking, names[booking.ProfileID], s.config.SchedulesEnabled, pending[booking.ID]))
 	}
 	s.render(w, http.StatusOK, "list", data)
 }
 
-func bookingCard(booking model.BookingRequest, profileName string, schedulesEnabled bool) listCard {
-	status, class := "Manual queue", ""
+const autoQueueOffNotice = "Auto-queueing is off for this server. New jobs must be queued manually. Already queued jobs remain scheduled; use Cancel job to stop one."
+
+func bookingCard(booking model.BookingRequest, profileName string, schedulesEnabled bool, job *model.Job) listCard {
+	status, class := "No booking queued", ""
+	autoQueue := "Off for this booking"
 	if !booking.Enabled {
 		status = "Disabled"
+		autoQueue = "Off · booking disabled"
+	} else if !schedulesEnabled {
+		autoQueue = "Off for this server"
 	} else if booking.ScheduleEnabled {
-		status = "Schedule paused"
-		if schedulesEnabled {
-			status, class = "Scheduled", "ok"
-		}
+		autoQueue = "On for this booking"
+	}
+	confirmation := jobModeLabel(model.Job{Command: model.CommandBook, RunMode: booking.ConfirmationMode})
+	if job != nil {
+		// The saved job controls checkout. Book now always requires approval,
+		// even when the booking request specifies automatic confirmation.
+		confirmation = jobModeLabel(*job)
+	}
+	release := booking.ReleaseTime + " on the day before the target date · " + booking.Timezone
+	if window, err := scheduler.WindowFor(booking); err == nil {
+		release = formatJobTime(window.ReleaseAt, window.ReleaseAt.Location())
 	}
 	url := fmt.Sprintf("/bookings/%d", booking.ID)
-	return listCard{
+	card := listCard{
 		Title:       booking.Name,
 		Subtitle:    profileName,
 		Status:      status,
 		StatusClass: class,
 		URL:         url,
 		Fields: []labelValue{
-			{"Target date", booking.TargetDate},
-			{"Release", booking.ReleaseTime + " · " + booking.Timezone},
-			{"Release confirmation", string(booking.ConfirmationMode)},
+			{"Target date", booking.TargetDate + " · " + booking.Timezone},
+			{"Pass release", release},
+			{"Auto-queueing", autoQueue},
+			{"Final confirmation", confirmation},
 			{"Pass order", strings.Join(passNames(booking.PassOrder()), " → ")},
 		},
 		Actions: []cardAction{{"Edit", url, ""}},
@@ -75,6 +105,15 @@ func bookingCard(booking model.BookingRequest, profileName string, schedulesEnab
 			},
 		},
 	}
+	if job != nil {
+		card.Status, card.StatusClass = jobStatusLabel(*job), statusClass(job.Status)
+		card.Fields = append(card.Fields,
+			labelValue{"Booking job", fmt.Sprintf("Job %d · %s", job.ID, card.Status)},
+			labelValue{"Earliest start", formatJobTime(job.DueAt, pendingJobLocation(*job, booking))},
+		)
+		card.Actions = append(card.Actions, cardAction{"View job", fmt.Sprintf("/jobs/%d", job.ID), ""})
+	}
+	return card
 }
 
 func passNames(values []model.PassType) []string {
@@ -319,6 +358,10 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		SubmitLabel: submit,
 		FormError:   formError,
 	}
+	autoQueueHelp := "Turning this off does not cancel jobs already queued; cancel them from Jobs."
+	if !s.config.SchedulesEnabled {
+		autoQueueHelp = "Auto-queueing is currently off for this server, so this option will not create jobs. " + autoQueueHelp
+	}
 	data.Sections = []formSection{
 		{
 			Title: "Request",
@@ -330,16 +373,17 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				{Name: "release_time", Label: "Release time", Type: "time", Value: value.ReleaseTime, Required: true},
 				{
 					Name:     "confirmation_mode",
-					Label:    "Confirmation",
+					Label:    "Final confirmation for release jobs",
+					Help:     "Automatic confirms the booking without asking. Manual waits for your approval. Book now always requires approval.",
 					Type:     "select",
 					Required: true,
 					Options: []selectOption{
 						{Value: "manual", Label: "Manual approval", Selected: value.ConfirmationMode == model.RunModeManual},
-						{Value: "auto", Label: "Automatic confirmation", Selected: value.ConfirmationMode == model.RunModeAuto},
+						{Value: "auto", Label: "Automatic final confirmation", Selected: value.ConfirmationMode == model.RunModeAuto},
 					},
 				},
 				{Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled},
-				{Name: "schedule_enabled", Label: "Auto-queue in prep window", Type: "checkbox", Checked: value.ScheduleEnabled},
+				{Name: "schedule_enabled", Label: "Automatically create a job when preparation starts", Type: "checkbox", Checked: value.ScheduleEnabled, Help: autoQueueHelp},
 			},
 		},
 		{
