@@ -20,29 +20,7 @@ import (
 )
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
-	sources, err := s.userStore(r).ListOTPSources(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	data := listData{
-		BaseData:     base(r, "OTP Sources"),
-		Eyebrow:      "Provider isolation",
-		Heading:      "OTP Sources",
-		Description:  "Each inbox is exclusive to one Yodel profile. Providers never fall back to one another.",
-		CreateURL:    "/sources/new",
-		CreateLabel:  "New OTP source",
-		EmptyMessage: "Create a BlueBubbles or Twilio inbox.",
-	}
-	for _, source := range sources {
-		card, err := s.sourceCard(r.Context(), requestAuth(r).Authenticated.User.ID, source)
-		if err != nil {
-			s.internal(w)
-			return
-		}
-		data.Cards = append(data.Cards, card)
-	}
-	s.render(w, http.StatusOK, "list", data)
+	http.Redirect(w, r, "/#otp-sources", http.StatusSeeOther)
 }
 
 func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPSource) (listCard, error) {
@@ -121,7 +99,7 @@ func (s *Server) sourceCreate(w http.ResponseWriter, r *http.Request) {
 		s.sourceForm(w, r, nil, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/sources?ok=created", http.StatusSeeOther)
+	http.Redirect(w, r, "/?ok=created#otp-sources", http.StatusSeeOther)
 }
 
 func (s *Server) sourceEdit(w http.ResponseWriter, r *http.Request) {
@@ -155,7 +133,7 @@ func (s *Server) sourceUpdate(w http.ResponseWriter, r *http.Request) {
 		s.sourceForm(w, r, &current, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/sources?ok=updated", http.StatusSeeOther)
+	http.Redirect(w, r, "/?ok=updated#otp-sources", http.StatusSeeOther)
 }
 
 func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +158,7 @@ func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("OTP provider health check succeeded", "source_id", source.ID, "provider", source.Provider)
-	http.Redirect(w, r, "/sources?ok=healthy", http.StatusSeeOther)
+	http.Redirect(w, r, "/?ok=healthy#otp-sources", http.StatusSeeOther)
 }
 
 func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +322,7 @@ func (s *Server) sourceForm(w http.ResponseWriter, r *http.Request, source *mode
 		Eyebrow:     "Provider configuration",
 		Heading:     heading,
 		Description: "Only the selected adapter can read this inbox. Secrets are encrypted in SQLite and are never rendered back into this form.",
-		CancelURL:   "/sources",
+		CancelURL:   "/#otp-sources",
 		ActionURL:   actionURL,
 		SubmitLabel: submit,
 		FormError:   formError,

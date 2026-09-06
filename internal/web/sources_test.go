@@ -43,7 +43,7 @@ func TestSourcesPairFromTheLinkedProfileWithoutABooking(t *testing.T) {
 				t.Fatal(err)
 			}
 			cookies := loginCookies(t, fixture)
-			recorder := serveForm(fixture, http.MethodGet, "/sources", cookies, nil)
+			recorder := serveForm(fixture, http.MethodGet, "/", cookies, nil)
 			body := recorder.Body.String()
 			if recorder.Code != http.StatusOK || !strings.Contains(body, test.wantLabel) || !strings.Contains(body, test.wantDetail) || !strings.Contains(body, profile.Name) {
 				t.Fatalf("sources setup guidance = %d body=%s", recorder.Code, body)
