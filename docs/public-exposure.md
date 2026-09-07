@@ -197,3 +197,20 @@ Source creation/editing, connection tests, doctor, job execution and pairing all
 use the policy; there is no provider fallback. Operator policy changes take effect
 after restart. These controls govern the Go OTP adapters; they do not contain an
 arbitrary compromised Python worker or all browser network traffic.
+
+## Worker execution deadlines
+
+Job input loading has a 15-second budget. Authentication checks, supervised
+pairing and dry-runs have 15 minutes from execution start, including provider
+preparation. Immediate bookings retain their original persisted 15-minute expiry;
+queueing or restart never resets it. Scheduled bookings may run until the polling
+window ends plus 15 minutes for checkout, preserving the full configured
+preparation window. That extra grace does not extend queue admission or polling.
+
+A deadline cancels provider requests and the worker, then enforces the existing
+bounded process-group cleanup grace. Before final confirmation it becomes a
+time-limit failure. After final confirmation may have started, an unverified
+outcome remains unknown and its booking reservation remains held. A matching
+verified-confirmation event preserves success even if browser cleanup stalls
+before the final worker result. These deadlines bound elapsed execution, rather
+than promising an immediate kill or automatically retrying an ambiguous booking.
