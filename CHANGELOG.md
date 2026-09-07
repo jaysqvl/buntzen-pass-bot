@@ -3,6 +3,10 @@
 ## [0.5.1](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.5.0...buntzen-pass-bot-v0.5.1) (2026-09-07)
 
 
+This release hardens invited-user access through public HTTPS using Buntzen's own accounts. It includes operator-owned browser executables, removal of raw authenticated diagnostics, trusted connector and Secure-cookie enforcement, private bootstrap, bounded authentication and streams, and idle session expiry with reliable revocation.
+
+Before upgrading, review [public HTTPS and migration settings](docs/public-exposure.md). Existing BlueBubbles sources require an explicit operator endpoint policy; old member executable overrides must be cleared. Public mode requires completed private bootstrap and the exact public origin/connector configuration. Containers now have finite resource limits and a read-only root. Failed or ambiguous Portainer updates stop for operator recovery instead of issuing an unsafe automatic rollback.
+
 ### Bug Fixes
 
 * **security:** bound container resources and verify browser runtime ([e41aadb](https://github.com/jaysqvl/buntzen-pass-bot/commit/e41aadb2c2a9a11561a2426bd1554f1d6d240567))
