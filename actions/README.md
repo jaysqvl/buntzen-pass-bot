@@ -141,13 +141,14 @@ review; the worker never silently deletes existing cart contents.
 
 ## Artifact guarantees
 
-Tracing is off while navigating, filling credentials, requesting, receiving,
-and submitting MFA. It starts only after an authenticated page is observed and
-is stopped before every re-authentication. Future-release and manual modes also
-close the current trace segment before waiting and start a new segment only
-after the release/authentication or approval gate succeeds. Trace files rotate
-through eight fixed names. The Go control plane periodically monitors and cleans
-retained artifacts to a 64-file/64-MiB per-job ceiling; this is not a hard
-filesystem write quota, so transient overshoot remains possible. Screenshots are
-likewise disabled in sensitive auth state. The worker never writes page HTML,
-credentials, OTPs, or provider identifiers to disk.
+Raw Playwright tracing, DOM snapshots, HAR/network capture, and screenshots are
+disabled in every authentication state. Authenticated pages and responses can
+still contain credentials or populated OTP fields; these cannot be made safe
+by masking known inputs or sanitizing an exported ZIP. Use the application's
+bounded status events and sanitized logs to diagnose jobs.
+
+Maintenance deletes the managed artifact directories of completed jobs,
+including raw captures from older releases. It preserves active-job directories
+and unrelated operator directories. Existing exported archives and backups
+remain sensitive and require separate disposal or protection. Persistent browser
+profiles intentionally retain Yodel sessions and must remain private.

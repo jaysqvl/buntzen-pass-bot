@@ -82,14 +82,11 @@ func (e *Engine) cleanupArtifacts(ctx context.Context) error {
 		}
 		if job, err := e.store.SystemGetJob(ctx, jobID); err == nil {
 			if job.Status.Terminal() {
-				exceeded, footprintErr := artifactLimitExceeded(path)
-				if footprintErr != nil {
-					return fmt.Errorf("inspect retained job artifacts: %w", footprintErr)
-				}
-				if exceeded {
-					if err := os.RemoveAll(path); err != nil {
-						return fmt.Errorf("remove oversized job artifacts: %w", err)
-					}
+				// Older releases captured raw authenticated browser content. It
+				// cannot be made safe by inspecting filenames or known secrets.
+				// Durable job events remain available for diagnosis.
+				if err := os.RemoveAll(path); err != nil {
+					return fmt.Errorf("remove completed job artifacts: %w", err)
 				}
 			}
 			continue

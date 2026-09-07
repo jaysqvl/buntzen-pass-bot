@@ -185,10 +185,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 	}
 	assertExcludesValues(t, []byte(observedOutput), "worker stderr and durable events", testPhone, testOTP, testBBPassword)
 	assertTreeExcludesValues(t, artifactDir, testPhone, testOTP, testBBPassword)
-	artifacts, err := os.ReadDir(artifactDir)
-	if err != nil || len(artifacts) == 0 {
-		t.Errorf("safe post-authentication trace was not produced: entries=%d error=%v", len(artifacts), err)
-	}
+	assertNoBrowserArtifacts(t, artifactDir)
 }
 
 type e2eFlow struct {

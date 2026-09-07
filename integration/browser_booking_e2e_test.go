@@ -154,6 +154,10 @@ func TestControlPlanePythonBrowserBooking(t *testing.T) {
 			observed := strings.Join(append(append([]string{}, outcome.stderr...), outcome.events...), "\n")
 			assertExcludesValues(t, []byte(observed), "booking worker stderr and durable events", testPhone, testOTP, testBBPassword, bookingBearerToken)
 			assertTreeExcludesValues(t, outcome.artifactDir, testPhone, testOTP, testBBPassword, bookingBearerToken)
+			assertNoBrowserArtifacts(t, outcome.artifactDir)
+			if snapshot.secretRequests == 0 || snapshot.secretResponsesRead == 0 {
+				t.Errorf("credential-bearing authenticated traffic was not exercised: requests=%d acknowledgements=%d", snapshot.secretRequests, snapshot.secretResponsesRead)
+			}
 		})
 	}
 }
@@ -358,32 +362,38 @@ type bookingFlow struct {
 	cartAdds            int
 	checkouts           int
 	confirmations       int
+	secretRequests      int
+	secretResponsesRead int
 	errors              []string
 }
 
 type bookingFlowSnapshot struct {
-	probeLoads        int
-	passLoads         int
-	dateSelections    int
-	vehicleSelections int
-	cartAdds          int
-	checkouts         int
-	confirmations     int
-	errors            []string
+	probeLoads          int
+	passLoads           int
+	dateSelections      int
+	vehicleSelections   int
+	cartAdds            int
+	checkouts           int
+	confirmations       int
+	secretRequests      int
+	secretResponsesRead int
+	errors              []string
 }
 
 func (f *bookingFlow) snapshot() bookingFlowSnapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return bookingFlowSnapshot{
-		probeLoads:        f.probeLoads,
-		passLoads:         f.passLoads,
-		dateSelections:    f.dateSelections,
-		vehicleSelections: f.vehicleSelections,
-		cartAdds:          f.cartAdds,
-		checkouts:         f.checkouts,
-		confirmations:     f.confirmations,
-		errors:            append([]string(nil), f.errors...),
+		probeLoads:          f.probeLoads,
+		passLoads:           f.passLoads,
+		dateSelections:      f.dateSelections,
+		vehicleSelections:   f.vehicleSelections,
+		cartAdds:            f.cartAdds,
+		checkouts:           f.checkouts,
+		confirmations:       f.confirmations,
+		secretRequests:      f.secretRequests,
+		secretResponsesRead: f.secretResponsesRead,
+		errors:              append([]string(nil), f.errors...),
 	}
 }
 
@@ -393,6 +403,7 @@ func (f *bookingFlow) serveYodel(response http.ResponseWriter, request *http.Req
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake":
 		f.probeLoads++
+		http.SetCookie(response, &http.Cookie{Name: "synthetic_session", Value: bookingBearerToken, Path: "/", Secure: true, HttpOnly: true})
 		writeHTML(response, `<html><body><script>localStorage.setItem("BearerToken", "`+bookingBearerToken+`");</script><a href="/account">My Account</a></body></html>`)
 	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake/All-Day-Pass":
 		f.passLoads++
@@ -400,7 +411,29 @@ func (f *bookingFlow) serveYodel(response http.ResponseWriter, request *http.Req
 		if f.receipt == "stale_cart" {
 			page = strings.Replace(page, emptyBookingCart, singleBookingCart, 1)
 		}
+		// Post-authentication DOM, headers, cookies and bodies intentionally
+		// retain synthetic secrets. Diagnostics must never capture any of them.
+		page = strings.Replace(page, "</body>", `<input type="hidden" value="`+testPhone+`"><input type="hidden" value="`+testOTP+`"><p id="private-details">Phone `+testPhone+` OTP `+testOTP+`</p>
+<script>
+fetch('/synthetic/diagnostic-secrets', {method:'POST', headers:{Authorization:'Bearer `+bookingBearerToken+`'}, body:'`+testPhone+` `+testOTP+`'})
+  .then(response => response.text()).then(body => {
+    document.getElementById('private-details').textContent = body;
+    return fetch('/synthetic/diagnostic-ack', {method:'POST'});
+  });
+</script></body>`, 1)
 		writeHTML(response, page)
+	case request.Method == http.MethodPost && request.URL.Path == "/synthetic/diagnostic-secrets":
+		f.secretRequests++
+		cookie, err := request.Cookie("synthetic_session")
+		body, bodyErr := io.ReadAll(io.LimitReader(request.Body, 1024))
+		if err != nil || cookie.Value != bookingBearerToken || request.Header.Get("Authorization") != "Bearer "+bookingBearerToken || bodyErr != nil || !strings.Contains(string(body), testPhone+" "+testOTP) {
+			f.errors = append(f.errors, "authenticated secret fixture did not send expected credentials")
+		}
+		http.SetCookie(response, &http.Cookie{Name: "synthetic_response_secret", Value: bookingBearerToken, Path: "/", Secure: true, HttpOnly: true})
+		_, _ = fmt.Fprint(response, "Private authenticated response "+testPhone+" "+testOTP+" "+bookingBearerToken)
+	case request.Method == http.MethodPost && request.URL.Path == "/synthetic/diagnostic-ack":
+		f.secretResponsesRead++
+		response.WriteHeader(http.StatusNoContent)
 	case request.Method == http.MethodPost && request.URL.Path == "/synthetic/date-selected":
 		f.dateSelections++
 		response.WriteHeader(http.StatusNoContent)
