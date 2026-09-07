@@ -6,12 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -146,7 +145,7 @@ func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
 		s.notFoundOrInternal(w, err)
 		return
 	}
-	provider, err := engine.ProviderForSource(r.Context(), s.store, source)
+	provider, err := engine.ProviderForSource(r.Context(), s.store, source, s.config.BlueBubblesPolicy)
 	if err == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 		defer cancel()
@@ -216,7 +215,7 @@ func (s *Server) sourceInput(r *http.Request, current *model.OTPSource) (store.O
 			return input, errors.New("re-enter the BlueBubbles password when changing its server URL")
 		}
 		cfg.BaseURL = identity
-		if _, err := bluebubbles.New(cfg); err != nil {
+		if _, err := bluebubbles.New(cfg, s.config.BlueBubblesPolicy); err != nil {
 			return input, err
 		}
 		input.Identity, input.ProviderConfig, input.SecretProvided = identity, cfg, passwordProvided
@@ -255,26 +254,11 @@ func (s *Server) sourceInput(r *http.Request, current *model.OTPSource) (store.O
 }
 
 func blueBubblesIdentity(value string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+	canonical, err := egress.CanonicalOrigin(value)
+	if err != nil {
 		return "", errors.New("BlueBubbles URL must be a server root such as http://bluebubbles.example:1234")
 	}
-	scheme := strings.ToLower(parsed.Scheme)
-	hostname := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
-	port := parsed.Port()
-	if hostname == "" {
-		return "", errors.New("BlueBubbles URL must include a server hostname")
-	}
-	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
-		port = ""
-	}
-	host := hostname
-	if port != "" {
-		host = net.JoinHostPort(hostname, port)
-	} else if strings.Contains(hostname, ":") {
-		host = "[" + hostname + "]"
-	}
-	return scheme + "://" + host, nil
+	return canonical, nil
 }
 
 func phoneIdentity(value string) string {

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -221,6 +222,10 @@ emit("run.complete", status="cancelled" if start["command"] == "book" else "succ
 				_, _ = w.Write([]byte(`{"status":200,"data":"pong"}`))
 			}))
 			defer provider.Close()
+			fixture.engine.config.BlueBubblesPolicy, err = egress.NewPolicy([]egress.Rule{{Origin: provider.URL, Networks: []string{"127.0.0.1/32"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
 			source := createPairingTestSource(t, fixture.resources, provider.URL)
 			profile := createPairingTestProfile(t, fixture.resources, source.ID, "https://example.test/profile-login", true)
 			fixture.engine.config.PythonExecutable, fixture.engine.config.PythonModule = launcher, "profile_auth_probe"

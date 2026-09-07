@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
@@ -35,6 +36,10 @@ func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	changed, err := s.store.ChangeUserPassword(r.Context(), userID, r.Form.Get("current_password"), password)
+	if errors.Is(err, auth.ErrBusy) {
+		authBusy(w)
+		return
+	}
 	if recordErr := s.store.RecordLoginAttempt(r.Context(), rateKey, err == nil && changed); recordErr != nil {
 		s.internal(w)
 		return
@@ -51,7 +56,7 @@ func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
 		s.renderAccount(w, r, "The current password was not accepted.")
 		return
 	}
-	clearAuthCookies(w)
+	s.clearAuthCookies(w)
 	http.Redirect(w, r, "/login?ok=password-changed", http.StatusSeeOther)
 }
 
@@ -62,6 +67,10 @@ func (s *Server) accountUsername(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	changed, err := s.store.ChangeUsername(r.Context(), userID, r.Form.Get("current_password"), r.Form.Get("username"))
+	if errors.Is(err, auth.ErrBusy) {
+		authBusy(w)
+		return
+	}
 	if recordErr := s.store.RecordLoginAttempt(r.Context(), rateKey, err == nil && changed); recordErr != nil {
 		s.internal(w)
 		return
@@ -199,6 +208,10 @@ func (s *Server) userCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := s.store.CreateMember(r.Context(), store.CreateUserInput{Username: username, Password: password, MustChangePassword: true})
 	if err != nil {
+		if errors.Is(err, auth.ErrBusy) {
+			authBusy(w)
+			return
+		}
 		s.renderUserNew(w, r, username, accountFormError(err))
 		return
 	}
@@ -280,6 +293,10 @@ func (s *Server) userResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.ResetUserPassword(r.Context(), id, password, true); err != nil {
+		if errors.Is(err, auth.ErrBusy) {
+			authBusy(w)
+			return
+		}
 		s.renderUserEdit(w, r, id, current.Username, current.Status == model.UserActive, accountFormError(err))
 		return
 	}

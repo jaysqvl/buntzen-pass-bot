@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-FROM golang:1.27.0-bookworm AS go-build
+FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo.Version=${BUNTZEN_VERSION} -X github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo.Revision=${BUNTZEN_REVISION}" \
     -o /out/buntzen ./cmd/buntzen
 
-FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble@sha256:aa81288e738725378becba5b3e06cb0f3a7f012a610e87e8d767a090ea3f740d
 
 ENV APPDATA_DIR=/appdata \
     BUNTZEN_LISTEN=:8080 \
@@ -23,11 +23,16 @@ ENV APPDATA_DIR=/appdata \
 
 WORKDIR /app
 COPY actions/requirements.lock /tmp/buntzen-actions-requirements.txt
-RUN python -m pip install --no-cache-dir --require-hashes --requirement /tmp/buntzen-actions-requirements.txt \
+RUN LC_ALL=C apt-get --simulate purge gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-0 > /tmp/buntzen-purge-plan \
+    && cat /tmp/buntzen-purge-plan \
+    && awk '/^Inst / { exit 1 } /^(Remv|Purg) / { if ($2 != "gstreamer1.0-plugins-bad" && $2 != "libgstreamer-plugins-bad1.0-0") exit 1 }' /tmp/buntzen-purge-plan \
+    && apt-get --yes --no-auto-remove purge gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-0 \
+    && python -m pip install --no-cache-dir --only-binary=:all: --require-hashes --requirement /tmp/buntzen-actions-requirements.txt \
     && python -m pip check \
-    && python -m pip uninstall --yes virtualenv \
+    && python -m pip uninstall --yes virtualenv msgpack setuptools \
     && python -m pip uninstall --yes pip \
-    && rm /tmp/buntzen-actions-requirements.txt \
+    && rm /tmp/buntzen-actions-requirements.txt /tmp/buntzen-purge-plan \
+    && rm -rf /root/.cache /home/pwuser/.cache /var/lib/apt/lists/* \
     && mkdir -p /appdata \
     && chown -R pwuser:pwuser /app /appdata
 COPY actions/src/buntzen_actions /usr/local/lib/python3.12/dist-packages/buntzen_actions

@@ -20,6 +20,7 @@ import (
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -50,6 +51,10 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 
 	blueBubbles := httptest.NewServer(http.HandlerFunc(flow.serveBlueBubbles))
 	t.Cleanup(blueBubbles.Close)
+	policy, err := egress.NewPolicy([]egress.Rule{{Origin: blueBubbles.URL, Networks: []string{"127.0.0.1/32"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	provider, err := bluebubbles.New(bluebubbles.Config{
 		BaseURL:      blueBubbles.URL,
 		Password:     testBBPassword,
@@ -58,7 +63,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 		Service:      testService,
 		PollInterval: 10 * time.Millisecond,
 		Freshness:    time.Minute,
-	})
+	}, policy)
 	if err != nil {
 		t.Fatalf("create BlueBubbles provider: %v", err)
 	}
@@ -96,7 +101,6 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 			"pass_order":            []string{},
 			"headless":              true,
 			"browser_channel":       nil,
-			"executable_path":       nullableString(browserExecutable),
 			"default_timeout_ms":    10_000,
 			"poll_deadline_seconds": 10,
 			"poll_min_seconds":      0.05,
@@ -119,6 +123,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 				Executable: python,
 				Args:       pythonArgs,
 				Environment: []string{
+					"BUNTZEN_BROWSER_EXECUTABLE=" + browserExecutable,
 					"BUNTZEN_ACTIONPROC_HELPER=e2e-local-tls",
 					"PYTHONDONTWRITEBYTECODE=1",
 					"PYTHONUNBUFFERED=1",
@@ -185,10 +190,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 	}
 	assertExcludesValues(t, []byte(observedOutput), "worker stderr and durable events", testPhone, testOTP, testBBPassword)
 	assertTreeExcludesValues(t, artifactDir, testPhone, testOTP, testBBPassword)
-	artifacts, err := os.ReadDir(artifactDir)
-	if err != nil || len(artifacts) == 0 {
-		t.Errorf("safe post-authentication trace was not produced: entries=%d error=%v", len(artifacts), err)
-	}
+	assertNoBrowserArtifacts(t, artifactDir)
 }
 
 type e2eFlow struct {

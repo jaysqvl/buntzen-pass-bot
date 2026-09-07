@@ -41,13 +41,16 @@ func (w *browserErrorWriter) Write(payload []byte) (int, error) {
 	return w.ResponseWriter.Write(payload)
 }
 
-func (w *browserErrorWriter) Flush() {
+func (w *browserErrorWriter) Flush() { _ = w.FlushError() }
+
+func (w *browserErrorWriter) FlushError() error {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
 	if !w.plainError {
-		_ = http.NewResponseController(w.ResponseWriter).Flush()
+		return http.NewResponseController(w.ResponseWriter).Flush()
 	}
+	return nil
 }
 
 func (w *browserErrorWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

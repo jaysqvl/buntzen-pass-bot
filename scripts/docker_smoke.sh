@@ -8,11 +8,13 @@ expected_revision="${3:-}"
 run_suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
 container="buntzen-ci-smoke-${run_suffix}"
 volume="buntzen-ci-appdata-${run_suffix}"
-setup_token="ci-only-setup-token"
+setup_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 admin_username="ci-admin"
 admin_password="ci-only-administrator-password"
 workspace="$(mktemp -d)"
 base_url=""
+appdata_mount="$volume"
+key_directory=""
 
 cleanup() {
   status=$?
@@ -23,6 +25,13 @@ cleanup() {
   fi
   docker rm --force "$container" >/dev/null 2>&1 || true
   docker volume rm --force "$volume" >/dev/null 2>&1 || true
+  # Fixture bind directories are owned by UID 1001, which may differ from the
+  # hosted runner. Remove only these known temporary paths with a helper.
+  if [[ -d "$workspace/key" || -d "$workspace/appdata" ]]; then
+    docker run --rm --network none --read-only --user 0 --entrypoint sh \
+      --volume "$workspace:/smoke" "$image" -eu -c \
+      'rm -rf /smoke/key /smoke/appdata' >/dev/null 2>&1 || true
+  fi
   rm -rf "$workspace"
   exit "$status"
 }
@@ -137,19 +146,29 @@ wait_for_health() {
 }
 
 start_container() {
+  local key_options=()
+  if [[ -n "$key_directory" ]]; then
+    key_options+=(--env BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key)
+  fi
   docker run --detach \
     --name "$container" \
     --init \
     --shm-size 1g \
+    --cpus 2 --memory 4g --memory-swap 4g --pids-limit 512 \
+    --read-only \
+    --tmpfs /tmp:size=512m,mode=1777,nosuid,nodev \
+    --tmpfs /home/pwuser:size=128m,uid=1001,gid=1001,mode=0700,nosuid,nodev \
     --security-opt "seccomp=$PWD/docker/seccomp_profile.json" \
     --publish 127.0.0.1::8080 \
-    --volume "$volume:/appdata" \
+    --volume "$appdata_mount:/appdata" \
+    --volume "${key_directory:-$appdata_mount}:/run/buntzen-key:ro" \
     --env APPDATA_DIR=/appdata \
     --env BLUEBUBBLES_URL=http://bluebubbles.example:1234 \
     --env BUNTZEN_DEBUG=true \
     --env BUNTZEN_SETUP_TOKEN="$setup_token" \
     --env MAX_CONCURRENT_JOBS=2 \
     --env SCHEDULES_ENABLED=false \
+    "${key_options[@]}" \
     "$image" >/dev/null
 
   local published=""
@@ -163,6 +182,19 @@ start_container() {
   [[ "$published" == 127.0.0.1:* ]] || fail "container did not publish its loopback HTTP port"
   base_url="http://$published"
   wait_for_health
+  docker inspect "$container" | jq -e '
+    length == 1 and (.[0] |
+      .HostConfig.NanoCpus == (2 * 1000 * 1000 * 1000) and
+      .HostConfig.Memory == (4 * 1024 * 1024 * 1024) and
+      .HostConfig.MemorySwap == (4 * 1024 * 1024 * 1024) and
+      .HostConfig.PidsLimit == 512 and
+      .HostConfig.ShmSize == (1024 * 1024 * 1024) and
+      .HostConfig.Init == true and .HostConfig.ReadonlyRootfs == true and
+      (.HostConfig.SecurityOpt | any(startswith("seccomp="))) and
+      (.Mounts | any(.Destination == "/run/buntzen-key" and .RW == false)) and
+      (.Mounts | any(.Destination == "/appdata" and .RW == true)))
+  ' >/dev/null || fail "running container has unexpected limits or mounts"
+  [[ "$(docker exec "$container" id -u)" == "1001" ]] || fail "service UID differs from the mount contract"
 }
 
 validate_doctor() {
@@ -260,7 +292,7 @@ docker image inspect "$image" >/dev/null
 [[ "$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$image")" != "null" ]] || fail "image does not configure a Docker health check"
 configured_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
 [[ -n "$configured_user" && "$configured_user" != "root" && "$configured_user" != "0" ]] || fail "image does not configure a non-root runtime user"
-[[ "$(docker run --rm --entrypoint id "$image" -u)" != "0" ]] || fail "image runtime user resolves to root"
+[[ "$(docker run --rm --entrypoint id "$image" -u)" == "1001" ]] || fail "image runtime user must resolve to UID 1001"
 
 version_report="$(docker run --rm --read-only --network none \
   --env APPDATA_DIR=/uninitialized-appdata \
@@ -280,12 +312,21 @@ import importlib.util
 
 unexpected = [
     module
-    for module in ("msgpack", "setuptools")
+    for module in ("msgpack", "setuptools", "aiohttp", "starlette")
     if importlib.util.find_spec(module) is not None
 ]
 if unexpected:
     raise SystemExit("unexpected runtime Python modules: " + ", ".join(unexpected))
 ' || fail "build-only Python modules remained importable in the runtime image"
+# Inspect the image itself without the service's tmpfs masking its home cache.
+docker run --rm --network none --read-only --user 0 --entrypoint sh "$image" -eu -c '
+  test ! -e /root/.cache
+  test ! -e /home/pwuser/.cache/virtualenv
+  for package in gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-0; do
+    status="$(dpkg-query -W -f="\${db:Status-Status}" "$package" 2>/dev/null || true)"
+    test "$status" != installed
+  done
+' || fail "removed build caches or WebKit-only packages survived in the image"
 docker exec "$container" sh -eu -c '
   test -w /appdata
   test -f /appdata/buntzen.db
@@ -298,6 +339,11 @@ key_digest="$(docker exec "$container" sha256sum /appdata/master.key | awk '{pri
 validate_doctor
 perform_setup
 perform_login before-restart
+
+docker exec --interactive "$container" sh -eu -c 'cat > /tmp/buntzen-browser-smoke.py' \
+  < scripts/docker_browser_smoke.py
+docker exec "$container" python /tmp/buntzen-browser-smoke.py
+wait_for_health
 
 service_logs="$(docker logs "$container" 2>&1)"
 [[ "$service_logs" != *"$setup_token"* ]] || fail "service logs exposed the setup token"
@@ -335,4 +381,52 @@ service_logs="$(docker logs "$container" 2>&1)"
 [[ "$service_logs" != *"$setup_token"* ]] || fail "restarted service logs exposed the setup token"
 [[ "$service_logs" != *"$admin_password"* ]] || fail "restarted service logs exposed the administrator password"
 
-echo "Container smoke test passed: build version, non-root runtime, writable persistent appdata, health, Python protocol, setup, login, and restart."
+# Populate synthetic encrypted state before testing read-only key relocation.
+docker exec --interactive --env "CI_ADMIN_PASSWORD=$admin_password" "$container" \
+  python - create < scripts/docker_key_smoke.py
+docker stop --time 45 "$container" >/dev/null
+docker rm "$container" >/dev/null
+key_directory="$workspace/key"
+mkdir "$key_directory"
+# Root is used only by this stopped-fixture preparation container. The service
+# and all credential/browser checks continue to execute as UID 1001.
+docker run --rm --user 0 --entrypoint sh \
+  --volume "$volume:/appdata" --volume "$key_directory:/key" "$image" -eu -c '
+    chown 1001:1001 /key
+    chmod 0700 /key
+    install -o 1001 -g 1001 -m 0400 /appdata/master.key /key/master.key
+    rm /appdata/master.key
+  '
+for label in external-key external-key-restart; do
+  start_container
+  [[ "$(docker exec "$container" sha256sum /run/buntzen-key/master.key | awk '{print $1}')" == "$key_digest" ]] || fail "external key bytes changed"
+  docker exec "$container" sh -eu -c '
+    test ! -e /appdata/master.key
+    test "$(stat -c %u /run/buntzen-key/master.key)" = 1001
+    test "$(stat -c %a /run/buntzen-key/master.key)" = 400
+    ! (echo invalid > /run/buntzen-key/master.key) 2>/dev/null
+    ! touch /run/buntzen-key/new-key 2>/dev/null
+  ' || fail "external key mount is writable or legacy key was recreated"
+  perform_login "$label"
+  docker exec --interactive --env "CI_ADMIN_PASSWORD=$admin_password" "$container" \
+    python - retained < scripts/docker_key_smoke.py
+  docker stop --time 45 "$container" >/dev/null
+  docker rm "$container" >/dev/null
+done
+
+# Check the canonical fresh host bind and duplicate read-only alias as well as
+# the named volume tested above. Initialize only this temporary fixture path.
+appdata_mount="$workspace/appdata"
+key_directory=""
+mkdir "$appdata_mount"
+docker run --rm --user 0 --entrypoint sh --volume "$appdata_mount:/appdata" "$image" \
+  -eu -c 'chown 1001:1001 /appdata; chmod 0700 /appdata'
+start_container
+perform_setup
+perform_login fresh-bind
+docker stop --time 45 "$container" >/dev/null
+docker rm "$container" >/dev/null
+start_container
+perform_login bind-restart
+
+echo "Container smoke test passed: version, UID 1001, finite resources, read-only root/key mount, two browsers with service workers, encrypted state, setup/login, volume and bind restart."

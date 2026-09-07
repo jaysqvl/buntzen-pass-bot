@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -156,10 +157,54 @@ func isolateEnvironment(t *testing.T) {
 	for _, name := range []string{
 		"BUNTZEN_LISTEN", "MAX_CONCURRENT_JOBS", "SCHEDULES_ENABLED",
 		"BUNTZEN_DEBUG", "BUNTZEN_LOG_LEVEL", "BUNTZEN_PYTHON",
-		"BUNTZEN_ACTIONS_MODULE", "BLUEBUBBLES_URL", "BUNTZEN_ALLOWED_ORIGINS",
-		"BUNTZEN_YODEL_ORIGINS", "BUNTZEN_ALLOWED_HOSTS", "BUNTZEN_SETUP_TOKEN",
+		"BUNTZEN_ACTIONS_MODULE", "BUNTZEN_BROWSER_EXECUTABLE", "BLUEBUBBLES_URL", "BUNTZEN_BLUEBUBBLES_ENDPOINTS", "BUNTZEN_ALLOWED_ORIGINS",
+		"BUNTZEN_YODEL_ORIGINS", "BUNTZEN_ALLOWED_HOSTS", "BUNTZEN_SETUP_TOKEN", "BUNTZEN_MASTER_KEY_FILE",
+		"BUNTZEN_PUBLIC_ORIGIN", "BUNTZEN_TRUSTED_PROXIES",
 	} {
 		t.Setenv(name, "")
 	}
 	t.Setenv("APPDATA_DIR", filepath.Join(t.TempDir(), "state"))
+}
+
+func TestOperatorBrowserExecutable(t *testing.T) {
+	isolateEnvironment(t)
+	for _, value := range []string{"chrome", "../chrome"} {
+		t.Setenv("BUNTZEN_BROWSER_EXECUTABLE", value)
+		if _, err := Load(); err == nil {
+			t.Fatalf("accepted relative executable %q", value)
+		}
+	}
+	want := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+	t.Setenv("BUNTZEN_BROWSER_EXECUTABLE", want)
+	cfg, err := Load()
+	if err != nil || cfg.BrowserExecutable != want {
+		t.Fatalf("operator browser path = %q, %v", cfg.BrowserExecutable, err)
+	}
+}
+
+func TestExplicitMasterKeyPath(t *testing.T) {
+	isolateEnvironment(t)
+	for _, path := range []string{"master.key", "../master.key", "/" + strings.Repeat("x", 2048)} {
+		t.Setenv("BUNTZEN_MASTER_KEY_FILE", path)
+		if _, err := Load(); err == nil {
+			t.Fatal("invalid explicit key path accepted")
+		}
+	}
+	path := filepath.Join(t.TempDir(), "existing.key")
+	t.Setenv("BUNTZEN_MASTER_KEY_FILE", path)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.MasterKeyExplicit || cfg.EncryptionKeyPath != path {
+		t.Fatal("explicit key path lost")
+	}
+	t.Setenv("BUNTZEN_MASTER_KEY_FILE", "")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MasterKeyExplicit || cfg.EncryptionKeyPath != filepath.Join(cfg.AppDataDir, "master.key") {
+		t.Fatal("legacy key default changed")
+	}
 }

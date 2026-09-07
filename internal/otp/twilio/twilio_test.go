@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 )
 
@@ -40,10 +41,7 @@ func TestHealthUsesReadOnlyAccountRequest(t *testing.T) {
 	if err := provider.Health(context.Background()); err != nil {
 		t.Fatalf("Health() error: %v", err)
 	}
-	transport, ok := provider.client.Transport.(*http.Transport)
-	if !ok || transport.Proxy != nil {
-		t.Fatal("provider transport must disable environment proxies")
-	}
+	// Shared egress tests exercise proxy rejection through the wrapped transport.
 }
 
 func TestArmThenWaitReadsOnlyFreshInboundMessage(t *testing.T) {
@@ -326,7 +324,11 @@ func newTestProvider(t *testing.T, baseURL string, overrides Config) *Provider {
 	overrides.ToNumber = testToNumber
 	overrides.BaseURL = baseURL
 	overrides.PollInterval = time.Millisecond
-	provider, err := New(overrides)
+	policy, err := egress.NewPolicy([]egress.Rule{{Origin: baseURL, Networks: []string{"127.0.0.1/32"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := newForPolicy(overrides, policy)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

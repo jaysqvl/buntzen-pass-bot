@@ -45,12 +45,15 @@ func Open(ctx context.Context, databasePath string, encryptor *secretcrypto.Encr
 	if encryptor == nil {
 		return nil, errors.New("encryptor is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
-		return nil, fmt.Errorf("create database directory: %w", err)
-	}
 	abs, err := filepath.Abs(databasePath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+	if err := verifyExistingDatabaseKey(ctx, abs, encryptor); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+		return nil, fmt.Errorf("create database directory: %w", err)
 	}
 	databaseURL := (&url.URL{Scheme: "file", Path: abs}).String()
 	dsn := databaseURL + "?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
@@ -113,6 +116,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 }
 
 func (s *Store) migrateUnlocked(ctx context.Context) error {
+	if err := verifyEncryptedRecords(ctx, s.db, s.encryptor); err != nil {
+		return err
+	}
 	var migrationTable int
 	if err := s.db.QueryRowContext(ctx,
 		"SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",

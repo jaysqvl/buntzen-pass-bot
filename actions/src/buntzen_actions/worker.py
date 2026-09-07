@@ -4,13 +4,15 @@ import ipaddress
 import logging
 import os
 import re
+import selectors
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from .config import ActionConfig
+from .config import ActionConfig, browser_selection
 from .control import ControlPort
 from .diagnostics import SafeDiagnostics
 from .errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
@@ -27,6 +29,8 @@ EXIT_OUTCOME_UNKNOWN = 3
 EXIT_PROTOCOL = 64
 
 _CHROMIUM_VERSION_PATTERN = re.compile(r"\b(\d+\.\d+\.\d+\.\d+)\b")
+_VERSION_OUTPUT_LIMIT = 8192
+_VERSION_TIMEOUT_SECONDS = 5.0
 
 
 def configure_logging(redactor: SecretRedactor) -> None:
@@ -50,6 +54,14 @@ def configure_logging(redactor: SecretRedactor) -> None:
 
 
 def _open_context(playwright: Any, config: ActionConfig) -> Any:
+    channel = browser_selection(config.browser_channel, config.executable_path)
+    executable = os.environ.get("BUNTZEN_BROWSER_EXECUTABLE", "").strip()
+    if executable and (
+        not os.path.isabs(executable)
+        or len(executable.encode("utf-8")) > 2048
+        or "\x00" in executable
+    ):
+        raise ActionError("operator browser executable must be an absolute path")
     launch: dict[str, Any] = {
         "user_data_dir": str(config.profile_dir),
         "headless": config.headless,
@@ -62,12 +74,12 @@ def _open_context(playwright: Any, config: ActionConfig) -> Any:
         # exact-origin navigation and secret-fill guards remain in YodelAction.
         "service_workers": "allow",
     }
-    if config.executable_path:
-        launch["executable_path"] = config.executable_path
-        user_agent_executable = config.executable_path
-    elif config.browser_channel:
-        launch["channel"] = config.browser_channel
-        user_agent_executable = _browser_channel_executable(config.browser_channel)
+    if executable:
+        launch["executable_path"] = executable
+        user_agent_executable = executable
+    elif channel:
+        user_agent_executable = _browser_channel_executable(channel)
+        launch["executable_path"] = user_agent_executable
     else:
         user_agent_executable = str(playwright.chromium.executable_path)
     launch["user_agent"] = _chromium_user_agent(user_agent_executable)
@@ -80,23 +92,45 @@ def _open_context(playwright: Any, config: ActionConfig) -> Any:
     return playwright.chromium.launch_persistent_context(**launch)
 
 
-def _chromium_user_agent(executable: str) -> str:
-    """Return a normal Chrome UA whose version matches the launched binary."""
-
+def _browser_version_output(executable: str) -> str:
+    """Bound both runtime and output before collecting a version probe."""
     try:
-        completed = subprocess.run(
+        with subprocess.Popen(
             [executable, "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        ) as process:
+            try:
+                deadline = time.monotonic() + _VERSION_TIMEOUT_SECONDS
+                output = bytearray()
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0 or not selector.select(remaining):
+                            raise ActionError("Chromium version probe timed out")
+                        chunk = os.read(process.stdout.fileno(), _VERSION_OUTPUT_LIMIT + 1 - len(output))
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+                        if len(output) > _VERSION_OUTPUT_LIMIT:
+                            raise ActionError("Chromium version output exceeds the safety limit")
+                if process.wait(timeout=max(0, deadline - time.monotonic())) != 0:
+                    raise ActionError("Chromium version could not be determined")
+                return output.decode("utf-8", errors="replace")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
     except (OSError, subprocess.SubprocessError) as exc:
         raise ActionError("Chromium version could not be determined") from exc
-    match = _CHROMIUM_VERSION_PATTERN.search(
-        f"{completed.stdout}\n{completed.stderr}"
-    )
-    if completed.returncode != 0 or match is None:
+
+
+def _chromium_user_agent(executable: str) -> str:
+    """Return a normal Chrome UA whose version matches the launched binary."""
+    match = _CHROMIUM_VERSION_PATTERN.search(_browser_version_output(executable))
+    if match is None:
         raise ActionError("Chromium version could not be determined")
     version = match.group(1)
     # Yodel's load balancer rejects Playwright's HeadlessChrome product token.
@@ -146,7 +180,7 @@ def _browser_channel_executable(channel: str) -> str:
         if resolved:
             return resolved
     raise ActionError(
-        "Chrome channel executable could not be resolved; configure its explicit path"
+        "Chrome is not installed; ask the operator to configure BUNTZEN_BROWSER_EXECUTABLE"
     )
 
 

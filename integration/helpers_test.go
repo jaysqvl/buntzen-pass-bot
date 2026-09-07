@@ -104,6 +104,14 @@ func assertTreeExcludesValues(t *testing.T, root string, forbidden ...string) {
 	}
 }
 
+func assertNoBrowserArtifacts(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("raw browser diagnostics retained: entries=%d error=%v", len(entries), err)
+	}
+}
+
 func assertExcludesValues(t *testing.T, contents []byte, label string, forbidden ...string) {
 	t.Helper()
 	for _, secret := range forbidden {

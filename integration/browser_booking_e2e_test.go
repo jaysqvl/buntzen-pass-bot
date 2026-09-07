@@ -20,6 +20,7 @@ import (
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -154,6 +155,10 @@ func TestControlPlanePythonBrowserBooking(t *testing.T) {
 			observed := strings.Join(append(append([]string{}, outcome.stderr...), outcome.events...), "\n")
 			assertExcludesValues(t, []byte(observed), "booking worker stderr and durable events", testPhone, testOTP, testBBPassword, bookingBearerToken)
 			assertTreeExcludesValues(t, outcome.artifactDir, testPhone, testOTP, testBBPassword, bookingBearerToken)
+			assertNoBrowserArtifacts(t, outcome.artifactDir)
+			if snapshot.secretRequests == 0 || snapshot.secretResponsesRead == 0 {
+				t.Errorf("credential-bearing authenticated traffic was not exercised: requests=%d acknowledgements=%d", snapshot.secretRequests, snapshot.secretResponsesRead)
+			}
 		})
 	}
 }
@@ -189,13 +194,17 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 		http.Error(response, "OTP provider must not be called for an authenticated session", http.StatusInternalServerError)
 	}))
 	t.Cleanup(blueBubbles.Close)
+	policy, err := egress.NewPolicy([]egress.Rule{{Origin: blueBubbles.URL, Networks: []string{"127.0.0.1/32"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	provider, err := bluebubbles.New(bluebubbles.Config{
 		BaseURL:  blueBubbles.URL,
 		Password: testBBPassword,
 		ChatGUID: testChatGUID,
 		Sender:   testSender,
 		Service:  testService,
-	})
+	}, policy)
 	if err != nil {
 		t.Fatalf("create synthetic BlueBubbles provider: %v", err)
 	}
@@ -229,7 +238,6 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 			"pass_order":            []string{"all_day"},
 			"headless":              true,
 			"browser_channel":       nil,
-			"executable_path":       nullableString(browserPath()),
 			"default_timeout_ms":    8_000,
 			"poll_deadline_seconds": 2,
 			"poll_min_seconds":      0.05,
@@ -251,6 +259,7 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 				Executable: python,
 				Args:       pythonArgs,
 				Environment: []string{
+					"BUNTZEN_BROWSER_EXECUTABLE=" + browserPath(),
 					"BUNTZEN_ACTIONPROC_HELPER=e2e-local-tls",
 					"BUNTZEN_ACTION_LOG_LEVEL=debug",
 					"PYTHONDONTWRITEBYTECODE=1",
@@ -358,32 +367,38 @@ type bookingFlow struct {
 	cartAdds            int
 	checkouts           int
 	confirmations       int
+	secretRequests      int
+	secretResponsesRead int
 	errors              []string
 }
 
 type bookingFlowSnapshot struct {
-	probeLoads        int
-	passLoads         int
-	dateSelections    int
-	vehicleSelections int
-	cartAdds          int
-	checkouts         int
-	confirmations     int
-	errors            []string
+	probeLoads          int
+	passLoads           int
+	dateSelections      int
+	vehicleSelections   int
+	cartAdds            int
+	checkouts           int
+	confirmations       int
+	secretRequests      int
+	secretResponsesRead int
+	errors              []string
 }
 
 func (f *bookingFlow) snapshot() bookingFlowSnapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return bookingFlowSnapshot{
-		probeLoads:        f.probeLoads,
-		passLoads:         f.passLoads,
-		dateSelections:    f.dateSelections,
-		vehicleSelections: f.vehicleSelections,
-		cartAdds:          f.cartAdds,
-		checkouts:         f.checkouts,
-		confirmations:     f.confirmations,
-		errors:            append([]string(nil), f.errors...),
+		probeLoads:          f.probeLoads,
+		passLoads:           f.passLoads,
+		dateSelections:      f.dateSelections,
+		vehicleSelections:   f.vehicleSelections,
+		cartAdds:            f.cartAdds,
+		checkouts:           f.checkouts,
+		confirmations:       f.confirmations,
+		secretRequests:      f.secretRequests,
+		secretResponsesRead: f.secretResponsesRead,
+		errors:              append([]string(nil), f.errors...),
 	}
 }
 
@@ -393,6 +408,7 @@ func (f *bookingFlow) serveYodel(response http.ResponseWriter, request *http.Req
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake":
 		f.probeLoads++
+		http.SetCookie(response, &http.Cookie{Name: "synthetic_session", Value: bookingBearerToken, Path: "/", Secure: true, HttpOnly: true})
 		writeHTML(response, `<html><body><script>localStorage.setItem("BearerToken", "`+bookingBearerToken+`");</script><a href="/account">My Account</a></body></html>`)
 	case request.Method == http.MethodGet && request.URL.Path == "/buntzen-lake/All-Day-Pass":
 		f.passLoads++
@@ -400,7 +416,29 @@ func (f *bookingFlow) serveYodel(response http.ResponseWriter, request *http.Req
 		if f.receipt == "stale_cart" {
 			page = strings.Replace(page, emptyBookingCart, singleBookingCart, 1)
 		}
+		// Post-authentication DOM, headers, cookies and bodies intentionally
+		// retain synthetic secrets. Diagnostics must never capture any of them.
+		page = strings.Replace(page, "</body>", `<input type="hidden" value="`+testPhone+`"><input type="hidden" value="`+testOTP+`"><p id="private-details">Phone `+testPhone+` OTP `+testOTP+`</p>
+<script>
+fetch('/synthetic/diagnostic-secrets', {method:'POST', headers:{Authorization:'Bearer `+bookingBearerToken+`'}, body:'`+testPhone+` `+testOTP+`'})
+  .then(response => response.text()).then(body => {
+    document.getElementById('private-details').textContent = body;
+    return fetch('/synthetic/diagnostic-ack', {method:'POST'});
+  });
+</script></body>`, 1)
 		writeHTML(response, page)
+	case request.Method == http.MethodPost && request.URL.Path == "/synthetic/diagnostic-secrets":
+		f.secretRequests++
+		cookie, err := request.Cookie("synthetic_session")
+		body, bodyErr := io.ReadAll(io.LimitReader(request.Body, 1024))
+		if err != nil || cookie.Value != bookingBearerToken || request.Header.Get("Authorization") != "Bearer "+bookingBearerToken || bodyErr != nil || !strings.Contains(string(body), testPhone+" "+testOTP) {
+			f.errors = append(f.errors, "authenticated secret fixture did not send expected credentials")
+		}
+		http.SetCookie(response, &http.Cookie{Name: "synthetic_response_secret", Value: bookingBearerToken, Path: "/", Secure: true, HttpOnly: true})
+		_, _ = fmt.Fprint(response, "Private authenticated response "+testPhone+" "+testOTP+" "+bookingBearerToken)
+	case request.Method == http.MethodPost && request.URL.Path == "/synthetic/diagnostic-ack":
+		f.secretResponsesRead++
+		response.WriteHeader(http.StatusNoContent)
 	case request.Method == http.MethodPost && request.URL.Path == "/synthetic/date-selected":
 		f.dateSelections++
 		response.WriteHeader(http.StatusNoContent)

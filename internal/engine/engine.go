@@ -162,6 +162,8 @@ func (e *Engine) runClaimed(job model.Job) {
 			message = "Cancelled by the operator."
 		} else if errors.Is(context.Cause(jobCtx), ErrArtifactLimit) {
 			message = "Job diagnostics exceeded the per-job storage limit."
+		} else if limitMessage := executionLimitMessage(runErr); limitMessage != "" {
+			message = limitMessage
 		}
 		e.finish(job.ID, status, message, nil)
 		return
@@ -206,14 +208,32 @@ func (e *Engine) monitorCancellation(ctx context.Context, jobID int64, cancel co
 }
 
 func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult, error) {
+	return e.executeWithBudgets(ctx, job, interactiveExecutionBudget, checkoutExecutionGrace)
+}
+
+func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, interactive, checkout time.Duration) (result control.RunResult, runErr error) {
 	if err := job.ValidateImmediateRun(); err != nil {
 		return control.RunResult{}, err
 	}
-	if job.RunImmediately {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, *job.ExpiresAt)
-		defer cancel()
+	startedAt := time.Now()
+	inputDeadline := startedAt.Add(executionInputBudget)
+	if job.RunImmediately && job.ExpiresAt.Before(inputDeadline) {
+		inputDeadline = *job.ExpiresAt
 	}
+	ctx, cancelInputs := context.WithDeadlineCause(parent, inputDeadline, ErrExecutionBudget)
+	defer cancelInputs()
+	defer func() {
+		cause := context.Cause(ctx)
+		message := executionLimitMessage(cause)
+		if message == "" || result.Status == model.JobSucceeded || result.Status == model.JobOutcomeUnknown {
+			return
+		}
+		if runErr != nil {
+			runErr = errors.Join(runErr, cause)
+			return
+		}
+		result.Status, result.Message = model.JobFailed, message
+	}()
 	slog.Debug("loading job execution inputs", "job_id", job.ID)
 	profile, err := e.store.SystemGetProfile(ctx, job.ProfileID)
 	if err != nil {
@@ -245,11 +265,18 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 			return control.RunResult{}, err
 		}
 	}
+	deadline, err := jobExecutionDeadline(job, booking, startedAt, interactive, checkout)
+	if err != nil {
+		return control.RunResult{}, err
+	}
+	cancelInputs()
+	ctx, cancelExecution := context.WithDeadlineCause(parent, deadline, ErrExecutionBudget)
+	defer cancelExecution()
 	credentials, err := e.store.SystemGetProfileCredentials(ctx, profile.ID)
 	if err != nil {
 		return control.RunResult{}, err
 	}
-	provider, err := ProviderForSource(ctx, e.store, source)
+	provider, err := ProviderForSource(ctx, e.store, source, e.config.BlueBubblesPolicy)
 	if err != nil {
 		return control.RunResult{}, err
 	}
@@ -281,6 +308,13 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 	if err != nil {
 		return control.RunResult{}, err
 	}
+	if err := inspectProfileStorage(ctx, profileDir); err != nil {
+		return control.RunResult{}, err
+	}
+	ctx, cancelProfile := context.WithCancelCause(ctx)
+	defer cancelProfile(nil)
+	stopProfileMonitor := monitorProfileStorage(ctx, profileDir, cancelProfile)
+	defer stopProfileMonitor()
 	artifactDir, err := safeChild(e.config.ArtifactsDir, fmt.Sprintf("job-%d", job.ID))
 	if err != nil {
 		return control.RunResult{}, err
@@ -295,8 +329,7 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		"allowed_yodel_origins": append([]string(nil), e.config.YodelOrigins...),
 		"vehicle_keyword":       profile.DefaultVehicle,
 		"headless":              profile.Headless,
-		"browser_channel":       nullable(profile.BrowserChannel),
-		"executable_path":       nullable(profile.BrowserExecutable),
+		"browser_channel":       nullable(strings.ToLower(strings.TrimSpace(profile.BrowserChannel))),
 		"default_timeout_ms":    profile.DefaultTimeoutMS,
 		"artifacts_dir":         artifactDir,
 	}
@@ -345,7 +378,7 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 		"mode", job.RunMode,
 		"headless", profile.Headless,
 	)
-	result, err := control.Run(ctx, control.RunInput{
+	result, err = control.Run(ctx, control.RunInput{
 		JobID: job.ID, Command: job.Command, Mode: job.RunMode,
 		StartConfig: startConfig, Credentials: credentials,
 		Provider: provider, OTPFilter: filter,
@@ -356,6 +389,7 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 				Executable: e.config.PythonExecutable,
 				Args:       []string{"-m", e.config.PythonModule},
 				Environment: []string{
+					"BUNTZEN_BROWSER_EXECUTABLE=" + e.config.BrowserExecutable,
 					"PYTHONUNBUFFERED=1",
 					"BUNTZEN_ACTION_LOG_LEVEL=" + e.config.EffectiveLogLevel(),
 				},

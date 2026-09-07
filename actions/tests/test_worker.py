@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import sys
+import time
 import tempfile
 import unittest
 from dataclasses import replace
@@ -9,8 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from buntzen_actions.config import ActionConfig
-from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown
-from buntzen_actions.worker import _open_context, _read_start_or_cancel, run_action
+from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
+from buntzen_actions.worker import _chromium_user_agent, _open_context, _read_start_or_cancel, run_action
 from buntzen_actions.yodel import BookingResult
 
 
@@ -54,7 +57,7 @@ class WorkerTests(unittest.TestCase):
         self.assertIsNone(_read_start_or_cancel(stream))
 
     def test_browser_closes_and_preserves_action_failure_kind(self) -> None:
-        for failure_type in (ActionError, Cancelled, OutcomeUnknown):
+        for failure_type in (ActionError, Cancelled, OutcomeUnknown, ProtocolError):
             with self.subTest(failure_type=failure_type):
                 context = Mock(pages=[object()])
                 failure = failure_type("synthetic action outcome")
@@ -105,9 +108,7 @@ class WorkerTests(unittest.TestCase):
     def test_browser_launch_preserves_site_compatibility_and_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             playwright = browser_launcher()
-            with patch("buntzen_actions.worker.subprocess.run", return_value=SimpleNamespace(
-                returncode=0, stdout="Chromium 1.55.5010.0123", stderr="",
-            )):
+            with patch("buntzen_actions.worker._browser_version_output", return_value="Chromium 1.55.5010.0123"):
                 _open_context(playwright, make_config(Path(directory) / "profile"))
             launch = playwright.chromium.launch_persistent_context.call_args.kwargs
             self.assertIs(launch["chromium_sandbox"], True)
@@ -116,34 +117,64 @@ class WorkerTests(unittest.TestCase):
             self.assertNotIn("HeadlessChrome", launch["user_agent"])
             self.assertNotIn("--no-sandbox", launch.get("args", []))
 
-    def test_explicit_chrome_uses_its_exact_version_without_headless_token(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            playwright = browser_launcher()
-            executable = "/synthetic/google-chrome"
-            config = replace(
-                make_config(Path(directory) / "profile"),
-                executable_path=executable,
-            )
-            with patch(
-                "buntzen_actions.worker.subprocess.run",
-                return_value=SimpleNamespace(
-                    returncode=0,
-                    stdout="Google Chrome 1.55.5010.0123",
-                    stderr="",
-                ),
+    def test_operator_chrome_uses_same_executable_for_version_and_launch(self) -> None:
+        executable = "/synthetic/Google Chrome"
+        playwright = browser_launcher()
+        with patch.dict(os.environ, {"BUNTZEN_BROWSER_EXECUTABLE": executable}), patch(
+            "buntzen_actions.worker._browser_version_output", return_value="Google Chrome 1.55.5010.0123"
+        ) as version:
+            _open_context(playwright, make_config(Path("/tmp/synthetic-profile")))
+        version.assert_called_once_with(executable)
+        launch = playwright.chromium.launch_persistent_context.call_args.kwargs
+        self.assertEqual(launch["executable_path"], executable)
+        self.assertIn("Chrome/1.55.5010.0123", launch["user_agent"])
+
+    def test_constructed_config_cannot_select_member_executable(self) -> None:
+        for override in ({"executable_path": "/tmp/member-program"}, {"browser_channel": "../chrome"}):
+            with self.subTest(override=override), patch("buntzen_actions.worker.subprocess.Popen") as probe:
+                playwright = browser_launcher()
+                config = replace(make_config(Path("/tmp/synthetic-profile")), **override)
+                with self.assertRaises(ProtocolError):
+                    _open_context(playwright, config)
+                probe.assert_not_called()
+                playwright.chromium.launch_persistent_context.assert_not_called()
+
+    def test_supported_channels_resolve_once_for_probe_and_launch(self) -> None:
+        for channel in ("chrome", "chrome-beta", "chrome-dev", "chrome-canary", " CHROME "):
+            with self.subTest(channel=channel), patch.dict(os.environ, {"BUNTZEN_BROWSER_EXECUTABLE": ""}), patch(
+                "buntzen_actions.worker._browser_channel_executable", return_value="/synthetic/chrome"
+            ) as resolve, patch(
+                "buntzen_actions.worker._browser_version_output", return_value="Google Chrome 1.55.5010.0123"
             ) as version:
-                _open_context(playwright, config)
-            version.assert_called_once_with(
-                [executable, "--version"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            launch = playwright.chromium.launch_persistent_context.call_args.kwargs
-            self.assertEqual(launch["executable_path"], executable)
-            self.assertIn("Chrome/1.55.5010.0123", launch["user_agent"])
-            self.assertNotIn("HeadlessChrome", launch["user_agent"])
+                playwright = browser_launcher()
+                _open_context(playwright, replace(make_config(Path("/tmp/profile")), browser_channel=channel))
+                resolve.assert_called_once_with(channel.strip().lower())
+                version.assert_called_once_with("/synthetic/chrome")
+                self.assertEqual(playwright.chromium.launch_persistent_context.call_args.kwargs["executable_path"], "/synthetic/chrome")
+
+    def test_version_probe_bounds_real_stdout_stderr_and_runtime(self) -> None:
+        cases = {
+            "valid": ("print('Google Chrome 1.55.5010.0123')", None),
+            "stderr version": ("import sys; print('Chromium 1.55.5010.0123', file=sys.stderr)", None),
+            "stdout overflow": ("import os; os.write(1, b'x' * 65536)", "safety limit"),
+            "stderr overflow": ("import os; os.write(2, b'x' * 65536)", "safety limit"),
+            "malformed": ("print('not a browser')", "could not be determined"),
+            "exit failure": ("print('Chrome 1.55.5010.0123'); raise SystemExit(1)", "could not be determined"),
+            "timeout": ("import time; time.sleep(2)", "timed out"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "Test Chrome"
+            for name, (body, error) in cases.items():
+                with self.subTest(name=name), patch("buntzen_actions.worker._VERSION_TIMEOUT_SECONDS", 0.5):
+                    executable.write_text(f"#!{sys.executable}\n{body}\n")
+                    executable.chmod(0o700)
+                    started = time.monotonic()
+                    if error:
+                        with self.assertRaisesRegex(ActionError, error):
+                            _chromium_user_agent(str(executable))
+                    else:
+                        self.assertIn("Chrome/1.55.5010.0123", _chromium_user_agent(str(executable)))
+                    self.assertLess(time.monotonic() - started, 1.5)
 
     def test_insecure_tls_test_seam_is_explicit_and_loopback_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -156,10 +187,8 @@ class WorkerTests(unittest.TestCase):
             with patch.dict(
                 "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
             ), patch(
-                "buntzen_actions.worker.subprocess.run",
-                return_value=SimpleNamespace(
-                    returncode=0, stdout="Chromium 1.55.5010.0123", stderr=""
-                ),
+                "buntzen_actions.worker._browser_version_output",
+                return_value="Chromium 1.55.5010.0123",
             ):
                 _open_context(playwright, config)
             launch = playwright.chromium.launch_persistent_context.call_args.kwargs
@@ -174,10 +203,8 @@ class WorkerTests(unittest.TestCase):
             with patch.dict(
                 "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
             ), patch(
-                "buntzen_actions.worker.subprocess.run",
-                return_value=SimpleNamespace(
-                    returncode=0, stdout="Chromium 1.55.5010.0123", stderr=""
-                ),
+                "buntzen_actions.worker._browser_version_output",
+                return_value="Chromium 1.55.5010.0123",
             ):
                 _open_context(playwright, remote)
             launch = playwright.chromium.launch_persistent_context.call_args.kwargs

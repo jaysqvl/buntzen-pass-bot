@@ -110,6 +110,7 @@ func TestSourceConnectionActionsReturnToSetupWithoutProviderErrors(t *testing.T)
 				_, _ = w.Write([]byte(`{"status":200,"message":"Ping received!","data":"pong"}`))
 			}))
 			defer provider.Close()
+			approveTestBlueBubbles(t, &fixture, provider.URL)
 			source, err := fixture.store.ForUser(fixture.admin.ID).CreateOTPSource(context.Background(), store.OTPSourceInput{
 				Name: "Messages", Provider: model.OTPProviderBlueBubbles, Identity: provider.URL,
 				ProviderConfig: bluebubbles.Config{BaseURL: provider.URL, Password: password},

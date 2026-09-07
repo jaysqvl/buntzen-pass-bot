@@ -11,7 +11,8 @@ the real Python worker and real headless Chromium processes. Together they cross
 All credentials and OTPs are synthetic. The OTP test verifies that BlueBubbles is
 armed before the browser triggers MFA, that Chromium submits the resulting OTP,
 that transient hub state is cleared, and that logs, durable event messages, and
-post-authentication Playwright artifacts do not retain the synthetic secrets.
+diagnostics do not retain the synthetic secrets. Raw browser capture is disabled;
+the suite requires an empty artifact directory after authenticated activity.
 The booking test starts from a synthetic authenticated session and covers date,
 pass, and vehicle selection plus dry-run, manual approve, manual cancel, and
 automatic final confirmation. It uses Yodel's padded calendar labels and actual

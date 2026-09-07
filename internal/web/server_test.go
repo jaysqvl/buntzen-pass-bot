@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
 	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
@@ -57,7 +58,11 @@ func newWebFixtureWithSetup(t *testing.T, setup bool) webFixture {
 			t.Fatalf("setup administrator: %v", err)
 		}
 	}
-	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "buntzen_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: "test-only-setup-token"}
+	setupToken, err := auth.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "buntzen_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: setupToken}
 	runner := engine.New(cfg, database, control.NewHub())
 	server, err := NewServer(cfg, database, runner)
 	if err != nil {
@@ -497,7 +502,18 @@ func TestBookingRunReturnsToBookingsWithExistingJobForDuplicates(t *testing.T) {
 }
 
 func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
+	for _, public := range []bool{false, true} {
+		for _, idle := range []bool{false, true} {
+			t.Run(fmt.Sprintf("public=%v/idle=%v", public, idle), func(t *testing.T) { testSSESessionExpiry(t, public, idle) })
+		}
+	}
+}
+
+func testSSESessionExpiry(t *testing.T, public, idle bool) {
 	fixture := newWebFixture(t)
+	if public {
+		fixture = publicFixture(t)
+	}
 	userStore := fixture.store.ForUser(fixture.admin.ID)
 	source, err := userStore.CreateOTPSource(context.Background(), store.OTPSourceInput{
 		Name: "SSE Messages", Provider: model.OTPProviderBlueBubbles,
@@ -533,17 +549,27 @@ func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookies := loginCookies(t, fixture)
+	var cookies []*http.Cookie
+	if public {
+		cookies = publicLoginCookies(t, fixture)
+	} else {
+		cookies = loginCookies(t, fixture)
+	}
 	server := httptest.NewServer(fixture.handler)
 	defer server.Close()
 	request, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/jobs/%d/events", server.URL, job.ID), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if public {
+		request.Host = "example.test"
+		request.Header.Set("X-Forwarded-Proto", "https")
+		request.Header.Set("CF-Connecting-IP", "203.0.113.7")
+	}
 	var rawSession string
 	for _, cookie := range cookies {
 		request.AddCookie(cookie)
-		if cookie.Name == sessionCookie {
+		if cookie.Name == fixture.server.cookieName(sessionCookie) {
 			rawSession = cookie.Value
 		}
 	}
@@ -555,7 +581,9 @@ func TestSSEStopsWhenSessionIsRevoked(t *testing.T) {
 	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("SSE response status=%d cache=%q", response.StatusCode, response.Header.Get("Cache-Control"))
 	}
-	if err := fixture.store.DeleteSession(context.Background(), rawSession); err != nil {
+	if idle {
+		sessionTestSQL(t, fixture, `UPDATE sessions SET last_seen_at = '2000-01-01T00:00:00.000000000Z'`)
+	} else if err := fixture.store.DeleteSession(context.Background(), rawSession); err != nil {
 		t.Fatal(err)
 	}
 	lines := make(chan string, 16)

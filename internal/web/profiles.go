@@ -174,14 +174,22 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 		},
 		{
 			Title: "Browser",
-			Help:  "Native macOS normally uses channel chrome. Docker uses bundled Chromium, so leave channel and executable blank there.",
+			Help:  "Use Chrome for native macOS or bundled Chromium for Docker. Custom browser installations are managed by your host operator.",
 			Fields: []formField{
 				{Name: "headless", Label: "Run headless", Type: "checkbox", Checked: value.Headless},
-				{Name: "browser_channel", Label: "Browser channel", Type: "text", Value: value.BrowserChannel, Placeholder: "chrome"},
-				{Name: "browser_executable", Label: "Executable path override", Type: "text", Value: value.BrowserExecutable},
+				{Name: "browser_channel", Label: "Browser channel", Type: "select", Options: browserChannelOptions(value.BrowserChannel)},
 				{Name: "default_timeout_ms", Label: "Action timeout (ms)", Type: "number", Value: strconv.Itoa(value.DefaultTimeoutMS), Required: true, Step: "1000"},
 			},
 		},
 	}
 	s.render(w, formStatus(formError), "form", data)
+}
+
+func browserChannelOptions(selected string) []selectOption {
+	selected = strings.ToLower(strings.TrimSpace(selected))
+	options := []selectOption{{Value: "", Label: "Bundled Chromium", Selected: selected == ""}}
+	for _, channel := range []string{"chrome", "chrome-beta", "chrome-dev", "chrome-canary"} {
+		options = append(options, selectOption{Value: channel, Label: channel, Selected: channel == selected})
+	}
+	return options
 }

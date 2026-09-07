@@ -28,11 +28,13 @@ func (w *observedResponseWriter) Write(payload []byte) (int, error) {
 	return written, err
 }
 
-func (w *observedResponseWriter) Flush() {
+func (w *observedResponseWriter) Flush() { _ = w.FlushError() }
+
+func (w *observedResponseWriter) FlushError() error {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *observedResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

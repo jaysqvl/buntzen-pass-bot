@@ -220,6 +220,19 @@ func TestChildEnvironmentAllowsActionLogLevel(t *testing.T) {
 	}
 }
 
+func TestBrowserExecutableRequiresExplicitOperatorOverride(t *testing.T) {
+	t.Setenv("BUNTZEN_BROWSER_EXECUTABLE", "/not/implicitly/inherited")
+	environment, err := childEnvironment(nil)
+	if err != nil || strings.Contains(strings.Join(environment, "\n"), "BUNTZEN_BROWSER_EXECUTABLE=") {
+		t.Fatalf("unexpected inherited browser environment: %v", err)
+	}
+	want := "BUNTZEN_BROWSER_EXECUTABLE=/Applications/Google Chrome"
+	environment, err = childEnvironment([]string{want})
+	if err != nil || !strings.Contains(strings.Join(environment, "\n"), want) {
+		t.Fatalf("explicit operator override missing: %v", err)
+	}
+}
+
 func TestStderrDrainDiscardsOversizedLinesAndBoundsTotalCallbacks(t *testing.T) {
 	phoneAtBoundary := "5559876543"
 	longLine := strings.Repeat("x", maxStderrLineBytes-len(phoneAtBoundary)+2) + phoneAtBoundary

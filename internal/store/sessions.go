@@ -13,6 +13,9 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 )
 
+// SessionIdleTimeout is enforced by both reads and conditional refreshes.
+const SessionIdleTimeout = 30 * time.Minute
+
 func (s *Store) NewSession(ctx context.Context, userID int64, lifetime time.Duration) (model.SessionCredentials, error) {
 	return s.newSession(ctx, userID, lifetime, nil)
 }
@@ -23,10 +26,14 @@ func (s *Store) newSession(
 	lifetime time.Duration,
 	expectedPasswordHash *string,
 ) (model.SessionCredentials, error) {
+	return s.newSessionInScope(ctx, userID, lifetime, expectedPasswordHash, "")
+}
+
+func (s *Store) newSessionInScope(ctx context.Context, userID int64, lifetime time.Duration, expectedPasswordHash *string, scope string) (model.SessionCredentials, error) {
 	if lifetime <= 0 || lifetime > 31*24*time.Hour {
 		return model.SessionCredentials{}, errors.New("session lifetime must be between zero and 31 days")
 	}
-	token, err := auth.NewToken()
+	token, err := auth.NewSessionToken(scope)
 	if err != nil {
 		return model.SessionCredentials{}, err
 	}
@@ -64,14 +71,15 @@ func (s *Store) newSession(
 }
 
 func (s *Store) GetSession(ctx context.Context, token string) (model.AuthenticatedSession, error) {
+	now := s.now()
 	row := s.db.QueryRowContext(ctx, `
 		SELECT sessions.id, sessions.user_id, sessions.csrf_token_hash, sessions.expires_at,
 			sessions.created_at, sessions.last_seen_at,
 			users.id, users.username, users.role, users.status, users.must_change_password,
 			users.created_at, users.updated_at
 		FROM sessions JOIN users ON users.id = sessions.user_id
-		WHERE sessions.id = ? AND sessions.expires_at > ? AND users.status = 'active'
-	`, auth.HashToken(token), formatTime(s.now()))
+		WHERE sessions.id = ? AND sessions.expires_at > ? AND sessions.last_seen_at > ? AND users.status = 'active'
+	`, auth.HashToken(token), formatTime(now), formatTime(now.Add(-SessionIdleTimeout)))
 	var result model.AuthenticatedSession
 	var sessionExpiry, sessionCreated, lastSeen, userCreated, userUpdated string
 	if err := row.Scan(&result.Session.ID, &result.Session.UserID, &result.Session.CSRFTokenHash,
@@ -107,12 +115,13 @@ func ValidateCSRF(session model.Session, token string) bool {
 }
 
 func (s *Store) TouchSession(ctx context.Context, token string) error {
-	now := formatTime(s.now())
+	instant := s.now()
+	now := formatTime(instant)
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET last_seen_at = ?
-		WHERE id = ? AND expires_at > ?
+		WHERE id = ? AND expires_at > ? AND last_seen_at > ?
 		AND EXISTS (SELECT 1 FROM users WHERE users.id = sessions.user_id AND users.status = 'active')
-	`, now, auth.HashToken(token), now)
+	`, now, auth.HashToken(token), now, formatTime(instant.Add(-SessionIdleTimeout)))
 	if err != nil {
 		return fmt.Errorf("touch session: %w", err)
 	}
@@ -128,7 +137,8 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 }
 
 func (s *Store) PurgeExpiredSessions(ctx context.Context) (int64, error) {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at <= ?", formatTime(s.now()))
+	now := s.now()
+	result, err := s.db.ExecContext(ctx, "DELETE FROM sessions WHERE expires_at <= ? OR last_seen_at <= ?", formatTime(now), formatTime(now.Add(-SessionIdleTimeout)))
 	if err != nil {
 		return 0, fmt.Errorf("purge sessions: %w", err)
 	}

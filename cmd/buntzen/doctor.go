@@ -32,7 +32,7 @@ func runDoctor(ctx context.Context, cfg config.Config, database *store.Store) er
 	}
 	for _, source := range sources {
 		entry := map[string]any{"id": source.ID, "name": source.Name, "provider": source.Provider, "ok": false}
-		provider, providerErr := engine.ProviderForSource(ctx, database, source)
+		provider, providerErr := engine.ProviderForSource(ctx, database, source, cfg.BlueBubblesPolicy)
 		if providerErr == nil {
 			healthCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			providerErr = provider.Health(healthCtx)

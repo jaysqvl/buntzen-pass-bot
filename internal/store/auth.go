@@ -27,11 +27,17 @@ func (s *Store) AuthenticateAndCreateSession(
 	username, password string,
 	lifetime time.Duration,
 ) (model.User, model.SessionCredentials, bool, error) {
+	return s.AuthenticateAndCreateSessionInScope(ctx, username, password, lifetime, "")
+}
+
+// AuthenticateAndCreateSessionInScope retains the password-version guard while
+// separating private sessions from sessions for an exact public HTTPS origin.
+func (s *Store) AuthenticateAndCreateSessionInScope(ctx context.Context, username, password string, lifetime time.Duration, scope string) (model.User, model.SessionCredentials, bool, error) {
 	user, passwordHash, ok, err := s.authenticatePassword(ctx, username, password)
 	if err != nil || !ok {
 		return model.User{}, model.SessionCredentials{}, ok, err
 	}
-	credentials, err := s.newSession(ctx, user.ID, lifetime, &passwordHash)
+	credentials, err := s.newSessionInScope(ctx, user.ID, lifetime, &passwordHash, scope)
 	if errors.Is(err, ErrNotFound) {
 		return model.User{}, model.SessionCredentials{}, false, nil
 	}
@@ -44,13 +50,11 @@ func (s *Store) AuthenticateAndCreateSession(
 func (s *Store) authenticatePassword(ctx context.Context, username, password string) (model.User, string, bool, error) {
 	normalized, err := auth.NormalizeUsername(username)
 	if err != nil {
-		auth.EqualizePasswordCheck(password)
-		return model.User{}, "", false, nil
+		return model.User{}, "", false, auth.EqualizePasswordCheck(password)
 	}
 	user, passwordHash, err := getUserWith(ctx, s.db, "username_normalized = ?", normalized)
 	if errors.Is(err, ErrNotFound) {
-		auth.EqualizePasswordCheck(password)
-		return model.User{}, "", false, nil
+		return model.User{}, "", false, auth.EqualizePasswordCheck(password)
 	}
 	if err != nil {
 		return model.User{}, "", false, err

@@ -1,9 +1,9 @@
 # Buntzen Bot
 
-Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking passes through Yodel. A Go service provides the web UI, scheduling, job state, and encrypted storage; isolated Python/Playwright workers perform the browser actions.
+Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking passes through Yodel. A Go service provides the web UI, scheduling, job state, and encrypted storage; separate supervised Python/Playwright processes perform the browser actions.
 
 > [!WARNING]
-> This application is for a trusted private LAN. Its HTTP traffic, including temporary OTPs shown in the UI, is not encrypted. Do not expose it to the public Internet. See [Security](SECURITY.md) for the full trust model.
+> The default private HTTP mode sends traffic, including temporary OTPs, without encryption. Before exposing the app through an HTTPS tunnel, complete setup privately and configure [public HTTPS mode](docs/public-exposure.md). The app uses its own accounts; Cloudflare Access is optional. See [Security](SECURITY.md) for account boundaries and remaining runtime trust.
 
 ## Features
 
@@ -30,10 +30,10 @@ creating another request or changing confirmation mode will not bypass the guard
    Edit `.env` and:
 
    - set `BUNTZEN_ALLOWED_HOSTS` to the exact host and port users will open, such as `buntzen.example:8080`;
-   - replace `BLUEBUBBLES_URL` with the server's LAN URL if you use BlueBubbles; and
+   - if using BlueBubbles, set `BLUEBUBBLES_URL` and approve its origin/network with `BUNTZEN_BLUEBUBBLES_ENDPOINTS` as described in [provider access](docs/public-exposure.md#outbound-provider-access); and
    - leave `SCHEDULES_ENABLED=false` until onboarding is complete.
 
-   If a reverse proxy rewrites the `Host` header, add the rewritten authority to `BUNTZEN_ALLOWED_HOSTS` and the browser-facing origin to `BUNTZEN_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`.
+   In private mode, if a reverse proxy rewrites the `Host` header, add the rewritten authority to `BUNTZEN_ALLOWED_HOSTS` and the browser-facing origin to `BUNTZEN_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`. Public mode instead requires its configured public Host and trusted connector settings from the linked guide.
 
 2. Create the persistent data directory for the container's non-root user:
 
@@ -56,13 +56,13 @@ creating another request or changing confirmation mode will not bypass the guard
 
 5. Open `http://<docker-host>:8080`, enter the setup token, and create the permanent administrator account. Passwords must be at least 12 characters.
 
-Treat `appdata` as sensitive and back it up as a unit: it contains the database, encryption key, browser profiles, and diagnostics. The key is stored beside the encrypted data, so a copied directory contains both. Only one Buntzen instance may use an appdata directory.
+Treat `appdata` as sensitive: it contains the database and browser profiles. The default encryption key is beside the database, so copying the whole directory also copies its decryption key. For a separate read-only key mount and matching backup/recovery procedure, see [key storage](docs/public-exposure.md#key-storage-and-recovery). Only one Buntzen instance may use an appdata directory.
 
 ## Set up and test a booking
 
 Keep `SCHEDULES_ENABLED=false` while completing these steps:
 
-1. Create an OTP source. For BlueBubbles, enter its LAN URL and server password, then use **Test connection**.
+1. Create an OTP source. For BlueBubbles, enter its operator-approved server URL and password, then use **Test connection**.
 2. Create an enabled Yodel profile with its login URL, 10-digit Canadian or US mobile number, vehicle, and linked OTP source.
 3. For BlueBubbles, return to the OTP source and choose **Pair with Yodel**. Select the fresh OTP candidate after Yodel sends a code. Pairing uses the linked profile and does not require a booking request.
 4. Open **Bookings** and create an enabled request with a visit date. Choose up to three pass priorities: All-day, Afternoon, Morning, or None. The bot tries them in your saved order; select at least one pass without duplicates.
@@ -92,12 +92,13 @@ uv sync --project actions --locked --python 3.12
 export APPDATA_DIR="$PWD/.native-appdata"
 export BUNTZEN_PYTHON="$PWD/actions/.venv/bin/python"
 export BLUEBUBBLES_URL="http://127.0.0.1:1234"
+export BUNTZEN_BLUEBUBBLES_ENDPOINTS='[{"origin":"http://127.0.0.1:1234","networks":["127.0.0.1/32"]}]'
 export SCHEDULES_ENABLED=false
 
 go run ./cmd/buntzen serve
 ```
 
-Open `http://127.0.0.1:8080`. Set a native Yodel profile's browser channel to `chrome`; leave the channel and executable empty in Docker to use the bundled Chromium.
+Open `http://127.0.0.1:8080`. Select `chrome` in a native Yodel profile, or bundled Chromium in Docker. If Chrome is installed elsewhere, the operator can set `BUNTZEN_BROWSER_EXECUTABLE` to its absolute executable path; this overrides channel choices for every worker. Members cannot supply executable paths. Edit and save any older profile with a path override to clear it before running jobs.
 
 Do not share browser profiles between Docker and macOS or run the same Yodel identity from both at once.
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/internal/httpguard"
 )
@@ -61,7 +62,7 @@ type Provider struct {
 
 // New constructs a provider with a client that ignores proxy environment
 // variables and refuses redirects.
-func New(config Config) (*Provider, error) {
+func New(config Config, policy *egress.Policy) (*Provider, error) {
 	config = configWithDefaults(config)
 	base, err := validateBaseURL(config.BaseURL)
 	if err != nil {
@@ -88,10 +89,14 @@ func New(config Config) (*Provider, error) {
 	if config.Freshness <= 0 || config.Freshness > time.Hour {
 		return nil, errors.New("bluebubbles freshness must be between 1 nanosecond and 1 hour")
 	}
+	client, err := policy.NewClient(base.String(), config.RequestTimeout)
+	if err != nil {
+		return nil, err
+	}
 	return &Provider{
 		config: config,
 		base:   base,
-		client: httpguard.NewClient(config.RequestTimeout),
+		client: client,
 		now:    time.Now,
 	}, nil
 }
@@ -119,18 +124,11 @@ func configWithDefaults(config Config) Config {
 }
 
 func validateBaseURL(value string) (*url.URL, error) {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, errors.New("bluebubbles base URL must be an absolute HTTP(S) URL")
+	canonical, err := egress.CanonicalOrigin(value)
+	if err != nil {
+		return nil, errors.New("bluebubbles base URL must be an HTTP(S) server root")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, errors.New("bluebubbles base URL must use HTTP or HTTPS")
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return nil, errors.New("bluebubbles base URL must not contain credentials, a path, query, or fragment")
-	}
-	parsed.Path = ""
-	return parsed, nil
+	return url.Parse(canonical)
 }
 
 // Health verifies authenticated access without reading the inbox.

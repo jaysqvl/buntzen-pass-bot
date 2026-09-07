@@ -16,6 +16,7 @@ cleanup() {
 trap cleanup EXIT
 
 new_image="ghcr.io/example/buntzen-pass-bot@sha256:$(printf 'b%.0s' {1..64})"
+old_image="ghcr.io/example/buntzen-pass-bot@sha256:$(printf 'a%.0s' {1..64})"
 compose_file="$repo_root/deploy/portainer.yml"
 release_image_workflow="$repo_root/.github/workflows/release-image.yml"
 release_workflow="$repo_root/.github/workflows/release-please.yml"
@@ -174,8 +175,12 @@ run_case() {
   local port
   local status=0
   local attempts=3
+  local image="$new_image"
+  local finished_at=0
 
   [[ "$scenario" != 'status-request-timeout' ]] || attempts=1
+  [[ "$scenario" != 'runtime-request-timeout' ]] || attempts=5
+  [[ "$scenario" != 'same-digest' ]] || image="$old_image"
 
   start_mock "$scenario" "$case_dir"
   port="$(<"$case_dir/port")"
@@ -185,7 +190,7 @@ run_case() {
     BUNTZEN_HEALTH_ATTEMPTS="$attempts" \
     BUNTZEN_HEALTH_INTERVAL_SECONDS=0 \
     BUNTZEN_HEALTH_URL="http://127.0.0.1:$port/healthz" \
-    BUNTZEN_IMAGE="$new_image" \
+    BUNTZEN_IMAGE="$image" \
     PORTAINER_API_KEY=test-api-key \
     PORTAINER_ENDPOINT_ID=1 \
     PORTAINER_STACK_ID=2 \
@@ -193,6 +198,9 @@ run_case() {
     PORTAINER_URL="http://127.0.0.1:$port" \
     "$repo_root/scripts/deploy/portainer.sh" "$compose_file" \
     >"$case_dir/output.log" 2>&1 || status=$?
+  if [[ "$scenario" == 'runtime-request-timeout' ]]; then
+    finished_at="$(python3 -c 'import time; print(time.monotonic())')"
+  fi
 
   if [[ "$expected_result" == "success" ]]; then
     [[ "$status" == 0 ]] || {
@@ -205,6 +213,20 @@ run_case() {
       printf '%s unexpectedly succeeded\n' "$scenario" >&2
       return 1
     }
+    if grep -Fq 'Buntzen deployment is healthy and schedules remain disabled.' "$case_dir/output.log"; then
+      printf '%s claimed deployment success after failed verification\n' "$scenario" >&2
+      return 1
+    fi
+    case "$scenario" in
+      identity-mismatch|git-backed|preflight-*) ;;
+      *)
+        grep -Fq 'automatic rollback was not attempted' "$case_dir/output.log" || {
+          sed -n '1,160p' "$case_dir/output.log" >&2
+          printf '%s did not explain that automatic rollback was not attempted\n' "$scenario" >&2
+          return 1
+        }
+        ;;
+    esac
   fi
 
   grep -Fq "$expected_log" "$case_dir/output.log" || {
@@ -213,30 +235,53 @@ run_case() {
     return 1
   }
   python3 "$test_dir/assert_portainer_state.py" \
-    "$scenario" "$case_dir/state.json" "$compose_file" "$new_image"
+    "$scenario" "$case_dir/state.json" "$compose_file" "$image" \
+    --finished-at "$finished_at"
   if [[ "$scenario" == 'status-request-timeout' ]]; then
     grep -Fq 'curl: (28)' "$case_dir/output.log" || {
-      printf 'slow status request did not hit its verification timeout\n' >&2
+      printf '%s did not hit its verification timeout\n' "$scenario" >&2
       return 1
     }
   fi
   stop_mock
 }
 
+run_case postdeploy-cleanup-race failure 'stack deployment ended with status 4'
+run_case postdeploy-active-cleanup-race failure 'health check failed after deployment'
+run_case old-image failure 'runtime container identity, image, health, or schedules did not match'
+for scenario in \
+  wrong-image-id \
+  containers-missing containers-duplicate container-id-invalid container-id-mismatch \
+  project-label-mismatch service-label-mismatch \
+  schedules-missing schedules-duplicate schedules-true schedules-bare \
+  container-stopped container-unhealthy \
+  runtime-list-api runtime-list-malformed \
+  runtime-inspect-api runtime-inspect-malformed \
+  runtime-image-api runtime-image-malformed runtime-image-id-invalid \
+  runtime-request-timeout; do
+  run_case "$scenario" failure 'runtime'
+done
+for scenario in preflight-image-absent preflight-image-duplicate preflight-image-tagged; do
+  run_case "$scenario" failure 'the selected stack must have exactly one immutable BUNTZEN_IMAGE for runtime verification'
+done
+for scenario in preflight-runtime-mismatch preflight-image-id-mismatch preflight-schedules-true; do
+  run_case "$scenario" failure 'pre-deployment runtime'
+done
+run_case same-digest success 'Buntzen deployment is healthy and schedules remain disabled.'
+run_case runtime-retry-healthy success 'Buntzen deployment is healthy and schedules remain disabled.'
 run_case success success 'Buntzen deployment is healthy and schedules remain disabled.'
-run_case rollback failure 'rollback was verified healthy'
-run_case rollback-failure failure 'rollback verification failed: stack deployment ended with status 2'
-run_case update-rejected failure 'stack update failed: Portainer API returned HTTP 500; rollback was verified healthy'
-run_case status-query-failure failure 'stack status verification failed: Portainer API returned HTTP 500; rollback was verified healthy'
-run_case status-query-malformed failure 'stack status verification returned a malformed response; rollback was verified healthy'
+run_case deployment-unhealthy failure 'health check failed after deployment'
+run_case deployment-inactive failure 'stack deployment ended with status 2'
+run_case update-rejected failure 'stack update failed: Portainer API returned HTTP 500'
+run_case status-query-failure failure 'stack status verification failed: Portainer API returned HTTP 500'
+run_case status-query-malformed failure 'stack status verification returned a malformed response'
 run_case async-success success 'Buntzen deployment is healthy and schedules remain disabled.'
-run_case async-failure failure 'stack deployment ended with status 4; rollback was verified healthy'
-run_case async-timeout failure 'rollback was not attempted because the stack is still deploying'
-run_case async-rollback-timeout failure 'rollback verification failed: the stack is still deploying'
-run_case update-ambiguous failure 'stack update failed: Portainer API returned HTTP 500; rollback was verified healthy'
-run_case unexpected-status failure 'rollback was not attempted because stack status verification returned an unsupported status'
-run_case status-query-persistent failure 'rollback was not attempted because stack status verification failed'
-run_case status-request-timeout failure 'rollback was not attempted because stack status verification failed'
+run_case async-failure failure 'stack deployment ended with status 4'
+run_case async-timeout failure 'the stack is still deploying after the verification deadline'
+run_case update-ambiguous failure 'stack update failed: Portainer API returned HTTP 500'
+run_case unexpected-status failure 'stack status verification returned an unsupported status'
+run_case status-query-persistent failure 'stack status verification failed'
+run_case status-request-timeout failure 'stack status verification failed'
 run_case identity-mismatch failure 'Portainer stack identity, source, or environment shape did not match'
 run_case git-backed failure 'Portainer stack identity, source, or environment shape did not match'
 run_case preflight-unhealthy failure 'the selected Buntzen stack was not healthy before deployment'

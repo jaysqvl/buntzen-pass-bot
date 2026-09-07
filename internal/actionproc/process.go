@@ -54,10 +54,11 @@ var inheritedEnvironmentKeys = []string{
 }
 
 var allowedEnvironmentOverrides = map[string]struct{}{
-	"BUNTZEN_ACTIONPROC_HELPER": {}, // Test helper only; never contains a secret.
-	"BUNTZEN_ACTION_LOG_LEVEL":  {}, // Validated control-plane log level only.
-	"PYTHONDONTWRITEBYTECODE":   {},
-	"PYTHONUNBUFFERED":          {},
+	"BUNTZEN_BROWSER_EXECUTABLE": {}, // Operator configuration only; never profile data.
+	"BUNTZEN_ACTIONPROC_HELPER":  {}, // Test helper only; never contains a secret.
+	"BUNTZEN_ACTION_LOG_LEVEL":   {}, // Validated control-plane log level only.
+	"PYTHONDONTWRITEBYTECODE":    {},
+	"PYTHONUNBUFFERED":           {},
 }
 
 // Frame is a decoded protocol frame. Payload never gets logged by this
@@ -312,6 +313,9 @@ func (s *Session) wait(stdoutDone <-chan error, stderrDone <-chan struct{}) {
 	// Calling Wait first can close an otherwise healthy child's pipes under the
 	// readers and turn a clean exit into a spurious "file already closed" error.
 	processErr := s.cmd.Wait()
+	// A failed version probe or browser wrapper can leave a descendant after
+	// Python exits. The worker owns this entire group, including normal exits.
+	_ = killProcessGroup(s.cmd)
 	_ = s.stdin.Close()
 	exitCode := 0
 	if s.cmd.ProcessState != nil {

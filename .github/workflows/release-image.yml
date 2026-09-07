@@ -195,6 +195,13 @@ jobs:
               )
           ' /tmp/provenance.json >/dev/null
 
+      - name: Set the effective release vulnerability policy
+        shell: bash
+        run: |
+          # Manual recovery may check out an older release containing waivers.
+          # The executing workflow's empty policy must match its signed predicate.
+          printf 'vulnerabilities: []\n' > /tmp/buntzen-release-trivyignore.yaml
+
       - name: Reject high and critical image vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -206,7 +213,7 @@ jobs:
           scanners: vuln
           severity: HIGH,CRITICAL
           timeout: 15m
-          trivyignores: .trivyignore.yaml
+          trivyignores: /tmp/buntzen-release-trivyignore.yaml
           vuln-type: os,library
 
       - name: Sign the SPDX SBOM
@@ -226,7 +233,7 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           predicate-type: https://github.com/${{ github.repository }}/attestations/trivy/v1
           predicate: >-
-            {"scanner":"Trivy","severity":["HIGH","CRITICAL"],"ignore_unfixed":false,"exceptions":[{"id":"CVE-2025-3887","purls":["pkg:deb/ubuntu/gstreamer1.0-plugins-bad@1.24.2-1ubuntu4?arch=amd64&distro=ubuntu-24.04","pkg:deb/ubuntu/libgstreamer-plugins-bad1.0-0@1.24.2-1ubuntu4?arch=amd64&distro=ubuntu-24.04"],"expires":"2026-09-30","statement":"The Playwright Chromium booking path does not use the affected GStreamer plugins."},{"id":"GHSA-6v7p-g79w-8964","purls":["pkg:pypi/msgpack@1.1.2"],"expires":"2026-09-30","statement":"Build-only Python tooling was removed, and runtime smoke verifies msgpack is absent from the final image."},{"id":"CVE-2025-47273","purls":["pkg:pypi/setuptools@70.3.0"],"expires":"2026-09-30","statement":"Build-only Python tooling was removed, and runtime smoke verifies setuptools is absent from the final image."}],"result":"passed"}
+            {"scanner":"Trivy","severity":["HIGH","CRITICAL"],"ignore_unfixed":false,"exceptions":[],"result":"passed"}
           push-to-registry: true
 
       - name: Sign GitHub build provenance

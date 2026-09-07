@@ -1,12 +1,15 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
@@ -20,13 +23,31 @@ type Server struct {
 	renderer          *Renderer
 	mux               *http.ServeMux
 	loginMu           sync.Mutex
+	streams           streamAdmission
 	accountChangeMu   sync.Mutex
 	accountChangeBusy map[int64]struct{}
 }
 
 func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) (*Server, error) {
+	if err := cfg.ValidateHTTPBoundary(); err != nil {
+		return nil, err
+	}
 	if database == nil || runner == nil {
 		return nil, errors.New("database and job engine are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	hasUsers, err := database.HasUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !hasUsers && cfg.PublicOrigin != "" {
+		return nil, errors.New("complete administrator setup on private HTTP before enabling public HTTPS mode")
+	}
+	if !hasUsers && cfg.SetupToken != "" {
+		if err := auth.ValidateSetupToken(cfg.SetupToken); err != nil {
+			return nil, err
+		}
 	}
 	renderer, err := NewRenderer()
 	if err != nil {

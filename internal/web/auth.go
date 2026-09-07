@@ -2,6 +2,7 @@ package web
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
 
 type authPageData struct {
@@ -28,9 +30,12 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
+	if cookie, err := s.readSessionCookie(r); err == nil {
 		if _, err := s.store.GetSession(r.Context(), cookie.Value); err == nil {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			s.sessionFailure(w, r, err)
 			return
 		}
 	}
@@ -39,7 +44,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not create login form", http.StatusInternalServerError)
 		return
 	}
-	setCookie(w, loginCSRFCookie, token, 10*time.Minute)
+	s.setCookie(w, loginCSRFCookie, token, 10*time.Minute)
 	message := ""
 	if r.URL.Query().Get("ok") == "password-changed" {
 		message = "Password changed. Sign in again."
@@ -68,12 +73,15 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	cookie, err := r.Cookie(loginCSRFCookie)
+	cookie, err := r.Cookie(s.cookieName(loginCSRFCookie))
 	if err != nil || !constantEqual(cookie.Value, r.Form.Get("csrf_token")) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	s.loginMu.Lock()
+	if !s.loginMu.TryLock() {
+		authBusy(w)
+		return
+	}
 	defer s.loginMu.Unlock()
 	hasUsers, err := s.store.HasUsers(r.Context())
 	if err != nil {
@@ -81,7 +89,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasUsers {
-		clearCookie(w, loginCSRFCookie)
+		s.clearCookie(w, loginCSRFCookie)
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
@@ -106,10 +114,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login?error=limited", http.StatusSeeOther)
 		return
 	}
-	_, credentials, ok, err := s.store.AuthenticateAndCreateSession(
-		r.Context(), username, r.Form.Get("password"), sessionLifetime,
+	_, credentials, ok, err := s.store.AuthenticateAndCreateSessionInScope(
+		r.Context(), username, r.Form.Get("password"), sessionLifetime, s.config.PublicOrigin,
 	)
 	if err != nil {
+		if errors.Is(err, auth.ErrBusy) {
+			authBusy(w)
+			return
+		}
 		http.Error(w, "login unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -124,9 +136,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login?error=invalid", http.StatusSeeOther)
 		return
 	}
-	setCookie(w, sessionCookie, credentials.Token, sessionLifetime)
-	setCookie(w, csrfCookie, credentials.CSRFToken, sessionLifetime)
-	clearCookie(w, loginCSRFCookie)
+	s.setCookie(w, sessionCookie, credentials.Token, sessionLifetime)
+	s.setCookie(w, csrfCookie, credentials.CSRFToken, sessionLifetime)
+	s.clearCookie(w, loginCSRFCookie)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -145,7 +157,7 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not create setup form", http.StatusInternalServerError)
 		return
 	}
-	setCookie(w, loginCSRFCookie, token, 10*time.Minute)
+	s.setCookie(w, loginCSRFCookie, token, 10*time.Minute)
 	s.render(w, http.StatusOK, "setup", authPageData{BaseData: BaseData{Title: "First-run setup", CSRFToken: token}, Username: "admin"})
 }
 
@@ -158,12 +170,15 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	cookie, err := r.Cookie(loginCSRFCookie)
+	cookie, err := r.Cookie(s.cookieName(loginCSRFCookie))
 	if err != nil || !constantEqual(cookie.Value, r.Form.Get("csrf_token")) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
-	s.loginMu.Lock()
+	if !s.loginMu.TryLock() {
+		authBusy(w)
+		return
+	}
 	defer s.loginMu.Unlock()
 	hasUsers, err := s.store.HasUsers(r.Context())
 	if err != nil {
@@ -171,7 +186,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasUsers {
-		clearCookie(w, loginCSRFCookie)
+		s.clearCookie(w, loginCSRFCookie)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
@@ -181,6 +196,9 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(r.Form.Get("username"))
 	if !tokenEqual(s.config.SetupToken, r.Form.Get("setup_token")) {
+		if !s.admitInvalidSetupToken(w, r) {
+			return
+		}
 		s.renderSetupError(w, username, "The one-time setup token was not accepted. Check the host logs and try again.")
 		return
 	}
@@ -191,25 +209,33 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = s.store.SetupAdmin(r.Context(), username, password)
 	if err != nil {
+		if errors.Is(err, auth.ErrBusy) {
+			authBusy(w)
+			return
+		}
 		hasUsers, checkErr := s.store.HasUsers(r.Context())
 		if checkErr == nil && hasUsers {
-			clearCookie(w, loginCSRFCookie)
+			s.clearCookie(w, loginCSRFCookie)
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 		s.renderSetupError(w, username, accountFormError(err))
 		return
 	}
-	_, credentials, authenticated, err := s.store.AuthenticateAndCreateSession(
-		r.Context(), username, password, sessionLifetime,
+	_, credentials, authenticated, err := s.store.AuthenticateAndCreateSessionInScope(
+		r.Context(), username, password, sessionLifetime, s.config.PublicOrigin,
 	)
 	if err != nil || !authenticated {
+		if errors.Is(err, auth.ErrBusy) {
+			authBusy(w)
+			return
+		}
 		http.Error(w, "could not create session", http.StatusInternalServerError)
 		return
 	}
-	setCookie(w, sessionCookie, credentials.Token, sessionLifetime)
-	setCookie(w, csrfCookie, credentials.CSRFToken, sessionLifetime)
-	clearCookie(w, loginCSRFCookie)
+	s.setCookie(w, sessionCookie, credentials.Token, sessionLifetime)
+	s.setCookie(w, csrfCookie, credentials.CSRFToken, sessionLifetime)
+	s.clearCookie(w, loginCSRFCookie)
 	http.Redirect(w, r, "/?ok=setup", http.StatusSeeOther)
 }
 
@@ -223,32 +249,48 @@ func (s *Server) renderSetupError(w http.ResponseWriter, username, message strin
 		http.Error(w, "could not create setup form", http.StatusInternalServerError)
 		return
 	}
-	setCookie(w, loginCSRFCookie, token, 10*time.Minute)
+	s.setCookie(w, loginCSRFCookie, token, 10*time.Minute)
 	s.render(w, http.StatusUnprocessableEntity, "setup", authPageData{BaseData: BaseData{Title: "First-run setup", CSRFToken: token}, Error: message, Username: username})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		_ = s.store.DeleteSession(r.Context(), cookie.Value)
+	if cookie, err := s.readSessionCookie(r); err == nil {
+		if err := s.store.DeleteSession(r.Context(), cookie.Value); err != nil {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, "Sign out could not be completed. Try again.", http.StatusServiceUnavailable)
+			return
+		}
 	}
-	clearAuthCookies(w)
+	s.clearAuthCookies(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-func setCookie(w http.ResponseWriter, name, value string, lifetime time.Duration) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: time.Now().Add(lifetime), HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: false})
+// Public cookies use browser-enforced host and path integrity. Do not accept
+// legacy names in public mode: a sibling origin can supply Domain cookies.
+func (s *Server) cookieName(name string) string {
+	if s.config.PublicOrigin != "" {
+		return "__Host-" + name
+	}
+	return name
 }
 
-func clearCookie(w http.ResponseWriter, name string) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, Expires: time.Unix(1, 0), HttpOnly: true, SameSite: http.SameSiteStrictMode})
+func (s *Server) setCookie(w http.ResponseWriter, name, value string, lifetime time.Duration) {
+	http.SetCookie(w, &http.Cookie{Name: s.cookieName(name), Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: time.Now().Add(lifetime), HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: s.config.PublicOrigin != ""})
 }
 
-func clearAuthCookies(w http.ResponseWriter) {
-	clearCookie(w, sessionCookie)
-	clearCookie(w, csrfCookie)
+func (s *Server) clearCookie(w http.ResponseWriter, name string) {
+	http.SetCookie(w, &http.Cookie{Name: s.cookieName(name), Value: "", Path: "/", MaxAge: -1, Expires: time.Unix(1, 0), Secure: s.config.PublicOrigin != "", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+}
+
+func (s *Server) clearAuthCookies(w http.ResponseWriter) {
+	s.clearCookie(w, sessionCookie)
+	s.clearCookie(w, csrfCookie)
 }
 
 func remoteIP(r *http.Request) string {
+	if address, ok := r.Context().Value(clientIPContextKey).(string); ok {
+		return address
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil && host != "" {
 		return host
@@ -259,4 +301,45 @@ func remoteIP(r *http.Request) string {
 func loginRateKey(parts ...string) string {
 	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return fmt.Sprintf("%x", digest[:])
+}
+
+func authBusy(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "2")
+	http.Error(w, "Authentication is busy. Wait briefly and try again.", http.StatusServiceUnavailable)
+}
+
+// Called while loginMu is held, only after a cheap constant-time token check
+// fails. A valid operator token cannot be locked out by anonymous failures.
+// The global bucket bounds writes even when source IPs rotate.
+func (s *Server) admitInvalidSetupToken(w http.ResponseWriter, r *http.Request) bool {
+	keys := []string{loginRateKey("setup-global"), loginRateKey("setup-ip", remoteIP(r))}
+	for index, key := range keys {
+		limit := loginIPLimit
+		if index == 0 {
+			limit = 100
+		}
+		allowed, _, err := s.store.LoginRateLimit(r.Context(), key, time.Now().UTC(), loginWindow, limit)
+		if err != nil {
+			s.internal(w)
+			return false
+		}
+		if !allowed {
+			w.Header().Set("Retry-After", "900")
+			http.Error(w, "Too many setup attempts. Wait before trying again.", http.StatusTooManyRequests)
+			return false
+		}
+	}
+	if err := s.store.RecordLoginAttempts(r.Context(), keys, false); err != nil {
+		s.internal(w)
+		return false
+	}
+	return true
+}
+
+func (s *Server) readSessionCookie(r *http.Request) (*http.Cookie, error) {
+	cookie, err := r.Cookie(s.cookieName(sessionCookie))
+	if err != nil || !auth.SessionTokenMatchesScope(cookie.Value, s.config.PublicOrigin) {
+		return nil, http.ErrNoCookie
+	}
+	return cookie, nil
 }

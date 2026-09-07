@@ -38,9 +38,8 @@ func TestDeletedMemberStorageReconciliationIsOwnerIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.resources.RequestJobCancellation(ctx, retainedJob.ID); err != nil {
-		t.Fatal(err)
-	}
+	// Keep the retained owner's job active. Completed jobs have their legacy
+	// browser captures purged independently of member deletion.
 	retainedArtifactPath := filepath.Join(
 		fixture.engine.config.ArtifactsDir, "job-"+strconv.FormatInt(retainedJob.ID, 10),
 	)

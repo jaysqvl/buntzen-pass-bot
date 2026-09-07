@@ -74,8 +74,9 @@ type asyncResult struct {
 }
 
 // Run drives the Python protocol until both a terminal frame and process exit.
-// A crash after confirmation.starting is always upgraded to outcome_unknown.
-func Run(ctx context.Context, input RunInput) (RunResult, error) {
+// A crash after confirmation.starting is outcome_unknown unless a matching
+// verified completion was received before cleanup ended.
+func Run(ctx context.Context, input RunInput) (result RunResult, runErr error) {
 	if input.NewProcess == nil || input.Provider == nil || input.Hub == nil {
 		return RunResult{}, errors.New("action process, OTP provider, and live hub are required")
 	}
@@ -113,7 +114,17 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 
 	ready := false
 	confirmationStarted := false
+	confirmationCompleted := false
 	confirmationID := ""
+	defer func() {
+		// The matching completion event is emitted only after the action verifies
+		// the reservation. A later cleanup timeout cannot undo that observation.
+		if confirmationCompleted && result.Status != model.JobSucceeded {
+			result.Status = model.JobSucceeded
+			result.Message = "Yodel confirmed the reservation; browser cleanup ended before a final result."
+			runErr = nil
+		}
+	}()
 	var terminal *RunResult
 	eventStream := process.Events()
 	doneStream := process.Done()
@@ -153,7 +164,7 @@ func Run(ctx context.Context, input RunInput) (RunResult, error) {
 				}
 				continue
 			}
-			if err := handleFrame(ctx, input, process, jobKey, frame, challenges, &challengeMu, async, &confirmationStarted, &confirmationID, &terminal); err != nil {
+			if err := handleFrame(ctx, input, process, jobKey, frame, challenges, &challengeMu, async, &confirmationStarted, &confirmationCompleted, &confirmationID, &terminal); err != nil {
 				process.Cancel(input.CancelGrace)
 				return RunResult{}, err
 			}
@@ -267,6 +278,7 @@ func handleFrame(
 	challengeMu *sync.Mutex,
 	async chan<- asyncResult,
 	confirmationStarted *bool,
+	confirmationCompleted *bool,
 	confirmationID *string,
 	terminal **RunResult,
 ) error {
@@ -413,6 +425,7 @@ func handleFrame(
 		if completedID != *confirmationID {
 			return errors.New("final confirmation completion identifier did not match its durable start marker")
 		}
+		*confirmationCompleted = true
 		events("confirmation.completed", "Yodel reported that final confirmation completed.")
 	case "run.complete":
 		status, err := terminalStatus(stringValue(frame.Payload, "status"))

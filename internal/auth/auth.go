@@ -29,9 +29,16 @@ const (
 // once. Web handlers add stricter per-account admission and rate controls.
 var passwordWork = make(chan struct{}, 2)
 
-func beginPasswordWork() func() {
-	passwordWork <- struct{}{}
-	return func() { <-passwordWork }
+// ErrBusy is retryable overload, never an incorrect-password result.
+var ErrBusy = errors.New("password service is busy")
+
+func beginPasswordWork() (func(), error) {
+	select {
+	case passwordWork <- struct{}{}:
+		return func() { <-passwordWork }, nil
+	default:
+		return nil, ErrBusy
+	}
 }
 
 func HashPassword(password string) (string, error) {
@@ -42,7 +49,10 @@ func HashPassword(password string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", fmt.Errorf("generate password salt: %w", err)
 	}
-	release := beginPasswordWork()
+	release, err := beginPasswordWork()
+	if err != nil {
+		return "", err
+	}
 	defer release()
 	hash := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	b64 := base64.RawStdEncoding
@@ -78,7 +88,10 @@ func VerifyPassword(encoded, password string) (bool, error) {
 	if err != nil || len(expected) < 16 || len(expected) > 64 {
 		return false, errors.New("password hash is malformed")
 	}
-	release := beginPasswordWork()
+	release, err := beginPasswordWork()
+	if err != nil {
+		return false, err
+	}
 	defer release()
 	actual := argon2.IDKey([]byte(password), salt, iterations, memory, threads, uint32(len(expected)))
 	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
@@ -122,10 +135,24 @@ func NormalizeUsername(username string) (string, error) {
 
 // EqualizePasswordCheck performs the same Argon2 work as one password
 // verification without requiring a real account hash.
-func EqualizePasswordCheck(password string) {
-	release := beginPasswordWork()
+func EqualizePasswordCheck(password string) error {
+	release, err := beginPasswordWork()
+	if err != nil {
+		return err
+	}
 	defer release()
 	_ = argon2.IDKey([]byte(password), []byte("buntzen-dummy-v1"), argonTime, argonMemory, argonThreads, argonKeyLen)
+	return nil
+}
+
+// ValidateSetupToken checks the canonical encoding used by NewToken. Operators
+// must generate the bytes randomly; syntax alone cannot prove randomness.
+func ValidateSetupToken(token string) error {
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
+	if err != nil || len(raw) != tokenBytes || base64.RawURLEncoding.EncodeToString(raw) != token {
+		return errors.New("BUNTZEN_SETUP_TOKEN must encode 32 random bytes as unpadded URL-safe base64")
+	}
+	return nil
 }
 
 func validatePassword(password string) error {
