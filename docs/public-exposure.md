@@ -238,3 +238,30 @@ it cannot interrupt a kernel call stalled on an unavailable filesystem. Use host
 filesystem/container storage quotas for a strict physical-space ceiling. A
 compromised same-user worker can write outside its profile, so this control does
 not replace process/filesystem isolation.
+
+## Container resources and writable paths
+
+Both Compose templates default to 2 CPUs, 4 GiB memory with no additional swap,
+and 512 processes/threads. The kernel enforces these container-wide limits across
+the web app and its workers. `BUNTZEN_CPU_LIMIT`, `BUNTZEN_MEMORY_LIMIT` and
+`BUNTZEN_PIDS_LIMIT` can raise them; keep every limit finite and size them alongside
+`MAX_CONCURRENT_JOBS`. The default of two workers is exercised with two independent
+Chromium processes in the image smoke test. This synthetic local page is not a
+capacity measurement for live Yodel workloads or eight concurrent workers.
+
+The root filesystem is read-only. Durable state remains in `/appdata`; temporary
+files use a 512 MiB `/tmp` tmpfs and a 128 MiB `/home/pwuser` tmpfs owned by UID 1001.
+These memory-backed mounts count toward the memory limit. The optional key mount
+remains separately read-only. Chromium's sandbox, service-worker support, normal
+browser version identity, custom seccomp profile and 1 GiB shared memory remain
+part of the runtime contract. Do not compensate for an unsupported host by running
+the app as root or disabling the browser sandbox.
+
+The shared CI/release image test checks effective Docker and cgroup limits,
+concurrent browser navigation, service-worker control, profile reopening, and
+memory/PID failure counters. It also checks setup/login and recreation with a
+legacy key, followed by relocation of the original key with an encrypted source
+already present. A separate fresh bind-mount check covers the canonical appdata
+and read-only key-alias mounts. Image validation does not prove that an existing
+Portainer stack has adopted these settings; redeploy the canonical template and
+verify the effective container settings before exposing the service.

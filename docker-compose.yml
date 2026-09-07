@@ -32,6 +32,14 @@ services:
         bind:
           create_host_path: false
     shm_size: "1gb"
+    cpus: "${BUNTZEN_CPU_LIMIT:-2.0}"
+    mem_limit: "${BUNTZEN_MEMORY_LIMIT:-4g}"
+    memswap_limit: "${BUNTZEN_MEMORY_LIMIT:-4g}"
+    pids_limit: ${BUNTZEN_PIDS_LIMIT:-512}
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777,nosuid,nodev
+      - /home/pwuser:size=128m,uid=1001,gid=1001,mode=0700,nosuid,nodev
     security_opt:
       - "seccomp=./docker/seccomp_profile.json"
     stop_grace_period: 45s

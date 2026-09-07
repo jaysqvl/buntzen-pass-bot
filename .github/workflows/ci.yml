@@ -115,8 +115,24 @@ jobs:
           BUNTZEN_SECCOMP_PROFILE_PATH: /tmp/buntzen-seccomp.json
           BUNTZEN_WEB_PORT: "18091"
         run: |
-          docker compose config --quiet
-          docker compose -f deploy/portainer.yml config --quiet
+          for manifest in docker-compose.yml deploy/portainer.yml; do
+            docker compose -f "$manifest" config --format json | jq -e '
+              .services["buntzen-pass-bot"] |
+              (.cpus | tonumber) == 2 and
+              (.mem_limit | tonumber) == (4 * 1024 * 1024 * 1024) and
+              (.memswap_limit | tonumber) == (4 * 1024 * 1024 * 1024) and
+              .pids_limit == 512 and .read_only == true and
+              (.tmpfs | length == 2) and
+              (.volumes | any(.target == "/run/buntzen-key" and .read_only == true))
+            ' >/dev/null
+            BUNTZEN_KEY_DIRECTORY_PATH=/tmp/separate-key \
+              BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key \
+              docker compose -f "$manifest" config --format json | jq -e '
+                .services["buntzen-pass-bot"] |
+                .environment.BUNTZEN_MASTER_KEY_FILE == "/run/buntzen-key/master.key" and
+                (.volumes | any(.source == "/tmp/separate-key" and .target == "/run/buntzen-key" and .read_only == true))
+              ' >/dev/null
+          done
       - name: Build amd64 image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
