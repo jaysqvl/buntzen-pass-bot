@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.2...buntzen-pass-bot-v0.4.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **web:** keep action failures inside the application ([#67](https://github.com/jaysqvl/buntzen-pass-bot/issues/67)) ([52c4ec7](https://github.com/jaysqvl/buntzen-pass-bot/commit/52c4ec74d96d618bfdc018e1ee301daf53b11b4f))
+
 ## [0.4.2](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.1...buntzen-pass-bot-v0.4.2) (2026-09-06)
 
 
