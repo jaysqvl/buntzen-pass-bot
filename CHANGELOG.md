@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.1](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.5.0...buntzen-pass-bot-v0.5.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **security:** bound container resources and verify browser runtime ([e41aadb](https://github.com/jaysqvl/buntzen-pass-bot/commit/e41aadb2c2a9a11561a2426bd1554f1d6d240567))
+* **security:** bound persistent profile storage inspection and growth ([2763424](https://github.com/jaysqvl/buntzen-pass-bot/commit/27634246ef3d74fa970c41769f2e4dcaed6bc7f9))
+* **security:** bound worker execution and preserve verified outcomes ([68ddf26](https://github.com/jaysqvl/buntzen-pass-bot/commit/68ddf266a8e4e6bd97e265c814bbbfdcabd8110f))
+* **security:** harden public HTTPS operation and release verification ([de97582](https://github.com/jaysqvl/buntzen-pass-bot/commit/de975829c79cc5fd890200f85829dfcc5a8c1913))
+* **security:** pin build inputs and remove vulnerability waivers ([6ef2f5b](https://github.com/jaysqvl/buntzen-pass-bot/commit/6ef2f5b3357f9c9510110fab0b7fdcd756c03d59))
+* **security:** preserve and validate existing encryption keys ([b48fc8f](https://github.com/jaysqvl/buntzen-pass-bot/commit/b48fc8f17ef0e9fbbe9443336f13695ff3c0ba02))
+* **security:** restrict provider destinations and resolved peers ([280d719](https://github.com/jaysqvl/buntzen-pass-bot/commit/280d719ee35b7723d631a6aa76b5156c93cee451))
+* **security:** verify running deployment identity and stop unsafe compensation ([4564bea](https://github.com/jaysqvl/buntzen-pass-bot/commit/4564beaea07cc2c2ada268a1ddf576e9d51c7b36))
+
+
+### Documentation
+
+* **security:** define public HTTPS posture and recovery boundaries ([745e60c](https://github.com/jaysqvl/buntzen-pass-bot/commit/745e60cc59934a107f63fea3070a551a5870b6db))
+
 ## [0.5.0](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.3...buntzen-pass-bot-v0.5.0) (2026-09-07)
 
 
