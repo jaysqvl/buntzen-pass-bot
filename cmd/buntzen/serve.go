@@ -82,7 +82,7 @@ func runServe(parent context.Context, cfg config.Config, database *store.Store) 
 	defer jobEngine.Stop()
 	server := &http.Server{
 		Addr: cfg.ListenAddress, Handler: ui.Handler(), ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: 30 * time.Second, WriteTimeout: 0, IdleTimeout: 90 * time.Second,
+		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second,
 	}
 	go func() {
 		<-ctx.Done()

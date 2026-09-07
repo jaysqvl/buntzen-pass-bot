@@ -23,6 +23,7 @@ type Server struct {
 	renderer          *Renderer
 	mux               *http.ServeMux
 	loginMu           sync.Mutex
+	streams           streamAdmission
 	accountChangeMu   sync.Mutex
 	accountChangeBusy map[int64]struct{}
 }

@@ -94,3 +94,16 @@ replayed in private mode or at a different configured origin. No database schema
 migration is required. Origin binding is not permanent revocation: switching
 back to an earlier origin can accept its still-active sessions. Password changes,
 resets, disabling an account and explicit logout remain the revocation controls.
+
+## Live streams and stalled clients
+
+Each account may open eight live job event streams, shared across its sessions
+and jobs; the server admits at most 128 total. Additional streams receive HTTP
+429 with Retry-After. Closing a stream returns capacity. Job ownership is checked
+before admission, including when the budget is full.
+
+Each event batch and flush has a five-second write deadline. Write/flush failures
+close the stream and release its subscription. Idle periods clear that deadline;
+the next batch starts a new one. The final HTTP chunk is bounded as well. Ordinary
+HTTP responses have a 30-second write timeout. Event resume cursors, session
+rechecks, and final-event delivery remain enabled.

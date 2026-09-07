@@ -207,26 +207,33 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 			afterID = parsed
 		}
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unavailable", http.StatusInternalServerError)
+	release := s.streams.acquire(requestAuth(r).Authenticated.User.ID)
+	if release == nil {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "Too many open event streams. Close another tab and try again.", http.StatusTooManyRequests)
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Accel-Buffering", "no")
+	defer release()
 	sessionToken, err := s.readSessionCookie(r)
-	if err != nil || sessionToken.Value == "" {
+	if err != nil {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
+	stream, err := newEventStream(w)
+	if err != nil {
+		http.Error(w, "streaming unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer stream.finish()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
 	streamAuthorized := func() bool {
 		_, err := s.store.GetSession(r.Context(), sessionToken.Value)
 		return err == nil
 	}
 	expireStream := func() {
-		writeSSE(w, "auth_expired", map[string]any{})
-		flusher.Flush()
+		_ = stream.batch(func() error { return writeSSE(w, "auth_expired", map[string]any{}) })
 	}
 
 	jobKey := strconv.FormatInt(id, 10)
@@ -253,26 +260,34 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 		// Finish writes the terminal event after the status transition. Give that
 		// bounded write time to finish when its live completion signal was missed.
 		finished := job.Status.Terminal() && (completed || time.Since(terminalObservedAt) >= 2*pollInterval)
-		for {
-			events, err := userStore.ListJobEvents(r.Context(), id, afterID, 100)
-			if err != nil {
-				return true
+		err = stream.batch(func() error {
+			for {
+				events, err := userStore.ListJobEvents(r.Context(), id, afterID, 100)
+				if err != nil {
+					return err
+				}
+				for _, event := range events {
+					if _, err := fmt.Fprintf(w, "id: %d\n", event.ID); err != nil {
+						return err
+					}
+					if err := writeSSE(w, "job_event", map[string]any{"id": event.ID, "time": event.CreatedAt.In(location).Format("15:04:05 -07:00"), "type": event.Kind, "message": event.Message}); err != nil {
+						return err
+					}
+					afterID = event.ID
+				}
+				if len(events) < 100 {
+					break
+				}
 			}
-			for _, event := range events {
-				_, _ = fmt.Fprintf(w, "id: %d\n", event.ID)
-				writeSSE(w, "job_event", map[string]any{"id": event.ID, "time": event.CreatedAt.In(location).Format("15:04:05 -07:00"), "type": event.Kind, "message": event.Message})
-				afterID = event.ID
+			if err := writeJobState(w, job, location); err != nil {
+				return err
 			}
-			if len(events) < 100 {
-				break
+			if finished {
+				return writeSSE(w, "complete", map[string]any{})
 			}
-		}
-		writeJobState(w, job, location)
-		if finished {
-			writeSSE(w, "complete", map[string]any{})
-		}
-		flusher.Flush()
-		return finished
+			return nil
+		})
+		return finished || err != nil
 	}
 	if writeSnapshot(false) {
 		return
@@ -290,11 +305,12 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if event.Kind == "otp" || event.Kind == "pairing" {
-				writeSSE(w, event.Kind, event.Data)
+				if err := stream.batch(func() error { return writeSSE(w, event.Kind, event.Data) }); err != nil {
+					return
+				}
 			} else if writeSnapshot(event.Kind == "complete") {
 				return
 			}
-			flusher.Flush()
 		case <-poll.C:
 			if writeSnapshot(false) {
 				return
@@ -304,14 +320,15 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 				expireStream()
 				return
 			}
-			_, _ = fmt.Fprint(w, ": keepalive\n\n")
-			flusher.Flush()
+			if err := stream.batch(func() error { _, err := fmt.Fprint(w, ": keepalive\n\n"); return err }); err != nil {
+				return
+			}
 		}
 	}
 }
 
-func writeJobState(w http.ResponseWriter, job model.Job, location *time.Location) {
-	writeSSE(w, "state", map[string]any{
+func writeJobState(w http.ResponseWriter, job model.Job, location *time.Location) error {
+	return writeSSE(w, "state", map[string]any{
 		"message":              jobDisplayMessage(job, location),
 		"label":                jobStatusLabel(job),
 		"class_name":           statusClass(job.Status),
@@ -325,12 +342,13 @@ func writeJobState(w http.ResponseWriter, job model.Job, location *time.Location
 	})
 }
 
-func writeSSE(w http.ResponseWriter, event string, data any) {
+func writeSSE(w http.ResponseWriter, event string, data any) error {
 	raw, err := json.Marshal(data)
 	if err != nil {
-		return
+		return err
 	}
-	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, raw)
+	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, raw)
+	return err
 }
 
 func (s *Server) jobDecision(w http.ResponseWriter, r *http.Request) {
