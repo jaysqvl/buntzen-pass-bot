@@ -96,7 +96,6 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 			"pass_order":            []string{},
 			"headless":              true,
 			"browser_channel":       nil,
-			"executable_path":       nullableString(browserExecutable),
 			"default_timeout_ms":    10_000,
 			"poll_deadline_seconds": 10,
 			"poll_min_seconds":      0.05,
@@ -119,6 +118,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 				Executable: python,
 				Args:       pythonArgs,
 				Environment: []string{
+					"BUNTZEN_BROWSER_EXECUTABLE=" + browserExecutable,
 					"BUNTZEN_ACTIONPROC_HELPER=e2e-local-tls",
 					"PYTHONDONTWRITEBYTECODE=1",
 					"PYTHONUNBUFFERED=1",

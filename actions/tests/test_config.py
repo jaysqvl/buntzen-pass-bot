@@ -31,6 +31,19 @@ def start_frame() -> dict:
 
 
 class ConfigTests(unittest.TestCase):
+    def test_member_browser_overrides_are_rejected(self) -> None:
+        for field, value in (
+            ("executable_path", "/tmp/member-program"),
+            ("executable_path", "google-chrome"),
+            ("browser_channel", "../chrome"),
+            ("browser_channel", "firefox"),
+        ):
+            with self.subTest(field=field, value=value):
+                frame = start_frame()
+                frame["config"][field] = value
+                with self.assertRaises(ProtocolError):
+                    ActionConfig.from_start(frame)
+
     def test_profile_auth_check_does_not_require_booking_configuration(self) -> None:
         frame = start_frame()
         frame["command"] = "auth-check"

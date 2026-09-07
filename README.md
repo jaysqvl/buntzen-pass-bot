@@ -97,7 +97,7 @@ export SCHEDULES_ENABLED=false
 go run ./cmd/buntzen serve
 ```
 
-Open `http://127.0.0.1:8080`. Set a native Yodel profile's browser channel to `chrome`; leave the channel and executable empty in Docker to use the bundled Chromium.
+Open `http://127.0.0.1:8080`. Select `chrome` in a native Yodel profile, or bundled Chromium in Docker. If Chrome is installed elsewhere, the operator can set `BUNTZEN_BROWSER_EXECUTABLE` to its absolute executable path; this overrides channel choices for every worker. Members cannot supply executable paths. Edit and save any older profile with a path override to clear it before running jobs.
 
 Do not share browser profiles between Docker and macOS or run the same Yodel identity from both at once.
 

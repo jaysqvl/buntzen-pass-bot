@@ -14,6 +14,20 @@ from .protocol import validate_start_has_no_secrets
 
 COMMANDS = frozenset({"auth-check", "dry-run", "book"})
 MODES = frozenset({"auto", "manual", "dry-run"})
+BROWSER_CHANNELS = frozenset({"chrome", "chrome-beta", "chrome-dev", "chrome-canary"})
+
+
+def browser_selection(channel: Optional[str], executable: Optional[str]) -> Optional[str]:
+    # Enforce this at decoding AND launch: constructed configs and old protocol
+    # clients must not turn profile data into a host executable selection.
+    if executable is not None and (not isinstance(executable, str) or executable.strip()):
+        raise ProtocolError("browser executable paths are operator-controlled")
+    if channel is not None and not isinstance(channel, str):
+        raise ProtocolError("unsupported browser channel")
+    channel = channel.strip().lower() if channel else None
+    if channel and channel not in BROWSER_CHANNELS:
+        raise ProtocolError("unsupported browser channel")
+    return channel or None
 
 
 @dataclass(frozen=True)
@@ -181,8 +195,11 @@ class ActionConfig:
             vehicle_keyword=vehicle_keyword,
             pass_order=pass_order,
             headless=headless,
-            browser_channel=_optional_text(config, "browser_channel"),
-            executable_path=_optional_text(config, "executable_path"),
+            browser_channel=browser_selection(
+                _optional_text(config, "browser_channel"),
+                _optional_text(config, "executable_path"),
+            ),
+            executable_path=None,
             default_timeout_ms=int(default_timeout_ms),
             poll_deadline_seconds=float(poll_deadline),
             poll_min_seconds=float(poll_min),

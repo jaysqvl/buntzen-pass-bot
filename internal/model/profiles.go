@@ -42,11 +42,18 @@ func (p Profile) Validate() error {
 	if len(p.DefaultVehicle) > MaxDefaultVehicleBytes {
 		return errors.New("default vehicle is too long")
 	}
-	if len(p.BrowserChannel) > MaxBrowserChannelBytes {
-		return errors.New("browser channel is too long")
+	if len(p.BrowserChannel) > MaxBrowserChannelBytes || len(p.BrowserExecutable) > MaxBrowserExecutableBytes {
+		return errors.New("browser selection is too long")
 	}
-	if len(p.BrowserExecutable) > MaxBrowserExecutableBytes {
-		return errors.New("browser executable is too long")
+	switch strings.ToLower(strings.TrimSpace(p.BrowserChannel)) {
+	case "", "chrome", "chrome-beta", "chrome-dev", "chrome-canary":
+	default:
+		return errors.New("choose bundled Chromium or a supported Chrome channel")
+	}
+	// Retain the legacy field to reject unsafe saved profiles at execution as
+	// well as new writes. Only deployment configuration can select a program.
+	if strings.TrimSpace(p.BrowserExecutable) != "" {
+		return errors.New("browser executable paths are operator-controlled; clear the profile override")
 	}
 	if p.OTPSourceID <= 0 {
 		return errors.New("OTP source is required")

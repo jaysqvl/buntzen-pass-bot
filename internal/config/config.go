@@ -30,6 +30,7 @@ type Config struct {
 	SchedulesEnabled  bool
 	PythonExecutable  string
 	PythonModule      string
+	BrowserExecutable string
 	BlueBubblesURL    string
 	YodelOrigins      []string
 	AllowedOrigins    []string
@@ -76,6 +77,10 @@ func Load() (Config, error) {
 	if module == "" {
 		module = "buntzen_actions"
 	}
+	browserExecutable := strings.TrimSpace(os.Getenv("BUNTZEN_BROWSER_EXECUTABLE"))
+	if browserExecutable != "" && (!filepath.IsAbs(browserExecutable) || len(browserExecutable) > 2048 || strings.ContainsRune(browserExecutable, '\x00')) {
+		return Config{}, errors.New("BUNTZEN_BROWSER_EXECUTABLE must be an absolute path of at most 2048 bytes")
+	}
 	blueBubblesURL := strings.TrimSpace(os.Getenv("BLUEBUBBLES_URL"))
 	if blueBubblesURL == "" {
 		blueBubblesURL = "http://127.0.0.1:1234"
@@ -118,6 +123,7 @@ func Load() (Config, error) {
 		SchedulesEnabled:  schedules,
 		PythonExecutable:  python,
 		PythonModule:      module,
+		BrowserExecutable: browserExecutable,
 		BlueBubblesURL:    blueBubblesURL,
 		YodelOrigins:      yodelOrigins,
 		AllowedOrigins:    allowedOrigins,

@@ -229,7 +229,6 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 			"pass_order":            []string{"all_day"},
 			"headless":              true,
 			"browser_channel":       nil,
-			"executable_path":       nullableString(browserPath()),
 			"default_timeout_ms":    8_000,
 			"poll_deadline_seconds": 2,
 			"poll_min_seconds":      0.05,
@@ -251,6 +250,7 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 				Executable: python,
 				Args:       pythonArgs,
 				Environment: []string{
+					"BUNTZEN_BROWSER_EXECUTABLE=" + browserPath(),
 					"BUNTZEN_ACTIONPROC_HELPER=e2e-local-tls",
 					"BUNTZEN_ACTION_LOG_LEVEL=debug",
 					"PYTHONDONTWRITEBYTECODE=1",
