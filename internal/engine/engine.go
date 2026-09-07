@@ -162,8 +162,8 @@ func (e *Engine) runClaimed(job model.Job) {
 			message = "Cancelled by the operator."
 		} else if errors.Is(context.Cause(jobCtx), ErrArtifactLimit) {
 			message = "Job diagnostics exceeded the per-job storage limit."
-		} else if errors.Is(runErr, ErrExecutionBudget) {
-			message = executionBudgetMessage
+		} else if limitMessage := executionLimitMessage(runErr); limitMessage != "" {
+			message = limitMessage
 		}
 		e.finish(job.ID, status, message, nil)
 		return
@@ -223,14 +223,16 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 	ctx, cancelInputs := context.WithDeadlineCause(parent, inputDeadline, ErrExecutionBudget)
 	defer cancelInputs()
 	defer func() {
-		if !errors.Is(context.Cause(ctx), ErrExecutionBudget) || result.Status == model.JobSucceeded || result.Status == model.JobOutcomeUnknown {
+		cause := context.Cause(ctx)
+		message := executionLimitMessage(cause)
+		if message == "" || result.Status == model.JobSucceeded || result.Status == model.JobOutcomeUnknown {
 			return
 		}
 		if runErr != nil {
-			runErr = errors.Join(runErr, ErrExecutionBudget)
+			runErr = errors.Join(runErr, cause)
 			return
 		}
-		result.Status, result.Message = model.JobFailed, executionBudgetMessage
+		result.Status, result.Message = model.JobFailed, message
 	}()
 	slog.Debug("loading job execution inputs", "job_id", job.ID)
 	profile, err := e.store.SystemGetProfile(ctx, job.ProfileID)
@@ -306,6 +308,13 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 	if err != nil {
 		return control.RunResult{}, err
 	}
+	if err := inspectProfileStorage(ctx, profileDir); err != nil {
+		return control.RunResult{}, err
+	}
+	ctx, cancelProfile := context.WithCancelCause(ctx)
+	defer cancelProfile(nil)
+	stopProfileMonitor := monitorProfileStorage(ctx, profileDir, cancelProfile)
+	defer stopProfileMonitor()
 	artifactDir, err := safeChild(e.config.ArtifactsDir, fmt.Sprintf("job-%d", job.ID))
 	if err != nil {
 		return control.RunResult{}, err

@@ -157,12 +157,18 @@ def emit(kind, **fields):
     print(json.dumps(dict(v=2, type=kind, **fields)), flush=True)
 if mode != "startup":
     emit("worker.ready", action="yodel", protocol=2)
-    assert json.loads(sys.stdin.readline())["type"] == "run.start"
-    if mode in ("confirm", "completed"):
+    start = json.loads(sys.stdin.readline())
+    assert start["type"] == "run.start"
+    if mode in ("confirm", "completed", "growth-confirm", "growth-completed"):
         emit("confirmation.starting", confirmation_id="budget-confirmation")
         assert json.loads(sys.stdin.readline())["type"] == "confirmation.ready"
-        if mode == "completed":
+        if mode in ("completed", "growth-completed"):
             emit("confirmation.completed", confirmation_id="budget-confirmation")
+    if mode.startswith("growth"):
+        profile = Path(start["config"]["profile_dir"])
+        (profile / "saved-session").write_text("synthetic saved login")
+        with (profile / "oversized-cache").open("wb") as cache:
+            cache.truncate((512 << 20) + 1)
     if mode == "success":
         emit("run.complete", status="succeeded", message="Authenticated")
         sys.exit(0)

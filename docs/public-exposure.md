@@ -214,3 +214,27 @@ outcome remains unknown and its booking reservation remains held. A matching
 verified-confirmation event preserves success even if browser cleanup stalls
 before the final worker result. These deadlines bound elapsed execution, rather
 than promising an immediate kill or automatically retrying an ambiguous booking.
+
+## Browser-profile storage
+
+Each persistent browser profile may occupy 512 MiB of logical file data and
+20,000 total entries, with directory nesting limited to 64 levels. The app checks
+before launching a worker and every two seconds while it runs. A limit breach or
+an inspection error stops that job; it never automatically removes a retained
+profile or its login state. With the job stopped, the operator can review cache
+usage and recover space, then retry. Normal saved sessions and Chromium's
+singleton symlinks remain supported.
+
+The inspection reads directory names in small batches through directory file
+descriptors, does not follow symlinks, tolerates deleted cache descendants and
+checks cancellation during traversal. Marker reads and unmarked-directory checks
+are bounded too. Diagnostic storage uses the same inspection and counts empty
+directories/symlinks toward its existing 64-entry, 64-MiB job budget.
+
+These are periodic detection limits, not filesystem quotas. Writes can overshoot
+between checks, during inspection, and during process cancellation grace. The
+five-second inspection context bounds traversal work between filesystem calls;
+it cannot interrupt a kernel call stalled on an unavailable filesystem. Use host
+filesystem/container storage quotas for a strict physical-space ceiling. A
+compromised same-user worker can write outside its profile, so this control does
+not replace process/filesystem isolation.

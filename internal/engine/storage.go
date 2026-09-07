@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"golang.org/x/sys/unix"
 )
 
 var ErrArtifactLimit = errors.New("job diagnostics exceeded the storage limit")
@@ -182,7 +184,7 @@ func (e *Engine) monitorArtifacts(ctx context.Context, jobID int64, cancel conte
 		return
 	}
 	for {
-		exceeded, err := artifactLimitExceeded(artifactDir)
+		exceeded, err := artifactLimitExceededContext(ctx, artifactDir)
 		if err != nil {
 			slog.Error("job artifact inspection failed", "job_id", jobID, "error", err)
 			cancel(ErrArtifactLimit)
@@ -251,7 +253,15 @@ func ensureManagedProfileDirectory(parent string, profile model.Profile) (string
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	entries, err := os.ReadDir(path)
+	directory, err := openStorageDirectory(unix.AT_FDCWD, path)
+	if err != nil {
+		return "", fmt.Errorf("open unmarked browser profile: %w", err)
+	}
+	entries, err := directory.Readdirnames(1)
+	directory.Close()
+	if errors.Is(err, io.EOF) {
+		err = nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("inspect unmarked browser profile: %w", err)
 	}
@@ -291,14 +301,22 @@ func managedProfileMarkerValue(userID, profileID int64) string {
 
 func readManagedProfileMarker(path string) (int64, int64, error) {
 	markerPath := filepath.Join(path, managedProfileMarker)
-	marker, err := os.Lstat(markerPath)
+	file, err := os.OpenFile(markerPath, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("inspect browser profile marker: %w", err)
+	}
+	defer file.Close()
+	marker, err := file.Stat()
 	if err != nil {
 		return 0, 0, fmt.Errorf("inspect browser profile marker: %w", err)
 	}
 	if !marker.Mode().IsRegular() {
 		return 0, 0, errors.New("browser profile marker must be a regular file")
 	}
-	raw, err := os.ReadFile(markerPath)
+	if marker.Size() > 128 {
+		return 0, 0, errors.New("browser profile marker is malformed")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, 129))
 	if err != nil {
 		return 0, 0, fmt.Errorf("read browser profile marker: %w", err)
 	}
@@ -314,39 +332,18 @@ func readManagedProfileMarker(path string) (int64, int64, error) {
 }
 
 func artifactLimitExceeded(path string) (bool, error) {
-	var bytes int64
-	files := 0
-	err := filepath.WalkDir(path, func(_ string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		files++
-		bytes += info.Size()
-		if files > maxJobArtifactFiles || bytes > maxJobArtifactBytes {
-			return ErrArtifactLimit
-		}
-		return nil
-	})
+	return artifactLimitExceededContext(context.Background(), path)
+}
+
+func artifactLimitExceededContext(ctx context.Context, path string) (bool, error) {
+	err := checkStorageBudget(ctx, path, storageBudget{maxBytes: maxJobArtifactBytes, maxEntries: maxJobArtifactFiles})
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	if errors.Is(err, ErrArtifactLimit) {
+	if errors.Is(err, errFootprintLimit) {
 		return true, nil
 	}
-	if err != nil {
-		return false, err
-	}
-	return false, nil
+	return false, err
 }
 
 func safeChild(parent, name string) (string, error) {
