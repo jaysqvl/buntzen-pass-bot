@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -146,15 +147,14 @@ func rejectCrossOrigin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionToken, err := r.Cookie(s.cookieName(sessionCookie))
+		sessionToken, err := s.readSessionCookie(r)
 		if err != nil || sessionToken.Value == "" {
 			s.unauthorized(w, r)
 			return
 		}
 		authenticated, err := s.store.GetSession(r.Context(), sessionToken.Value)
 		if err != nil {
-			s.clearAuthCookies(w)
-			s.unauthorized(w, r)
+			s.sessionFailure(w, r, err)
 			return
 		}
 		csrfValue, err := r.Cookie(s.cookieName(csrfCookie))
@@ -173,7 +173,10 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 		}
-		_ = s.store.TouchSession(r.Context(), sessionToken.Value)
+		if err := s.store.TouchSession(r.Context(), sessionToken.Value); err != nil {
+			s.sessionFailure(w, r, err)
+			return
+		}
 		ctx := context.WithValue(r.Context(), sessionContextKey, requestSession{Authenticated: authenticated, CSRFToken: csrfValue.Value})
 		authenticatedRequest := r.WithContext(ctx)
 		if authenticated.User.MustChangePassword && r.URL.Path != "/account" && r.URL.Path != "/account/password" && r.URL.Path != "/logout" {
@@ -221,4 +224,14 @@ func requestAuth(r *http.Request) requestSession {
 
 func (s *Server) userStore(r *http.Request) store.UserStore {
 	return s.store.ForUser(requestAuth(r).Authenticated.User.ID)
+}
+
+func (s *Server) sessionFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		s.clearAuthCookies(w)
+		s.unauthorized(w, r)
+	} else {
+		w.Header().Set("Retry-After", "2")
+		http.Error(w, "Authentication is temporarily unavailable. Try again.", http.StatusServiceUnavailable)
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
 
 type authPageData struct {
@@ -29,9 +30,12 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	if cookie, err := r.Cookie(s.cookieName(sessionCookie)); err == nil {
+	if cookie, err := s.readSessionCookie(r); err == nil {
 		if _, err := s.store.GetSession(r.Context(), cookie.Value); err == nil {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		} else if !errors.Is(err, store.ErrNotFound) {
+			s.sessionFailure(w, r, err)
 			return
 		}
 	}
@@ -110,8 +114,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login?error=limited", http.StatusSeeOther)
 		return
 	}
-	_, credentials, ok, err := s.store.AuthenticateAndCreateSession(
-		r.Context(), username, r.Form.Get("password"), sessionLifetime,
+	_, credentials, ok, err := s.store.AuthenticateAndCreateSessionInScope(
+		r.Context(), username, r.Form.Get("password"), sessionLifetime, s.config.PublicOrigin,
 	)
 	if err != nil {
 		if errors.Is(err, auth.ErrBusy) {
@@ -218,8 +222,8 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		s.renderSetupError(w, username, accountFormError(err))
 		return
 	}
-	_, credentials, authenticated, err := s.store.AuthenticateAndCreateSession(
-		r.Context(), username, password, sessionLifetime,
+	_, credentials, authenticated, err := s.store.AuthenticateAndCreateSessionInScope(
+		r.Context(), username, password, sessionLifetime, s.config.PublicOrigin,
 	)
 	if err != nil || !authenticated {
 		if errors.Is(err, auth.ErrBusy) {
@@ -250,8 +254,12 @@ func (s *Server) renderSetupError(w http.ResponseWriter, username, message strin
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(s.cookieName(sessionCookie)); err == nil {
-		_ = s.store.DeleteSession(r.Context(), cookie.Value)
+	if cookie, err := s.readSessionCookie(r); err == nil {
+		if err := s.store.DeleteSession(r.Context(), cookie.Value); err != nil {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, "Sign out could not be completed. Try again.", http.StatusServiceUnavailable)
+			return
+		}
 	}
 	s.clearAuthCookies(w)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -326,4 +334,12 @@ func (s *Server) admitInvalidSetupToken(w http.ResponseWriter, r *http.Request) 
 		return false
 	}
 	return true
+}
+
+func (s *Server) readSessionCookie(r *http.Request) (*http.Cookie, error) {
+	cookie, err := r.Cookie(s.cookieName(sessionCookie))
+	if err != nil || !auth.SessionTokenMatchesScope(cookie.Value, s.config.PublicOrigin) {
+		return nil, http.ErrNoCookie
+	}
+	return cookie, nil
 }

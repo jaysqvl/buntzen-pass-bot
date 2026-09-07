@@ -78,3 +78,19 @@ CSRF validation; excess requests receive HTTP 503 with Retry-After. All password
 hash/check paths share two nonqueueing Argon2 slots. Saturation is a retryable
 service error, not a failed password guess. These controls bound expensive work;
 they do not guarantee availability against a sustained distributed flood.
+
+## Session lifetime and transport changes
+
+Sessions expire after 30 minutes without an authenticated request and always
+expire 24 hours after sign-in. Job event streams do not extend the idle deadline;
+they clear transient OTP/pairing content and request a new sign-in when the
+session expires. A failed session refresh prevents the protected action from
+running. Sign-out reports success only after database revocation succeeds; an
+error leaves cookies available for retry.
+
+New public sessions are bound to the exact configured public origin. Private
+sessions cannot be made public by renaming cookies; public sessions cannot be
+replayed in private mode or at a different configured origin. No database schema
+migration is required. Origin binding is not permanent revocation: switching
+back to an earlier origin can accept its still-active sessions. Password changes,
+resets, disabling an account and explicit logout remain the revocation controls.
