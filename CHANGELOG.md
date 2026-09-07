@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.3...buntzen-pass-bot-v0.5.0) (2026-09-07)
+
+
+### Features
+
+* **web:** show the deployed release and build in the app ([#69](https://github.com/jaysqvl/buntzen-pass-bot/issues/69)) ([c1b4bb9](https://github.com/jaysqvl/buntzen-pass-bot/commit/c1b4bb9df29064f382364e3094edc6401c2c0b4e))
+
 ## [0.4.3](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.4.2...buntzen-pass-bot-v0.4.3) (2026-09-07)
 
 
