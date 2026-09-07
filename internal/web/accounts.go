@@ -51,7 +51,7 @@ func (s *Server) accountPassword(w http.ResponseWriter, r *http.Request) {
 		s.renderAccount(w, r, "The current password was not accepted.")
 		return
 	}
-	clearAuthCookies(w)
+	s.clearAuthCookies(w)
 	http.Redirect(w, r, "/login?ok=password-changed", http.StatusSeeOther)
 }
 

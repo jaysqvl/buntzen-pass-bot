@@ -42,9 +42,14 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		if !s.hostAllowed(r.Host) {
-			http.Error(w, "invalid Host header", http.StatusBadRequest)
+		var boundaryErr error
+		r, boundaryErr = s.enforceHTTPBoundary(r)
+		if boundaryErr != nil {
+			http.Error(w, boundaryErr.Error(), http.StatusBadRequest)
 			return
+		}
+		if s.config.PublicOrigin != "" && !healthRequest(r) {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
@@ -101,6 +106,10 @@ func (s *Server) originAllowed(r *http.Request) bool {
 	if strings.TrimSpace(r.Header.Get("Origin")) == "" && strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "same-origin") {
 		return true
 	}
+	if s.config.PublicOrigin != "" {
+		browserOrigin, err := origin.Canonical(r.Header.Get("Origin"))
+		return err == nil && browserOrigin == s.config.PublicOrigin
+	}
 	if sameOrigin(r) {
 		return true
 	}
@@ -137,20 +146,20 @@ func rejectCrossOrigin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionToken, err := r.Cookie(sessionCookie)
+		sessionToken, err := r.Cookie(s.cookieName(sessionCookie))
 		if err != nil || sessionToken.Value == "" {
 			s.unauthorized(w, r)
 			return
 		}
 		authenticated, err := s.store.GetSession(r.Context(), sessionToken.Value)
 		if err != nil {
-			clearAuthCookies(w)
+			s.clearAuthCookies(w)
 			s.unauthorized(w, r)
 			return
 		}
-		csrfValue, err := r.Cookie(csrfCookie)
+		csrfValue, err := r.Cookie(s.cookieName(csrfCookie))
 		if err != nil || !store.ValidateCSRF(authenticated.Session, csrfValue.Value) {
-			clearAuthCookies(w)
+			s.clearAuthCookies(w)
 			s.unauthorized(w, r)
 			return
 		}

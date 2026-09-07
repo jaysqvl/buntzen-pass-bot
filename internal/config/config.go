@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +36,8 @@ type Config struct {
 	YodelOrigins      []string
 	AllowedOrigins    []string
 	AllowedHosts      []string
+	PublicOrigin      string
+	TrustedProxies    []netip.Prefix
 	SetupToken        string
 	LogLevel          string
 }
@@ -112,7 +115,7 @@ func Load() (Config, error) {
 			seenHosts[host] = struct{}{}
 		}
 	}
-	return Config{
+	cfg := Config{
 		AppDataDir:        abs,
 		DatabasePath:      filepath.Join(abs, "buntzen.db"),
 		EncryptionKeyPath: filepath.Join(abs, "master.key"),
@@ -130,7 +133,11 @@ func Load() (Config, error) {
 		AllowedHosts:      allowedHosts,
 		SetupToken:        strings.TrimSpace(os.Getenv("BUNTZEN_SETUP_TOKEN")),
 		LogLevel:          logLevel,
-	}, nil
+	}
+	if err := cfg.loadHTTPBoundary(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
 // EffectiveLogLevel returns the validated level used by both the Go control

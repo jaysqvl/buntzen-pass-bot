@@ -25,6 +25,9 @@ type Server struct {
 }
 
 func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) (*Server, error) {
+	if err := cfg.ValidateHTTPBoundary(); err != nil {
+		return nil, err
+	}
 	if database == nil || runner == nil {
 		return nil, errors.New("database and job engine are required")
 	}

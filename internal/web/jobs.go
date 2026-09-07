@@ -215,7 +215,7 @@ func (s *Server) jobEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
-	sessionToken, err := r.Cookie(sessionCookie)
+	sessionToken, err := r.Cookie(s.cookieName(sessionCookie))
 	if err != nil || sessionToken.Value == "" {
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
