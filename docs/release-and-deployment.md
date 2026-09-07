@@ -96,7 +96,7 @@ The workflow updates the existing `buntzen-pass-bot` standalone Docker Compose s
 - `BUNTZEN_APPDATA_PATH`: the configured absolute Buntzen appdata directory, owned by UID/GID 1001;
 - optional `BUNTZEN_KEY_DIRECTORY_PATH`: an existing separate host directory containing the original `master.key`, owned by UID/GID 1001 with mode 0400 or 0600; set `BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key` to use its read-only mount. Follow the [key relocation procedure](public-exposure.md#key-storage-and-recovery) before changing these values;
 - `BUNTZEN_SECCOMP_PROFILE_PATH`: absolute path to this repository's `docker/seccomp_profile.json` as seen by Portainer's Compose process. For containerized Portainer, place the file inside its persistent `/data` mount and use a container-visible path such as `/data/buntzen/seccomp_profile.json`; a host-only path is not sufficient;
-- `BLUEBUBBLES_URL`;
+- `BLUEBUBBLES_URL` and, when using BlueBubbles, `BUNTZEN_BLUEBUBBLES_ENDPOINTS`: the [operator-approved provider origins and network pins](public-exposure.md#outbound-provider-access). Existing saved sources require this explicit policy too;
 - `BUNTZEN_ALLOWED_HOSTS` and, only when required, `BUNTZEN_ALLOWED_ORIGINS`;
 - optional `BUNTZEN_SETUP_TOKEN`, `BUNTZEN_YODEL_ORIGINS`, `BUNTZEN_LOG_LEVEL`, `BUNTZEN_DEBUG`, and `MAX_CONCURRENT_JOBS`;
 - `SCHEDULES_ENABLED=false`.

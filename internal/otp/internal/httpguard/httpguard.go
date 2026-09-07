@@ -6,9 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"time"
 )
 
 const absoluteMaxResponseBytes int64 = 4 << 20
@@ -27,31 +25,6 @@ func (e *Error) Error() string {
 		return fmt.Sprintf("%s %s: %s (status %d)", e.Provider, e.Op, e.Reason, e.Status)
 	}
 	return fmt.Sprintf("%s %s: %s", e.Provider, e.Op, e.Reason)
-}
-
-// NewClient disables environment proxies and redirects. Those restrictions
-// prevent a credential-bearing query URL from being forwarded elsewhere.
-func NewClient(timeout time.Duration) *http.Client {
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy:                 nil,
-			DialContext:           dialer.DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          10,
-			IdleConnTimeout:       30 * time.Second,
-			TLSHandshakeTimeout:   timeout,
-			ResponseHeaderTimeout: timeout,
-			ExpectContinueTimeout: time.Second,
-		},
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
 }
 
 // Do reads a successful response through a hard byte cap. It deliberately

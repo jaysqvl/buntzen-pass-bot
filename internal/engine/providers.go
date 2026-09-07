@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -111,7 +112,7 @@ func (e *Engine) QueuePairing(ctx context.Context, userID, sourceID int64) (mode
 	return job, err
 }
 
-func ProviderForSource(ctx context.Context, database *store.Store, source model.OTPSource) (otp.Provider, error) {
+func ProviderForSource(ctx context.Context, database *store.Store, source model.OTPSource, policy *egress.Policy) (otp.Provider, error) {
 	switch source.Provider {
 	case model.OTPProviderBlueBubbles:
 		var providerConfig bluebubbles.Config
@@ -121,7 +122,7 @@ func ProviderForSource(ctx context.Context, database *store.Store, source model.
 		providerConfig.ChatGUID = source.PairingChatGUID
 		providerConfig.Sender = source.PairingSender
 		providerConfig.Service = source.PairingService
-		return bluebubbles.New(providerConfig)
+		return bluebubbles.New(providerConfig, policy)
 	case model.OTPProviderTwilio:
 		var providerConfig twilio.Config
 		if err := database.SystemGetOTPSourceConfig(ctx, source.ID, &providerConfig); err != nil {

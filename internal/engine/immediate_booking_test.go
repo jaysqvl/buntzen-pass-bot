@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/twilio"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/scheduler"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
@@ -68,9 +69,13 @@ func TestImmediateExpiryCancelsProviderSetup(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
+	fixture.engine.config.BlueBubblesPolicy, err = egress.NewPolicy([]egress.Rule{{Origin: server.URL, Networks: []string{"127.0.0.1/32"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := fixture.resources.UpdateOTPSource(ctx, profile.OTPSourceID, store.OTPSourceInput{
-		Name: "Deadline inbox", Provider: model.OTPProviderTwilio, Identity: "twilio:engine-test",
-		ProviderConfig: twilio.Config{AccountSID: "synthetic-account", AuthToken: "synthetic-token", ToNumber: "+15559876543", BaseURL: server.URL},
+		Name: "Deadline inbox", Provider: model.OTPProviderBlueBubbles, Identity: server.URL,
+		ProviderConfig: bluebubbles.Config{Password: "synthetic-token", BaseURL: server.URL},
 	}); err != nil {
 		t.Fatal(err)
 	}

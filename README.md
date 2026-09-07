@@ -30,7 +30,7 @@ creating another request or changing confirmation mode will not bypass the guard
    Edit `.env` and:
 
    - set `BUNTZEN_ALLOWED_HOSTS` to the exact host and port users will open, such as `buntzen.example:8080`;
-   - replace `BLUEBUBBLES_URL` with the server's LAN URL if you use BlueBubbles; and
+   - if using BlueBubbles, set `BLUEBUBBLES_URL` and approve its origin/network with `BUNTZEN_BLUEBUBBLES_ENDPOINTS` as described in [provider access](docs/public-exposure.md#outbound-provider-access); and
    - leave `SCHEDULES_ENABLED=false` until onboarding is complete.
 
    If a reverse proxy rewrites the `Host` header, add the rewritten authority to `BUNTZEN_ALLOWED_HOSTS` and the browser-facing origin to `BUNTZEN_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`.
@@ -62,7 +62,7 @@ Treat `appdata` as sensitive: it contains the database and browser profiles. The
 
 Keep `SCHEDULES_ENABLED=false` while completing these steps:
 
-1. Create an OTP source. For BlueBubbles, enter its LAN URL and server password, then use **Test connection**.
+1. Create an OTP source. For BlueBubbles, enter its operator-approved server URL and password, then use **Test connection**.
 2. Create an enabled Yodel profile with its login URL, 10-digit Canadian or US mobile number, vehicle, and linked OTP source.
 3. For BlueBubbles, return to the OTP source and choose **Pair with Yodel**. Select the fresh OTP candidate after Yodel sends a code. Pairing uses the linked profile and does not require a booking request.
 4. Open **Bookings** and create an enabled request with a visit date. Choose up to three pass priorities: All-day, Afternoon, Morning, or None. The bot tries them in your saved order; select at least one pass without duplicates.
@@ -92,6 +92,7 @@ uv sync --project actions --locked --python 3.12
 export APPDATA_DIR="$PWD/.native-appdata"
 export BUNTZEN_PYTHON="$PWD/actions/.venv/bin/python"
 export BLUEBUBBLES_URL="http://127.0.0.1:1234"
+export BUNTZEN_BLUEBUBBLES_ENDPOINTS='[{"origin":"http://127.0.0.1:1234","networks":["127.0.0.1/32"]}]'
 export SCHEDULES_ENABLED=false
 
 go run ./cmd/buntzen serve

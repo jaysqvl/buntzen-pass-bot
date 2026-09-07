@@ -2,8 +2,10 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"net/url"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
 )
 
@@ -34,6 +37,7 @@ type Config struct {
 	PythonModule      string
 	BrowserExecutable string
 	BlueBubblesURL    string
+	BlueBubblesPolicy *egress.Policy
 	YodelOrigins      []string
 	AllowedOrigins    []string
 	AllowedHosts      []string
@@ -89,6 +93,10 @@ func Load() (Config, error) {
 	if blueBubblesURL == "" {
 		blueBubblesURL = "http://127.0.0.1:1234"
 	}
+	blueBubblesPolicy, err := providerPolicy(os.Getenv("BUNTZEN_BLUEBUBBLES_ENDPOINTS"))
+	if err != nil {
+		return Config{}, fmt.Errorf("BUNTZEN_BLUEBUBBLES_ENDPOINTS: %w", err)
+	}
 	allowedOrigins, err := originList("BUNTZEN_ALLOWED_ORIGINS")
 	if err != nil {
 		return Config{}, err
@@ -138,6 +146,7 @@ func Load() (Config, error) {
 		PythonModule:      module,
 		BrowserExecutable: browserExecutable,
 		BlueBubblesURL:    blueBubblesURL,
+		BlueBubblesPolicy: blueBubblesPolicy,
 		YodelOrigins:      yodelOrigins,
 		AllowedOrigins:    allowedOrigins,
 		AllowedHosts:      allowedHosts,
@@ -148,6 +157,25 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func providerPolicy(raw string) (*egress.Policy, error) {
+	if len(raw) > 16384 {
+		return nil, errors.New("provider policy exceeds 16 KiB")
+	}
+	if strings.TrimSpace(raw) == "" {
+		return egress.NewPolicy(nil)
+	}
+	var rules []egress.Rule
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&rules); err != nil {
+		return nil, errors.New("expected a JSON array of origin and optional networks")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, errors.New("unexpected data after provider policy")
+	}
+	return egress.NewPolicy(rules)
 }
 
 // EffectiveLogLevel returns the validated level used by both the Go control

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/internal/httpguard"
 )
@@ -34,8 +35,7 @@ const (
 var _ otp.Provider = (*Provider)(nil)
 
 // Config contains decrypted Twilio credentials and the receiving number. The
-// optional BaseURL exists for local integration tests; production defaults to
-// Twilio's HTTPS API.
+// legacy BaseURL is accepted only when it identifies Twilio's fixed HTTPS API.
 type Config struct {
 	AccountSID       string        `json:"account_sid"`
 	AuthToken        string        `json:"auth_token"`
@@ -60,6 +60,23 @@ type Provider struct {
 }
 
 func New(config Config) (*Provider, error) {
+	if config.BaseURL != "" {
+		canonical, err := egress.CanonicalOrigin(config.BaseURL)
+		if err != nil || canonical != defaultBaseURL {
+			return nil, errors.New("twilio must use its fixed HTTPS API endpoint")
+		}
+	}
+	config.BaseURL = defaultBaseURL
+	policy, err := egress.NewPolicy([]egress.Rule{{Origin: defaultBaseURL}})
+	if err != nil {
+		return nil, err
+	}
+	return newForPolicy(config, policy)
+}
+
+// Local adapter tests supply an explicit policy here. Production has no
+// caller-configurable endpoint or unrestricted-client constructor.
+func newForPolicy(config Config, policy *egress.Policy) (*Provider, error) {
 	config = configWithDefaults(config)
 	base, err := validateBaseURL(config.BaseURL)
 	if err != nil {
@@ -93,10 +110,14 @@ func New(config Config) (*Provider, error) {
 		return nil, errors.New("twilio freshness must be between 1 nanosecond and 1 hour")
 	}
 	accountPath := "/2010-04-01/Accounts/" + url.PathEscape(config.AccountSID) + ".json"
+	client, err := policy.NewClient(base.String(), config.RequestTimeout)
+	if err != nil {
+		return nil, err
+	}
 	return &Provider{
 		config:       config,
 		base:         base,
-		client:       httpguard.NewClient(config.RequestTimeout),
+		client:       client,
 		messagesPath: strings.TrimSuffix(accountPath, ".json") + "/Messages.json",
 		accountPath:  accountPath,
 		now:          time.Now,

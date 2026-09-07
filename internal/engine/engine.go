@@ -249,7 +249,7 @@ func (e *Engine) execute(ctx context.Context, job model.Job) (control.RunResult,
 	if err != nil {
 		return control.RunResult{}, err
 	}
-	provider, err := ProviderForSource(ctx, e.store, source)
+	provider, err := ProviderForSource(ctx, e.store, source, e.config.BlueBubblesPolicy)
 	if err != nil {
 		return control.RunResult{}, err
 	}

@@ -496,6 +496,7 @@ func TestBlueBubblesIdentityCanonicalizesEquivalentOrigins(t *testing.T) {
 
 func TestBlueBubblesServerChangeRequiresPasswordReentry(t *testing.T) {
 	fixture := newWebFixture(t)
+	approveTestBlueBubbles(t, &fixture, "http://new.example.test:1234")
 	resources := fixture.store.ForUser(fixture.admin.ID)
 	source, err := resources.CreateOTPSource(context.Background(), store.OTPSourceInput{
 		Name: "Messages", Provider: model.OTPProviderBlueBubbles,

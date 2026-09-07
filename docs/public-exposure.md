@@ -148,3 +148,52 @@ credentials) cannot prove which valid key was intended, so retain matching backu
 even when startup succeeds. Separate key storage protects against a database-only
 copy; the running service and its Python workers can still read the key. This is
 not isolation from a compromised service process.
+
+## Outbound provider access
+
+Before using BlueBubbles, set `BUNTZEN_BLUEBUBBLES_ENDPOINTS` in the operator's
+deployment environment. Its JSON array approves at most 16 exact server origins.
+An empty/unset policy disables BlueBubbles network access, including existing
+saved sources. `BLUEBUBBLES_URL` only pre-fills the form and grants no access.
+Members cannot expand this policy by editing a source or its encrypted settings.
+
+For a public HTTPS server:
+
+```dotenv
+BUNTZEN_BLUEBUBBLES_ENDPOINTS='[{"origin":"https://messages.example"}]'
+```
+
+For a server on the same native host, reached over loopback:
+
+```dotenv
+BLUEBUBBLES_URL=http://127.0.0.1:1234
+BUNTZEN_BLUEBUBBLES_ENDPOINTS='[{"origin":"http://127.0.0.1:1234","networks":["127.0.0.1/32"]}]'
+```
+
+For a LAN server, replace that example's origin and network with the actual
+server authority and its fixed private IP `/32` (IPv6 `/128`). Container loopback
+identifies the container itself. Prefer exact addresses; each origin permits at
+most 16 prefixes, no broader than IPv4 `/24` or IPv6 `/64`. In Portainer, enter
+the JSON value without the surrounding shell quotes. HTTP requires private or
+loopback pins; approving it explicitly accepts cleartext on that trusted network.
+HTTPS verifies the original hostname's certificate. No TLS verification bypass
+is provided.
+
+When pins are present, **every** resolved address must match a pin, including
+public addresses. Without pins, only public HTTPS addresses are accepted. Each
+new connection resolves once, rejects the whole result if any address is unsafe,
+and dials a validated literal IP while preserving Host and TLS SNI. Existing
+connections remain attached to their originally validated peer. Every request's
+authority is checked before connection reuse. Environment proxies and redirects
+remain disabled. Link-local/metadata, multicast, unspecified, reserved and
+transition addresses are refused even with pins. The conservative public-address
+exclusions follow the [IANA IPv4](https://www.iana.org/assignments/iana-ipv4-special-registry/)
+and [IPv6](https://www.iana.org/assignments/iana-ipv6-special-registry/) registries.
+
+Twilio always uses `https://api.twilio.com` with the same public-address transport.
+Stored endpoint overrides are rejected. BlueBubbles still uses only ping and
+bounded message queries, and Twilio only reads account/inbound-message resources.
+Source creation/editing, connection tests, doctor, job execution and pairing all
+use the policy; there is no provider fallback. Operator policy changes take effect
+after restart. These controls govern the Go OTP adapters; they do not contain an
+arbitrary compromised Python worker or all browser network traffic.

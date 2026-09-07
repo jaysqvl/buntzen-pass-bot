@@ -20,6 +20,7 @@ import (
 
 	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
@@ -50,6 +51,10 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 
 	blueBubbles := httptest.NewServer(http.HandlerFunc(flow.serveBlueBubbles))
 	t.Cleanup(blueBubbles.Close)
+	policy, err := egress.NewPolicy([]egress.Rule{{Origin: blueBubbles.URL, Networks: []string{"127.0.0.1/32"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	provider, err := bluebubbles.New(bluebubbles.Config{
 		BaseURL:      blueBubbles.URL,
 		Password:     testBBPassword,
@@ -58,7 +63,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 		Service:      testService,
 		PollInterval: 10 * time.Millisecond,
 		Freshness:    time.Minute,
-	})
+	}, policy)
 	if err != nil {
 		t.Fatalf("create BlueBubbles provider: %v", err)
 	}
