@@ -18,11 +18,16 @@ The publication job:
 - pushes the build under `sha-<full commit>`, then promotes the accepted digest to the Release Please `v<major>.<minor>.<patch>`, `<major>.<minor>.<patch>`, and `<major>.<minor>` tags (no mutable `latest` tag);
 - records the resulting immutable `sha256` digest;
 - attaches and validates BuildKit max-mode provenance and an SPDX 2.3 SBOM, then signs that SBOM separately with GitHub/Sigstore;
-- fails on any HIGH or CRITICAL OS or library vulnerability reported by Trivy, including vulnerabilities without a published fix, except the exact package-scoped and expiring exception in `.trivyignore.yaml`;
-- creates keyless GitHub/Sigstore provenance and a separate signed vulnerability-gate attestation only after Trivy passes, recording the scoped exception in the gate, then verifies all three attestations' predicate types, repository, workflow, source branch, and GitHub-hosted-runner identity;
+- fails on any HIGH or CRITICAL OS or library vulnerability reported by Trivy, including vulnerabilities without a published fix, using an explicitly empty exception policy;
+- creates keyless GitHub/Sigstore provenance and a separate signed vulnerability-gate attestation only after Trivy passes, recording an empty exception list in the gate, then verifies all three attestations' predicate types, repository, workflow, source branch, and GitHub-hosted-runner identity;
 - creates the semantic-version tags only after every gate passes and verifies that every published tag resolves to the accepted digest.
 
-The current temporary exceptions are recorded as exact package PURLs in `.trivyignore.yaml`: `CVE-2025-3887` for the `gstreamer1.0-plugins-bad` and `libgstreamer-plugins-bad1.0-0` Ubuntu packages, plus `GHSA-6v7p-g79w-8964` for `msgpack@1.1.2` and `CVE-2025-47273` for `setuptools@70.3.0`. The Playwright Chromium booking path does not use the affected GStreamer plugins. The Python findings persist in base-layer catalog metadata even though the build tooling was removed and the runtime smoke test verifies that msgpack and setuptools are absent from the final image. Every exception expires on 2026-09-30; a changed package PURL or the passing of that date makes Trivy fail until the exception is deliberately reviewed or removed.
+There are no current vulnerability exceptions. The image removes unused WebKit
+GStreamer packages and Python build tools, including their cached wheels. Runtime
+tests exercise Chromium, while a separate container without the service's home
+tmpfs inspects the image for retained caches. Release scanning uses a policy
+written by the executing workflow, so manually rebuilding an older tag cannot
+reuse that tag's historical waivers while signing an empty exception list.
 
 All third-party actions in these workflows are pinned to full commit SHAs. Dependabot continues to propose reviewed updates.
 

@@ -312,12 +312,21 @@ import importlib.util
 
 unexpected = [
     module
-    for module in ("msgpack", "setuptools")
+    for module in ("msgpack", "setuptools", "aiohttp", "starlette")
     if importlib.util.find_spec(module) is not None
 ]
 if unexpected:
     raise SystemExit("unexpected runtime Python modules: " + ", ".join(unexpected))
 ' || fail "build-only Python modules remained importable in the runtime image"
+# Inspect the image itself without the service's tmpfs masking its home cache.
+docker run --rm --network none --read-only --user 0 --entrypoint sh "$image" -eu -c '
+  test ! -e /root/.cache
+  test ! -e /home/pwuser/.cache/virtualenv
+  for package in gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-0; do
+    status="$(dpkg-query -W -f="\${db:Status-Status}" "$package" 2>/dev/null || true)"
+    test "$status" != installed
+  done
+' || fail "removed build caches or WebKit-only packages survived in the image"
 docker exec "$container" sh -eu -c '
   test -w /appdata
   test -f /appdata/buntzen.db

@@ -265,3 +265,38 @@ already present. A separate fresh bind-mount check covers the canonical appdata
 and read-only key-alias mounts. Image validation does not prove that an existing
 Portainer stack has adopted these settings; redeploy the canonical template and
 verify the effective container settings before exposing the service.
+
+## Build inputs and dependency updates
+
+The Docker frontend and both base images are pinned by digest. Go module
+checksums and Python runtime wheel hashes are verified; the image accepts binary
+Python wheels only. The exact setuptools version is a development dependency in
+`actions/uv.lock`. Normal `uv sync --locked` installs that backend using the lock's
+artifact hashes before building the local project. It remains excluded from the
+runtime requirements export and container image. CI separately exports the build
+group, audits it, and builds distributions with hash-required constraints. A
+tampering check must reject altered backend hashes in both sync and build paths.
+
+For standalone distribution builds, first export the locked development group,
+then run `uv build actions --no-config --build-constraints <exported-file>
+--require-hashes`. `--no-config` keeps that command in an isolated build environment
+where the supplied hash constraints apply. A plain standalone `uv build` or another
+PEP 517 frontend does not provide this verification contract. Update the backend
+version in both declarations and regenerate the lock after reviewing its release.
+
+The Chromium image removes two unused WebKit GStreamer packages, build-only
+Python tools and their cached wheels. Removal fails if apt proposes removing
+other packages. The complete browser smoke and image scan must pass without
+vulnerability exceptions. The signed release scan predicate records an empty
+exception list.
+
+Weekly CI rebuilds without a build cache and reruns the same checks using current
+advisory data. It does not publish or deploy an image. Digest pins keep inputs
+stable until reviewed updates; a rebuild cannot repair vulnerable pinned code by
+itself. GitHub can disable scheduled workflows in inactive public repositories,
+so check that the schedule remains active.
+
+Hashes identify accepted artifacts; they do not prove that a maintainer or an
+already accepted package is benign. Maintainer review, limited release
+permissions, current vulnerability scans and a small dependency set remain
+necessary parts of the supply-chain boundary.
