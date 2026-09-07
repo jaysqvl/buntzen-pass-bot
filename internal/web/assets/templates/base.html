@@ -30,7 +30,17 @@
   </header>
   {{end}}
   <main class="shell">
-    {{if .Flash}}<div class="flash {{.Flash.Kind}}">{{.Flash.Message}}</div>{{end}}
+    <section id="notifications" class="notifications" aria-label="Notifications">
+      {{if .Flash}}
+      <div class="flash notification {{.Flash.Kind}}" data-notification role="{{if eq .Flash.Kind "error"}}alert{{else}}status{{end}}" aria-atomic="true">
+        <div class="notification-content">
+          <span class="notification-message">{{.Flash.Message}}</span>
+          {{if and .Flash.ActionLabel .Flash.ActionURL}}<a class="notification-action" href="{{.Flash.ActionURL}}">{{.Flash.ActionLabel}}</a>{{end}}
+        </div>
+        <button class="notification-dismiss" type="button" data-dismiss-notification aria-label="Dismiss notification" hidden>×</button>
+      </div>
+      {{end}}
+    </section>
     {{template "content" .}}
   </main>
 </body>

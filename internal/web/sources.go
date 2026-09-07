@@ -154,7 +154,7 @@ func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("OTP provider health check failed", "source_id", source.ID, "provider", source.Provider, "error", err)
-		http.Error(w, "provider health check failed", http.StatusBadGateway)
+		redirectNotice(w, r, "/#otp-sources", "provider-unavailable")
 		return
 	}
 	slog.Info("OTP provider health check succeeded", "source_id", source.ID, "provider", source.Provider)
@@ -173,7 +173,11 @@ func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
 	job, err := s.engine.QueuePairing(r.Context(), requestAuth(r).Authenticated.User.ID, id)
 	if err != nil {
 		slog.Warn("supervised pairing could not be queued", "source_id", id, "error", err)
-		http.Error(w, safeFormError(err), http.StatusConflict)
+		code := "pairing-unavailable"
+		if errors.Is(err, store.ErrResourceLimit) {
+			code = "queue-full"
+		}
+		redirectNotice(w, r, "/#otp-sources", code)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d?ok=queued", job.ID), http.StatusSeeOther)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/scheduler"
+	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
 )
 
 func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +49,17 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 		CreateURL:    "/bookings/new",
 		CreateLabel:  "New booking",
 		EmptyMessage: "Create a profile, then add a booking request.",
+	}
+	if data.Flash != nil {
+		switch r.URL.Query().Get("notice") {
+		case "queue-pending", "queue-review":
+			if job, err := userStore.GetJob(r.Context(), parseInt64(r.URL.Query().Get("job"))); err == nil {
+				data.Flash.ActionLabel = "View existing job"
+				data.Flash.ActionURL = fmt.Sprintf("/jobs/%d", job.ID)
+			}
+		case "queue-full", "queue-unavailable":
+			data.Flash.ActionLabel, data.Flash.ActionURL = "View jobs", "/jobs"
+		}
 	}
 	if !s.config.SchedulesEnabled {
 		data.Notice = autoQueueOffNotice
@@ -173,13 +186,14 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := s.userStore(r).GetBookingRequest(r.Context(), id); err != nil {
+	booking, err := s.userStore(r).GetBookingRequest(r.Context(), id)
+	if err != nil {
 		s.notFoundOrInternal(w, err)
 		return
 	}
 	command := model.JobCommand(r.Form.Get("command"))
 	if !command.Valid() {
-		http.Error(w, "invalid command", http.StatusBadRequest)
+		redirectNotice(w, r, "/bookings", "booking-action")
 		return
 	}
 	mode := model.RunMode("")
@@ -188,12 +202,11 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	}
 	timing := r.Form.Get("timing")
 	if timing != "" && (timing != "now" || command != model.CommandBook) {
-		http.Error(w, "invalid booking timing", http.StatusBadRequest)
+		redirectNotice(w, r, "/bookings", "booking-action")
 		return
 	}
 	userID := requestAuth(r).Authenticated.User.ID
 	var job model.Job
-	var err error
 	if timing == "now" {
 		job, err = s.engine.QueueBookingNow(r.Context(), userID, id)
 	} else {
@@ -201,16 +214,50 @@ func (s *Server) bookingRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("booking job could not be queued", "booking_id", id, "command", command, "error", err)
-		message := "job could not be queued"
-		if errors.Is(err, engine.ErrBookingNotReleased) {
-			message = "Passes for this date have not been released. Queue for release instead."
-		} else if errors.Is(err, engine.ErrBookingDatePassed) {
-			message = "Choose today or a future released date."
-		}
-		http.Error(w, message, http.StatusConflict)
+		s.bookingRunFailure(w, r, booking, command, err)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d?ok=queued", job.ID), http.StatusSeeOther)
+}
+
+func (s *Server) bookingRunFailure(w http.ResponseWriter, r *http.Request, booking model.BookingRequest, command model.JobCommand, cause error) {
+	code := "queue-unavailable"
+	var existingJob *model.Job
+	switch {
+	case errors.Is(cause, store.ErrResourceLimit):
+		// Resource limits wrap ErrConflict, but do not mean a duplicate exists.
+		code = "queue-full"
+	case errors.Is(cause, engine.ErrBookingNotReleased):
+		code = "booking-not-released"
+	case errors.Is(cause, engine.ErrBookingDatePassed):
+		code = "booking-date-passed"
+	case errors.Is(cause, engine.ErrBookingWindowEnded):
+		code = "booking-window-ended"
+	case errors.Is(cause, store.ErrConflict):
+		conflict, err := s.userStore(r).BookingConflict(r.Context(), booking.ID, command)
+		if err != nil {
+			slog.Warn("booking conflict lookup failed", "booking_id", booking.ID, "error", err)
+			break
+		}
+		existingJob = conflict.Job
+		if existingJob != nil && !existingJob.Status.Terminal() {
+			code = "queue-pending"
+		} else if conflict.Reservation && (existingJob == nil || existingJob.Status == model.JobSucceeded || existingJob.Status == model.JobOutcomeUnknown || existingJob.ConfirmationStartedAt != nil) {
+			code = "queue-review"
+		}
+	default:
+		if !booking.Enabled {
+			code = "booking-disabled"
+		} else if profile, err := s.userStore(r).GetProfile(r.Context(), booking.ProfileID); err == nil && !profile.Enabled {
+			code = "profile-disabled"
+		}
+	}
+	query := url.Values{"notice": {code}}
+	if existingJob != nil && (code == "queue-pending" || code == "queue-review") {
+		query.Set("job", strconv.FormatInt(existingJob.ID, 10))
+	}
+	location := url.URL{Path: "/bookings", RawQuery: query.Encode()}
+	http.Redirect(w, r, location.String(), http.StatusSeeOther)
 }
 
 func (s *Server) bookingInput(r *http.Request, id int64) (model.BookingRequest, error) {

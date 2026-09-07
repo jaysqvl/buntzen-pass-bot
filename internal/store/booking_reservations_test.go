@@ -56,6 +56,17 @@ func TestBookingReservationIsAtomicAcrossRequestsModesAndProcesses(t *testing.T)
 	if accepted != 1 || rejected != 1 {
 		t.Fatalf("accepted=%d rejected=%d", accepted, rejected)
 	}
+	var winnerID int64
+	for _, request := range []model.BookingRequest{booking, other} {
+		conflict, err := database.ForUser(testUserID).BookingConflict(ctx, request.ID, model.CommandBook)
+		if err != nil || !conflict.Reservation || conflict.Job == nil {
+			t.Fatalf("concurrent duplicate did not resolve its winner: %+v err=%v", conflict, err)
+		}
+		if winnerID != 0 && conflict.Job.ID != winnerID {
+			t.Fatalf("same profile/date resolved different jobs: %d and %d", winnerID, conflict.Job.ID)
+		}
+		winnerID = conflict.Job.ID
+	}
 }
 
 func TestBookingReservationReleasesOnlyUnconfirmedAttempts(t *testing.T) {

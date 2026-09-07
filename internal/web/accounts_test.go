@@ -216,16 +216,37 @@ func TestAccountChangesSharePasswordAdmissionAndRateLimit(t *testing.T) {
 		"password_confirm": {"a different valid password"},
 		"username":         {"new-admin-name"},
 	}
+	assertLimitedForm := func(path, message string) {
+		t.Helper()
+		recorder := serveForm(fixture, http.MethodPost, path, cookies, form)
+		body := recorder.Body.String()
+		if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Header().Get("Content-Type"), "text/html") || !strings.Contains(body, message) {
+			t.Fatalf("limited %s = %d: %s", path, recorder.Code, body)
+		}
+		for _, action := range []string{`action="/account/password"`, `action="/account/username"`} {
+			if !strings.Contains(body, action) {
+				t.Fatalf("limited account page lacks %s", action)
+			}
+		}
+		if path == "/account/username" && !strings.Contains(body, `value="new-admin-name"`) {
+			t.Fatal("limited username form lost the submitted username")
+		}
+		for _, field := range []string{"current_password", "new_password", "password_confirm"} {
+			if strings.Contains(body, form.Get(field)) {
+				t.Fatalf("limited account form rendered %s", field)
+			}
+		}
+		if recorder.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("limited account form is not marked no-store")
+		}
+	}
 
 	release := fixture.server.tryAccountChange(fixture.admin.ID)
 	if release == nil {
 		t.Fatal("could not reserve password-change admission")
 	}
 	for _, path := range []string{"/account/password", "/account/username"} {
-		recorder := serveForm(fixture, http.MethodPost, path, cookies, form)
-		if recorder.Code != http.StatusTooManyRequests {
-			t.Fatalf("concurrent %s = %d: %s", path, recorder.Code, recorder.Body.String())
-		}
+		assertLimitedForm(path, "Another account change is already running")
 	}
 	release()
 
@@ -237,10 +258,39 @@ func TestAccountChangesSharePasswordAdmissionAndRateLimit(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"/account/password", "/account/username"} {
-		recorder := serveForm(fixture, http.MethodPost, path, cookies, form)
-		if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Body.String(), "too many password attempts") {
-			t.Fatalf("rate-limited %s = %d: %s", path, recorder.Code, recorder.Body.String())
-		}
+		assertLimitedForm(path, "Too many password attempts")
+	}
+	unchanged, err := fixture.store.GetUser(context.Background(), fixture.admin.ID)
+	if err != nil || unchanged != fixture.admin {
+		t.Fatalf("rejected account changes modified the user: %+v err=%v", unchanged, err)
+	}
+}
+
+func TestThrottledTemporaryPasswordChangeKeepsRequiredAccountForm(t *testing.T) {
+	fixture := newWebFixture(t)
+	const password = "temporary-member-password"
+	member, err := fixture.store.CreateMember(context.Background(), store.CreateUserInput{
+		Username: "temporary-member", Password: password, MustChangePassword: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := loginCookiesAs(t, fixture, member.Username, password)
+	release := fixture.server.tryAccountChange(member.ID)
+	if release == nil {
+		t.Fatal("could not reserve account-change admission")
+	}
+	defer release()
+	response := serveForm(fixture, http.MethodPost, "/account/password", cookies, url.Values{
+		"csrf_token": {csrfFrom(cookies)}, "current_password": {password},
+		"new_password": {"new-member-password"}, "password_confirm": {"new-member-password"},
+	})
+	body := response.Body.String()
+	if response.Code != http.StatusTooManyRequests || !strings.Contains(body, "Set a new password before continuing") || !strings.Contains(body, `action="/account/password"`) || strings.Contains(body, `action="/account/username"`) {
+		t.Fatalf("limited required-password form = %d: %s", response.Code, body)
+	}
+	if strings.Contains(body, password) || strings.Contains(body, "new-member-password") {
+		t.Fatal("limited required-password form echoed a password")
 	}
 }
 

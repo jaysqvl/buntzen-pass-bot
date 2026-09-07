@@ -1,4 +1,36 @@
 (() => {
+  const notifications = document.getElementById('notifications');
+  const enableDismiss = notification => {
+    const button = notification.querySelector('[data-dismiss-notification]');
+    button.addEventListener('click', () => notification.remove());
+    button.hidden = false;
+  };
+  for (const notification of notifications.querySelectorAll('[data-notification]')) {
+    enableDismiss(notification);
+  }
+  const showNotification = (message, kind = 'error') => {
+    const notification = document.createElement('div');
+    notification.className = `flash notification ${kind}`;
+    notification.dataset.notification = '';
+    notification.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    notification.setAttribute('aria-atomic', 'true');
+    const content = document.createElement('div');
+    content.className = 'notification-content';
+    const text = document.createElement('span');
+    text.className = 'notification-message';
+    text.textContent = message;
+    content.append(text);
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'notification-dismiss';
+    dismiss.dataset.dismissNotification = '';
+    dismiss.setAttribute('aria-label', 'Dismiss notification');
+    dismiss.textContent = '×';
+    notification.append(content, dismiss);
+    enableDismiss(notification);
+    notifications.append(notification);
+  };
+
   const root = document.getElementById('live-job');
   if (!root || !window.EventSource) return;
   const jobID = root.dataset.jobId;
@@ -85,13 +117,19 @@
     if (button.dataset.messageId) body.set('message_id', button.dataset.messageId);
     try {
       const response = await fetch(`/jobs/${encodeURIComponent(jobID)}/decision`, {method:'POST', body, credentials:'same-origin', headers:{'Content-Type':'application/x-www-form-urlencoded'}});
-      if (!response.ok) {
+      const contentType = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+      if (response.redirected || contentType === 'text/html' || contentType === 'application/xhtml+xml') {
         button.disabled = terminal;
-        alert(await response.text() || 'Request failed');
+        clearSensitive();
+        showNotification("The app couldn't confirm this action. Sign in or check Account, then check the job status before retrying.");
+      } else if (response.status !== 204) {
+        button.disabled = terminal;
+        const message = !response.ok && contentType === 'text/plain' ? await response.text() : '';
+        showNotification(message || "The app couldn't confirm this action. Check the job status before retrying.");
       }
     } catch {
       button.disabled = terminal;
-      alert('Connection lost. Check the job status before retrying.');
+      showNotification('Connection lost. Check the job status before retrying.');
     }
   });
   window.addEventListener('pagehide', () => {
