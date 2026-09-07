@@ -3,6 +3,8 @@
 set -Eeuo pipefail
 
 image="${1:-buntzen-pass-bot:ci}"
+expected_version="${2:-dev}"
+expected_revision="${3:-}"
 run_suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
 container="buntzen-ci-smoke-${run_suffix}"
 volume="buntzen-ci-appdata-${run_suffix}"
@@ -68,6 +70,57 @@ if len(parser.values) != 1 or not parser.values[0]:
     raise SystemExit("expected exactly one non-empty CSRF field")
 print(parser.values[0])
 ' <"$1"
+}
+
+validate_page_version() {
+  docker exec --interactive "$container" python -c '
+from html.parser import HTMLParser
+import sys
+
+
+class BuildInfoParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.footers = []
+        self.links = []
+        self.text = []
+        self.in_footer = False
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == "footer" and values.get("id") == "build-info":
+            self.footers.append(values)
+            self.in_footer = True
+        if self.in_footer and tag == "a":
+            self.links.append(values.get("href"))
+
+    def handle_endtag(self, tag):
+        if tag == "footer":
+            self.in_footer = False
+
+    def handle_data(self, data):
+        if self.in_footer:
+            self.text.append(data)
+
+
+version, revision = sys.argv[1:]
+parser = BuildInfoParser()
+parser.feed(sys.stdin.read())
+if len(parser.footers) != 1:
+    raise SystemExit("expected exactly one application version footer")
+footer = parser.footers[0]
+if footer.get("data-version") != version or footer.get("data-revision") != revision:
+    raise SystemExit("page version does not match the image build")
+text = " ".join(" ".join(parser.text).split())
+repository = "https://github.com/jaysqvl/buntzen-pass-bot"
+if version == "dev":
+    if "Development build" not in text:
+        raise SystemExit("development image is not clearly identified")
+elif f"v{version}" not in text or f"{repository}/releases/tag/buntzen-pass-bot-v{version}" not in parser.links:
+    raise SystemExit("release version or release notes link is missing")
+if revision and (f"Build {revision[:7]}" not in text or f"{repository}/commit/{revision}" not in parser.links):
+    raise SystemExit("build revision or commit link is missing")
+' "$expected_version" "$expected_revision" <"$1" || fail "page returned unexpected build information"
 }
 
 wait_for_health() {
@@ -143,6 +196,7 @@ perform_setup() {
   curl --fail --silent --show-error --max-time 10 \
     --cookie-jar "$cookies" --dump-header "$workspace/setup-get-headers" \
     --output "$page" "$base_url/setup"
+  validate_page_version "$page"
   csrf="$(extract_csrf "$page")"
 
   code="$(curl --silent --show-error --max-time 10 \
@@ -163,6 +217,7 @@ perform_setup() {
   curl --fail --silent --show-error --max-time 10 \
     --cookie "$cookies" --output "$workspace/setup-dashboard" "$base_url/"
   grep -Fq "Account settings for $admin_username" "$workspace/setup-dashboard" || fail "setup session did not reach the authenticated dashboard"
+  validate_page_version "$workspace/setup-dashboard"
 }
 
 perform_login() {
@@ -206,6 +261,14 @@ docker image inspect "$image" >/dev/null
 configured_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
 [[ -n "$configured_user" && "$configured_user" != "root" && "$configured_user" != "0" ]] || fail "image does not configure a non-root runtime user"
 [[ "$(docker run --rm --entrypoint id "$image" -u)" != "0" ]] || fail "image runtime user resolves to root"
+
+version_report="$(docker run --rm --read-only --network none \
+  --env APPDATA_DIR=/uninitialized-appdata \
+  --env MAX_CONCURRENT_JOBS=invalid-runtime-setting \
+  "$image" version)"
+printf '%s\n' "$version_report" | jq -e \
+  --arg version "$expected_version" --arg revision "$expected_revision" \
+  '.version == $version and .revision == $revision' >/dev/null || fail "binary version does not match the image build"
 
 docker volume create "$volume" >/dev/null
 start_container
@@ -257,6 +320,7 @@ docker exec "$container" sh -eu -c 'grep -qx persisted /appdata/.ci-persistence-
 curl --fail --silent --show-error --max-time 10 \
   --cookie "$workspace/setup-cookies" --output "$workspace/restarted-session-dashboard" "$base_url/"
 grep -Fq "Account settings for $admin_username" "$workspace/restarted-session-dashboard" || fail "durable session did not survive container recreation"
+validate_page_version "$workspace/restarted-session-dashboard"
 
 setup_code="$(curl --silent --show-error --max-time 10 \
   --dump-header "$workspace/restart-setup-headers" --output /dev/null \
@@ -271,4 +335,4 @@ service_logs="$(docker logs "$container" 2>&1)"
 [[ "$service_logs" != *"$setup_token"* ]] || fail "restarted service logs exposed the setup token"
 [[ "$service_logs" != *"$admin_password"* ]] || fail "restarted service logs exposed the administrator password"
 
-echo "Container smoke test passed: non-root runtime, writable persistent appdata, health, Python protocol, setup, login, and restart."
+echo "Container smoke test passed: build version, non-root runtime, writable persistent appdata, health, Python protocol, setup, login, and restart."

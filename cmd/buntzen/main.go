@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/observability"
@@ -23,6 +25,17 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return usageError()
+	}
+	// Build identification must also work before setup or when runtime
+	// configuration is invalid, without opening or modifying appdata.
+	if args[0] == "version" {
+		if len(args) != 1 {
+			return errors.New("usage: buntzen version")
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{
+			"version":  buildinfo.Version,
+			"revision": buildinfo.Revision,
+		})
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -87,5 +100,5 @@ func adminPasswordCommand(ctx context.Context, cfg config.Config, database *stor
 }
 
 func usageError() error {
-	return errors.New("usage: buntzen {serve|doctor|migrate|auth-check|dry-run|book|admin-password reset}; runtime commands require --booking 1")
+	return errors.New("usage: buntzen {serve|doctor|version|migrate|auth-check|dry-run|book|admin-password reset}; runtime commands require --booking 1")
 }
