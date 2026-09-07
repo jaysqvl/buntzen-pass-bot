@@ -8,6 +8,7 @@ services:
       - "${WEB_PORT:-8080}:8080"
     environment:
       APPDATA_DIR: /appdata
+      BUNTZEN_MASTER_KEY_FILE: "${BUNTZEN_MASTER_KEY_FILE:-}"
       BLUEBUBBLES_URL: "${BLUEBUBBLES_URL:-http://bluebubbles.example:1234}"
       BUNTZEN_YODEL_ORIGINS: "${BUNTZEN_YODEL_ORIGINS:-https://yodelportal.com}"
       BUNTZEN_ALLOWED_HOSTS: "${BUNTZEN_ALLOWED_HOSTS:-}"
@@ -22,6 +23,13 @@ services:
       SCHEDULES_ENABLED: "${SCHEDULES_ENABLED:-false}"
     volumes:
       - ./appdata:/appdata
+      # Opt into a separate host key directory; the default preserves first boot.
+      - type: bind
+        source: "${BUNTZEN_KEY_DIRECTORY_PATH:-./appdata}"
+        target: /run/buntzen-key
+        read_only: true
+        bind:
+          create_host_path: false
     shm_size: "1gb"
     security_opt:
       - "seccomp=./docker/seccomp_profile.json"

@@ -11,4 +11,6 @@ Security properties expected to hold:
 - Final-confirmation ambiguity becomes `outcome_unknown`, never an automatic retry.
 - One profile/source has at most one active job, and one appdata directory has at most one control plane.
 
-The local encryption key is stored beside the database and does not protect a copied `/appdata` directory. LAN HTTP does not provide transport confidentiality. BlueBubbles’ server password itself is unscoped; read-only behavior is an application invariant rather than a BlueBubbles permission boundary.
+The default local encryption key is beside the database and does not protect a copied `/appdata` directory. Operators can configure an existing private key outside appdata with `BUNTZEN_MASTER_KEY_FILE` and mount its directory read-only. Startup rejects missing replacement keys, unsafe key files, and keys that cannot authenticate existing encrypted records before write-capable SQLite opening or migration. A separate key protects a database-only backup; it does not protect against a compromised service process that can read the key. See [key storage and recovery](docs/public-exposure.md#key-storage-and-recovery).
+
+LAN HTTP does not provide transport confidentiality. BlueBubbles’ server password itself is unscoped; read-only behavior is an application invariant rather than a BlueBubbles permission boundary.

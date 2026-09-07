@@ -24,6 +24,7 @@ type Config struct {
 	AppDataDir        string
 	DatabasePath      string
 	EncryptionKeyPath string
+	MasterKeyExplicit bool
 	ProfilesDir       string
 	ArtifactsDir      string
 	ListenAddress     string
@@ -115,10 +116,19 @@ func Load() (Config, error) {
 			seenHosts[host] = struct{}{}
 		}
 	}
+	keyPath := strings.TrimSpace(os.Getenv("BUNTZEN_MASTER_KEY_FILE"))
+	keyExplicit := keyPath != ""
+	if keyExplicit && (!filepath.IsAbs(keyPath) || len(keyPath) > 2048 || strings.ContainsRune(keyPath, '\x00')) {
+		return Config{}, errors.New("BUNTZEN_MASTER_KEY_FILE must be an absolute path of at most 2048 bytes")
+	}
+	if !keyExplicit {
+		keyPath = filepath.Join(abs, "master.key")
+	}
 	cfg := Config{
 		AppDataDir:        abs,
 		DatabasePath:      filepath.Join(abs, "buntzen.db"),
-		EncryptionKeyPath: filepath.Join(abs, "master.key"),
+		EncryptionKeyPath: keyPath,
+		MasterKeyExplicit: keyExplicit,
 		ProfilesDir:       filepath.Join(abs, "profiles"),
 		ArtifactsDir:      filepath.Join(abs, "artifacts"),
 		ListenAddress:     listen,

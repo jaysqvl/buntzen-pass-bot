@@ -39,7 +39,7 @@ func run(ctx context.Context, args []string) error {
 	if err := cfg.EnsureDirectories(); err != nil {
 		return err
 	}
-	box, err := secretcrypto.LoadOrCreate(cfg.EncryptionKeyPath)
+	box, err := secretcrypto.LoadForDatabase(cfg.EncryptionKeyPath, cfg.DatabasePath, cfg.MasterKeyExplicit)
 	if err != nil {
 		return fmt.Errorf("load encryption key: %w", err)
 	}

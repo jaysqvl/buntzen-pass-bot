@@ -1,6 +1,6 @@
 // Package crypto provides convenience encryption for secrets stored in SQLite.
-// The key lives beside the database, so this protects a copied database rather
-// than an attacker who can copy all of APPDATA_DIR.
+// Keep the key separately from database backups. The legacy default beside the
+// database protects only a copied database, not a copy of all of APPDATA_DIR.
 package crypto
 
 import (
@@ -14,12 +14,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
-	keySize       = 32
-	envelopeV1    = "v1"
-	fileKeyPrefix = "buntzen-key-v1:"
+	keySize         = 32
+	envelopeV1      = "v1"
+	fileKeyPrefix   = "buntzen-key-v1:"
+	maxKeyFileBytes = 128
 )
 
 type Encryptor struct {
@@ -34,7 +37,37 @@ func LoadOrCreate(path string) (*Encryptor, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer clear(key)
 	return New(key)
+}
+
+// LoadExisting never creates a replacement key or its parent directory.
+func LoadExisting(path string) (*Encryptor, error) {
+	key, err := loadKey(path)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(key)
+	return New(key)
+}
+
+// LoadForDatabase permits automatic key generation only for a confidently new
+// legacy installation. An explicit key path is always existing-key-only.
+func LoadForDatabase(path, databasePath string, explicit bool) (*Encryptor, error) {
+	if explicit {
+		return LoadExisting(path)
+	}
+	box, err := LoadExisting(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return box, err
+	}
+	if _, statErr := os.Lstat(databasePath); !errors.Is(statErr, os.ErrNotExist) {
+		if statErr != nil {
+			return nil, fmt.Errorf("inspect database before key creation: %w", statErr)
+		}
+		return nil, errors.New("encryption key is missing for an existing database; restore its matching key")
+	}
+	return LoadOrCreate(path)
 }
 
 func New(key []byte) (*Encryptor, error) {
@@ -89,18 +122,38 @@ func (e *Encryptor) Decrypt(envelope string) ([]byte, error) {
 }
 
 func loadKey(path string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "open encryption key", Path: path, Err: err}
 	}
-	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("encryption key %s must not be accessible to group or others", path)
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	var metadata unix.Stat_t
+	if err := unix.Fstat(fd, &metadata); err != nil {
+		return nil, fmt.Errorf("inspect encryption key: %w", err)
+	}
+	if metadata.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, errors.New("encryption key must be a regular file")
+	}
+	if metadata.Uid != uint32(os.Geteuid()) || metadata.Mode&0o077 != 0 {
+		return nil, errors.New("encryption key must belong to the service user and be inaccessible to group and others")
+	}
+	if metadata.Size > maxKeyFileBytes {
+		return nil, errors.New("encryption key file is too large")
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maxKeyFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read encryption key: %w", err)
+	}
+	defer clear(raw)
+	if len(raw) > maxKeyFileBytes {
+		return nil, errors.New("encryption key file is too large")
 	}
 	text := strings.TrimSpace(string(raw))
 	if !strings.HasPrefix(text, fileKeyPrefix) {
 		return nil, errors.New("encryption key has an unsupported format")
 	}
-	key, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(text, fileKeyPrefix))
+	key, err := base64.RawStdEncoding.Strict().DecodeString(strings.TrimPrefix(text, fileKeyPrefix))
 	if err != nil || len(key) != keySize {
 		return nil, errors.New("encryption key is malformed")
 	}
@@ -116,19 +169,41 @@ func createKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("generate encryption key: %w", err)
 	}
 	data := []byte(fileKeyPrefix + base64.RawStdEncoding.EncodeToString(key) + "\n")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return loadKey(path)
-	}
+	defer clear(data)
+	file, err := os.CreateTemp(filepath.Dir(path), ".master-key-*")
 	if err != nil {
-		return nil, fmt.Errorf("create encryption key: %w", err)
+		return nil, fmt.Errorf("create encryption key temporary file: %w", err)
 	}
+	temporary := file.Name()
+	defer os.Remove(temporary)
 	defer file.Close()
-	if _, err := file.Write(data); err != nil {
+	if n, err := file.Write(data); err != nil || n != len(data) {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
 		return nil, fmt.Errorf("write encryption key: %w", err)
 	}
 	if err := file.Sync(); err != nil {
 		return nil, fmt.Errorf("sync encryption key: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return nil, fmt.Errorf("close encryption key: %w", err)
+	}
+	// Publish only a complete file and never overwrite the winner of a
+	// concurrent first start. A plain rename would replace the existing key.
+	if err := os.Link(temporary, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return loadKey(path)
+		}
+		return nil, fmt.Errorf("publish encryption key: %w", err)
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("open encryption key directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return nil, fmt.Errorf("sync encryption key directory: %w", err)
 	}
 	return key, nil
 }

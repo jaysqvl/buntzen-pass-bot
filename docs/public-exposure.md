@@ -107,3 +107,44 @@ close the stream and release its subscription. Idle periods clear that deadline;
 the next batch starts a new one. The final HTTP chunk is bounded as well. Ordinary
 HTTP responses have a 30-second write timeout. Event resume cursors, session
 rechecks, and final-event delivery remain enabled.
+
+## Key storage and recovery
+
+The default is `APPDATA_DIR/master.key`. A new installation creates this file
+once with private permissions and publishes it only after a complete write and
+sync. An existing database with a missing default key is refused; the app never
+silently generates a replacement. `BUNTZEN_MASTER_KEY_FILE` selects an absolute,
+existing key file and never falls back to the default or creates external paths.
+The file must be a regular file owned by the service user, with no group/other
+permissions (0400 or 0600). Symlinks, special files, oversized and malformed keys
+are rejected. Existing key bytes and permissions are never rewritten on load.
+
+To separate an existing installation's key from appdata:
+
+1. Stop the service and make a consistent private database/appdata backup. Retain
+   the original matching key in a separate private backup.
+2. Copy the **existing key bytes** into an existing private host directory such
+   as `/srv/buntzen-key/master.key`. Set directory mode 0700 and file mode 0400;
+   both must be owned by the service UID (1001 for the published container).
+3. In Compose/Portainer set `BUNTZEN_KEY_DIRECTORY_PATH=/srv/buntzen-key` and
+   `BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key`. The canonical templates
+   mount that directory read-only and refuse to create a missing host directory.
+   Native runs use the actual absolute key-file path, without a container mount.
+4. Start privately and verify existing provider/profile data can be read. Remove
+   the old appdata key copy only after verifying recovery and retaining the
+   separate matching backup. Never generate new bytes as a relocation step.
+
+Without these settings, the templates preserve the legacy key path. Their
+unused read-only mount defaults to appdata; that fallback adds no key separation.
+With the service stopped, restore the matching database and original key together
+when recovering or rolling back. No key-rotation command is provided here.
+
+Before write-capable database opening and before migrations, Buntzen authenticates
+all current and legacy encrypted fields, including disabled profiles and committed
+WAL records. A wrong key or corrupt ciphertext stops startup with a generic error.
+The read-only preflight does not modify database/WAL contents or schema; SQLite
+may use WAL coordination files. An empty database (or one with no encrypted
+credentials) cannot prove which valid key was intended, so retain matching backups
+even when startup succeeds. Separate key storage protects against a database-only
+copy; the running service and its Python workers can still read the key. This is
+not isolation from a compromised service process.

@@ -56,7 +56,7 @@ creating another request or changing confirmation mode will not bypass the guard
 
 5. Open `http://<docker-host>:8080`, enter the setup token, and create the permanent administrator account. Passwords must be at least 12 characters.
 
-Treat `appdata` as sensitive and back it up as a unit: it contains the database, encryption key, browser profiles, and diagnostics. The key is stored beside the encrypted data, so a copied directory contains both. Only one Buntzen instance may use an appdata directory.
+Treat `appdata` as sensitive: it contains the database and browser profiles. The default encryption key is beside the database, so copying the whole directory also copies its decryption key. For a separate read-only key mount and matching backup/recovery procedure, see [key storage](docs/public-exposure.md#key-storage-and-recovery). Only one Buntzen instance may use an appdata directory.
 
 ## Set up and test a booking
 
