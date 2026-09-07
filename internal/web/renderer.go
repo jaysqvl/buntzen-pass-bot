@@ -22,8 +22,10 @@ type Renderer struct {
 }
 
 type Flash struct {
-	Kind    string
-	Message string
+	Kind        string
+	Message     string
+	ActionLabel string
+	ActionURL   string
 }
 
 // BaseData is embedded by every page model so shared layout fields remain
@@ -50,6 +52,7 @@ func NewRenderer() (*Renderer, error) {
 	}
 	functions := template.FuncMap{"assetURL": func(name string) string { return assetURLs[name] }}
 	definitions := map[string][]string{
+		"error":     {"assets/templates/base.html", "assets/templates/error.html"},
 		"login":     {"assets/templates/base.html", "assets/templates/login.html"},
 		"setup":     {"assets/templates/base.html", "assets/templates/setup.html"},
 		"account":   {"assets/templates/base.html", "assets/templates/account.html"},

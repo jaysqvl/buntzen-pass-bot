@@ -108,6 +108,10 @@ func (u UserStore) ListPendingBookingJobs(ctx context.Context) ([]model.Job, err
 	return u.store.ListPendingBookingJobs(ctx, u.userID)
 }
 
+func (u UserStore) BookingConflict(ctx context.Context, bookingID int64, command model.JobCommand) (BookingConflict, error) {
+	return u.store.BookingConflict(ctx, u.userID, bookingID, command)
+}
+
 func (u UserStore) RequestJobCancellation(ctx context.Context, id int64) error {
 	return u.store.RequestJobCancellation(ctx, u.userID, id)
 }

@@ -83,7 +83,7 @@ func (s *Server) beginAccountChange(w http.ResponseWriter, r *http.Request) (int
 	userID := requestAuth(r).Authenticated.User.ID
 	release := s.tryAccountChange(userID)
 	if release == nil {
-		http.Error(w, "another account change is already running for this account", http.StatusTooManyRequests)
+		s.renderAccountStatus(w, r, http.StatusTooManyRequests, "Another account change is already running. Wait for it to finish, then try again.")
 		return 0, "", nil
 	}
 	rateKey := loginRateKey("password-change", strconv.FormatInt(userID, 10))
@@ -93,7 +93,7 @@ func (s *Server) beginAccountChange(w http.ResponseWriter, r *http.Request) (int
 		if err != nil {
 			s.internal(w)
 		} else {
-			http.Error(w, "too many password attempts; wait before trying again", http.StatusTooManyRequests)
+			s.renderAccountStatus(w, r, http.StatusTooManyRequests, "Too many password attempts. Wait before trying again.")
 		}
 		return 0, "", nil
 	}
@@ -118,12 +118,16 @@ func (s *Server) tryAccountChange(userID int64) func() {
 }
 
 func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, formError string) {
+	s.renderAccountStatus(w, r, formStatus(formError), formError)
+}
+
+func (s *Server) renderAccountStatus(w http.ResponseWriter, r *http.Request, status int, formError string) {
 	user := requestAuth(r).Authenticated.User
 	username := user.Username
 	if r.Method == http.MethodPost && r.URL.Path == "/account/username" {
 		username = strings.TrimSpace(r.Form.Get("username"))
 	}
-	s.render(w, formStatus(formError), "account", accountPageData{
+	s.render(w, status, "account", accountPageData{
 		BaseData:         base(r, "Account"),
 		Error:            formError,
 		FormUsername:     username,

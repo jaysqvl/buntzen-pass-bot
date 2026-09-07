@@ -427,12 +427,12 @@ func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
 	}
 	form := url.Values{"csrf_token": {csrfFrom(cookies)}}
 	recorder := serveForm(fixture, http.MethodPost, fmt.Sprintf("/sources/%d/pair", source.ID), cookies, form)
-	if recorder.Code != http.StatusConflict || recorder.Body.String() != "create a Yodel profile and assign this OTP source before pairing\n" {
-		t.Fatalf("pair without profile = %d body=%q", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/?notice=pairing-unavailable#otp-sources" {
+		t.Fatalf("pair without profile = %d location=%q", recorder.Code, recorder.Header().Get("Location"))
 	}
 }
 
-func TestBookingRunReturnsBoundedConflictForPendingDuplicate(t *testing.T) {
+func TestBookingRunReturnsToBookingsWithExistingJobForDuplicates(t *testing.T) {
 	fixture := newWebFixture(t)
 	resources := fixture.store.ForUser(fixture.admin.ID)
 	source, err := resources.CreateOTPSource(context.Background(), store.OTPSourceInput{
@@ -462,25 +462,36 @@ func TestBookingRunReturnsBoundedConflictForPendingDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookies := loginCookies(t, fixture)
-	form := url.Values{
-		"csrf_token": {csrfFrom(cookies)},
-		"command":    {string(model.CommandDryRun)},
-	}
-	recorder := serveForm(fixture, http.MethodPost,
-		fmt.Sprintf("/bookings/%d/run", booking.ID), cookies, form)
-	if recorder.Code != http.StatusSeeOther || !strings.HasPrefix(recorder.Header().Get("Location"), "/jobs/") {
-		t.Fatalf("first run = %d location=%q body=%q", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
-	}
-	recorder = serveForm(fixture, http.MethodPost,
-		fmt.Sprintf("/bookings/%d/run", booking.ID), cookies, form)
-	if recorder.Code != http.StatusConflict || recorder.Body.String() != "job could not be queued\n" {
-		t.Fatalf("duplicate run = %d body=%q", recorder.Code, recorder.Body.String())
-	}
-	if len(recorder.Body.Bytes()) > 64 {
-		t.Fatalf("duplicate response was not bounded: %d bytes", len(recorder.Body.Bytes()))
+	for index, command := range []model.JobCommand{model.CommandAuthCheck, model.CommandDryRun, model.CommandBook} {
+		t.Run(string(command), func(t *testing.T) {
+			form := url.Values{"csrf_token": {csrfFrom(cookies)}, "command": {string(command)}}
+			path := fmt.Sprintf("/bookings/%d/run", booking.ID)
+			first := serveForm(fixture, http.MethodPost, path, cookies, form)
+			firstURL, err := url.Parse(first.Header().Get("Location"))
+			if err != nil || first.Code != http.StatusSeeOther || !strings.HasPrefix(firstURL.Path, "/jobs/") {
+				t.Fatalf("first run=%d location=%q", first.Code, first.Header().Get("Location"))
+			}
+			duplicate := serveForm(fixture, http.MethodPost, path, cookies, form)
+			redirect, err := url.Parse(duplicate.Header().Get("Location"))
+			if err != nil || duplicate.Code != http.StatusSeeOther || redirect.Path != "/bookings" || redirect.Query().Get("notice") != "queue-pending" || redirect.Query().Get("job") != strings.TrimPrefix(firstURL.Path, "/jobs/") {
+				t.Fatalf("duplicate run=%d location=%q", duplicate.Code, duplicate.Header().Get("Location"))
+			}
+			for range 2 { // Reload is a safe GET, not another attempt to enqueue.
+				page := serveForm(fixture, http.MethodGet, redirect.String(), cookies, nil)
+				for _, want := range []string{"No second job was created", `role="status"`, `href="` + firstURL.Path + `"`, "View existing job"} {
+					if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), want) {
+						t.Fatalf("duplicate notification missing %q: %d %s", want, page.Code, page.Body.String())
+					}
+				}
+			}
+			jobs, err := resources.ListJobs(context.Background(), 10)
+			if err != nil || len(jobs) != index+1 {
+				t.Fatalf("duplicate created extra job: count=%d err=%v", len(jobs), err)
+			}
+		})
 	}
 	jobs, err := resources.ListJobs(context.Background(), 10)
-	if err != nil || len(jobs) != 1 {
+	if err != nil || len(jobs) != 3 {
 		t.Fatalf("jobs after duplicate POST=%+v err=%v", jobs, err)
 	}
 }

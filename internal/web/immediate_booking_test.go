@@ -56,7 +56,7 @@ func TestBookNowHTTPForcesManualApprovalAndRejectsDuplicate(t *testing.T) {
 		t.Fatalf("posted automatic mode escaped manual immediate policy: %+v", job)
 	}
 	response = serveForm(fixture, http.MethodPost, path, cookies, form)
-	if response.Code != http.StatusConflict {
+	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "notice=queue-pending") {
 		t.Fatalf("duplicate response=%d", response.Code)
 	}
 	for _, invalid := range []url.Values{
@@ -64,7 +64,7 @@ func TestBookNowHTTPForcesManualApprovalAndRejectsDuplicate(t *testing.T) {
 		{"csrf_token": {csrfFrom(cookies)}, "command": {"book"}, "timing": {"whenever"}},
 	} {
 		response = serveForm(fixture, http.MethodPost, path, cookies, invalid)
-		if response.Code != http.StatusBadRequest {
+		if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/bookings?notice=booking-action" {
 			t.Fatalf("invalid timing response=%d body=%q", response.Code, response.Body.String())
 		}
 	}
@@ -129,7 +129,7 @@ func TestBookNowExplainsUnreleasedAndExpiredDates(t *testing.T) {
 		message string
 	}{
 		{"unreleased", 2, "Queue for release instead"},
-		{"past", -1, "Choose today or a future released date"},
+		{"past", -1, "Choose today or a future date"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			booking.TargetDate = time.Now().UTC().AddDate(0, 0, test.days).Format(time.DateOnly)
@@ -139,8 +139,12 @@ func TestBookNowExplainsUnreleasedAndExpiredDates(t *testing.T) {
 				t.Fatal(err)
 			}
 			response := serveForm(fixture, http.MethodPost, fmt.Sprintf("/bookings/%d/run", booking.ID), cookies, form)
-			if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), test.message) {
-				t.Fatalf("date response=%d body=%q", response.Code, response.Body.String())
+			if response.Code != http.StatusSeeOther {
+				t.Fatalf("date response=%d", response.Code)
+			}
+			page := serveForm(fixture, http.MethodGet, response.Header().Get("Location"), cookies, nil)
+			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), test.message) || !strings.Contains(page.Body.String(), `role="alert"`) {
+				t.Fatalf("date notification=%d body=%q", page.Code, page.Body.String())
 			}
 		})
 	}

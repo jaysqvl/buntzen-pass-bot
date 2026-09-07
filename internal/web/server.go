@@ -40,7 +40,9 @@ func NewServer(cfg config.Config, database *store.Store, runner *engine.Engine) 
 	return server, nil
 }
 
-func (s *Server) Handler() http.Handler { return s.requestLogging(s.securityHeaders(s.mux)) }
+func (s *Server) Handler() http.Handler {
+	return s.requestLogging(s.browserErrorPages(s.securityHeaders(s.mux)))
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
@@ -95,7 +97,11 @@ func (s *Server) routes() {
 func base(r *http.Request, title string) BaseData {
 	session := requestAuth(r)
 	user := session.Authenticated.User
-	return BaseData{Title: title, Authenticated: user.ID > 0, Username: user.Username, IsAdmin: user.Role == model.RoleAdmin, CSRFToken: session.CSRFToken, CurrentPath: r.URL.Path, Flash: flashFor(r.URL.Query().Get("ok"))}
+	flash := noticeFor(r.URL.Query().Get("notice"))
+	if flash == nil {
+		flash = flashFor(r.URL.Query().Get("ok"))
+	}
+	return BaseData{Title: title, Authenticated: user.ID > 0, Username: user.Username, IsAdmin: user.Role == model.RoleAdmin, CSRFToken: session.CSRFToken, CurrentPath: r.URL.Path, Flash: flash}
 }
 
 func flashFor(value string) *Flash {

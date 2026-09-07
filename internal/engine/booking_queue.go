@@ -16,6 +16,7 @@ import (
 var (
 	ErrBookingNotReleased = errors.New("parking passes have not been released for this target date")
 	ErrBookingDatePassed  = errors.New("the booking target date has passed")
+	ErrBookingWindowEnded = errors.New("the booking release window has ended")
 )
 
 func (e *Engine) QueueBooking(ctx context.Context, userID, bookingID int64, command model.JobCommand, mode model.RunMode) (model.Job, error) {
@@ -179,7 +180,7 @@ func bookingEnqueueParams(
 		return store.EnqueueJobParams{}, err
 	}
 	if !now.Before(window.PollEndsAt) {
-		return store.EnqueueJobParams{}, errors.New("the booking release window has ended")
+		return store.EnqueueJobParams{}, ErrBookingWindowEnded
 	}
 	if now.Before(window.PrepAt) {
 		params.DueAt = window.PrepAt.UTC()
