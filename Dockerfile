@@ -6,7 +6,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/buntzen ./cmd/buntzen
+ARG BUNTZEN_VERSION=dev
+ARG BUNTZEN_REVISION=""
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -X github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo.Version=${BUNTZEN_VERSION} -X github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo.Revision=${BUNTZEN_REVISION}" \
+    -o /out/buntzen ./cmd/buntzen
 
 FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
 

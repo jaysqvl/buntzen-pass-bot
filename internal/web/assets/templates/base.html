@@ -43,6 +43,15 @@
     </section>
     {{template "content" .}}
   </main>
+  {{with appBuild}}
+  <footer id="build-info" class="app-footer" aria-label="Application version" data-version="{{.Version}}" data-revision="{{.Revision}}">
+    <span>Buntzen Bot</span>
+    <div class="build-details">
+      {{if .ReleaseURL}}<a class="release-version" href="{{.ReleaseURL}}" target="_blank" rel="noopener noreferrer" aria-label="Release notes for {{.Label}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}
+      {{if .CommitURL}}<a class="build-revision" href="{{.CommitURL}}" target="_blank" rel="noopener noreferrer" title="Build {{.Revision}}">Build {{.ShortRevision}}</a>{{end}}
+    </div>
+  </footer>
+  {{end}}
 </body>
 </html>
 {{end}}

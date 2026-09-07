@@ -8,6 +8,8 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+
+	"github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo"
 )
 
 // assets contains the complete browser UI. Keeping these files in the Go
@@ -41,6 +43,11 @@ type BaseData struct {
 }
 
 func NewRenderer() (*Renderer, error) {
+	return newRenderer(buildinfo.Version, buildinfo.Revision)
+}
+
+func newRenderer(version, revision string) (*Renderer, error) {
+	build := applicationBuild(version, revision)
 	assetURLs := make(map[string]string)
 	for _, name := range []string{"app.css", "app.js", "htmx.min.js", "favicon.svg"} {
 		content, err := assets.ReadFile("assets/static/" + name)
@@ -50,7 +57,10 @@ func NewRenderer() (*Renderer, error) {
 		digest := sha256.Sum256(content)
 		assetURLs[name] = fmt.Sprintf("/static/%s?v=%x", name, digest[:8])
 	}
-	functions := template.FuncMap{"assetURL": func(name string) string { return assetURLs[name] }}
+	functions := template.FuncMap{
+		"assetURL": func(name string) string { return assetURLs[name] },
+		"appBuild": func() buildDisplay { return build },
+	}
 	definitions := map[string][]string{
 		"error":     {"assets/templates/base.html", "assets/templates/error.html"},
 		"login":     {"assets/templates/base.html", "assets/templates/login.html"},

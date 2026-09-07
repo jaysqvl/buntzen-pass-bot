@@ -100,3 +100,50 @@ func TestRendererEscapesUserProvidedHTML(t *testing.T) {
 		t.Fatal("login page did not escape the supplied username")
 	}
 }
+
+func TestBuildIdentityAppearsOnSignedInSignedOutAndErrorPages(t *testing.T) {
+	const revision = "1234567890abcdef1234567890abcdef12345678"
+	for _, build := range []struct{ version, revision, label string }{
+		{"1.2.3", revision, "v1.2.3"},
+		{"dev", "", "Development build"},
+	} {
+		renderer, err := newRenderer(build.version, build.revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, page := range []struct {
+			name string
+			data any
+		}{
+			{"login", authPageData{}},
+			{"jobs", jobsData{BaseData: BaseData{Authenticated: true, Username: "member"}}},
+			{"error", browserErrorPage{BaseData: BaseData{Title: "Page not found"}, ReturnURL: "/", ReturnLabel: "Back to Setup"}},
+		} {
+			t.Run(build.version+"/"+page.name, func(t *testing.T) {
+				response := httptest.NewRecorder()
+				if err := renderer.Render(response, http.StatusOK, page.name, page.data); err != nil {
+					t.Fatal(err)
+				}
+				body := response.Body.String()
+				if strings.Count(body, `id="build-info"`) != 1 || !strings.Contains(body, ">"+build.label+"<") {
+					t.Fatalf("missing or duplicated build identity on %s", page.name)
+				}
+				if build.version == "dev" {
+					if strings.Contains(body, "/releases/tag/") || strings.Contains(body, "/commit/") {
+						t.Fatal("development build claimed a release or commit")
+					}
+					return
+				}
+				for _, expected := range []string{
+					`href="https://github.com/jaysqvl/buntzen-pass-bot/releases/tag/buntzen-pass-bot-v1.2.3"`,
+					`href="https://github.com/jaysqvl/buntzen-pass-bot/commit/` + revision + `"`,
+					`title="Build ` + revision + `"`, ">Build 1234567<",
+				} {
+					if !strings.Contains(body, expected) {
+						t.Fatalf("missing release identity %q", expected)
+					}
+				}
+			})
+		}
+	}
+}

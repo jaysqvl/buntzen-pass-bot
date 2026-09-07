@@ -120,13 +120,18 @@ jobs:
       - name: Build amd64 image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
+          build-args: |
+            BUNTZEN_VERSION=0.0.0-ci
+            BUNTZEN_REVISION=${{ github.sha }}
           context: .
           load: true
           push: false
           platforms: linux/amd64
           tags: buntzen-pass-bot:ci
       - name: Runtime container smoke test
-        run: bash scripts/docker_smoke.sh buntzen-pass-bot:ci
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: bash scripts/docker_smoke.sh buntzen-pass-bot:ci 0.0.0-ci "$EXPECTED_REVISION"
       - name: Scan runtime image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
