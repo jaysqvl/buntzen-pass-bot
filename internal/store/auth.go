@@ -44,13 +44,11 @@ func (s *Store) AuthenticateAndCreateSession(
 func (s *Store) authenticatePassword(ctx context.Context, username, password string) (model.User, string, bool, error) {
 	normalized, err := auth.NormalizeUsername(username)
 	if err != nil {
-		auth.EqualizePasswordCheck(password)
-		return model.User{}, "", false, nil
+		return model.User{}, "", false, auth.EqualizePasswordCheck(password)
 	}
 	user, passwordHash, err := getUserWith(ctx, s.db, "username_normalized = ?", normalized)
 	if errors.Is(err, ErrNotFound) {
-		auth.EqualizePasswordCheck(password)
-		return model.User{}, "", false, nil
+		return model.User{}, "", false, auth.EqualizePasswordCheck(password)
 	}
 	if err != nil {
 		return model.User{}, "", false, err

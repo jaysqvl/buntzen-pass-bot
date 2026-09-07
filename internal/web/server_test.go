@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
 	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
 	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
@@ -57,7 +58,11 @@ func newWebFixtureWithSetup(t *testing.T, setup bool) webFixture {
 			t.Fatalf("setup administrator: %v", err)
 		}
 	}
-	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "buntzen_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: "test-only-setup-token"}
+	setupToken, err := auth.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "buntzen_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: setupToken}
 	runner := engine.New(cfg, database, control.NewHub())
 	server, err := NewServer(cfg, database, runner)
 	if err != nil {

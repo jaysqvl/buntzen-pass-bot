@@ -4,7 +4,10 @@ Buntzen authenticates users with its own accounts. A Cloudflare Tunnel can carry
 public HTTPS traffic to the application; Cloudflare Access is not required by
 the app. Configure this transport boundary before exposing the login page.
 
-Set these deployment environment variables:
+Create the administrator through the private local interface first. Public mode
+refuses to start on an uninitialized database, so the one-time setup token is
+never an Internet-facing authentication method. Then set these deployment
+environment variables:
 
 ```dotenv
 BUNTZEN_PUBLIC_ORIGIN=https://buntzen.example
@@ -55,3 +58,23 @@ That mode must not be exposed publicly. These transport controls complement
 application authentication, ownership checks, provider restrictions, resource
 limits, private storage, and release verification; they do not make a browser
 worker or dependency inherently trustworthy.
+
+## Authentication admission
+
+First-run setup accepts the randomly generated token printed by the host. If
+`BUNTZEN_SETUP_TOKEN` is supplied, it must encode 32 random bytes as unpadded
+URL-safe base64 (43 characters). Generate it with
+`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`, or leave it unset
+for automatic generation. The app validates its format only while setup is
+needed; an obsolete setup variable does not block an initialized installation.
+A token's format does not prove that its bytes were generated randomly.
+
+In private mode, invalid setup submissions have persistent per-visitor and global
+rolling budgets for recording failures. These budgets bound stored failure rows;
+the token comparison itself remains cheap and can still be attempted.
+A valid token bypasses these failure budgets so anonymous guesses cannot lock
+out the operator. Login and setup admit one request at a time after body and
+CSRF validation; excess requests receive HTTP 503 with Retry-After. All password
+hash/check paths share two nonqueueing Argon2 slots. Saturation is a retryable
+service error, not a failed password guess. These controls bound expensive work;
+they do not guarantee availability against a sustained distributed flood.
