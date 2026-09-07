@@ -1,9 +1,9 @@
 # Buntzen Bot
 
-Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking passes through Yodel. A Go service provides the web UI, scheduling, job state, and encrypted storage; isolated Python/Playwright workers perform the browser actions.
+Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking passes through Yodel. A Go service provides the web UI, scheduling, job state, and encrypted storage; separate supervised Python/Playwright processes perform the browser actions.
 
 > [!WARNING]
-> This application is for a trusted private LAN. Its HTTP traffic, including temporary OTPs shown in the UI, is not encrypted. Do not expose it to the public Internet. See [Security](SECURITY.md) for the full trust model.
+> The default private HTTP mode sends traffic, including temporary OTPs, without encryption. Before exposing the app through an HTTPS tunnel, complete setup privately and configure [public HTTPS mode](docs/public-exposure.md). The app uses its own accounts; Cloudflare Access is optional. See [Security](SECURITY.md) for account boundaries and remaining runtime trust.
 
 ## Features
 
@@ -33,7 +33,7 @@ creating another request or changing confirmation mode will not bypass the guard
    - if using BlueBubbles, set `BLUEBUBBLES_URL` and approve its origin/network with `BUNTZEN_BLUEBUBBLES_ENDPOINTS` as described in [provider access](docs/public-exposure.md#outbound-provider-access); and
    - leave `SCHEDULES_ENABLED=false` until onboarding is complete.
 
-   If a reverse proxy rewrites the `Host` header, add the rewritten authority to `BUNTZEN_ALLOWED_HOSTS` and the browser-facing origin to `BUNTZEN_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`.
+   In private mode, if a reverse proxy rewrites the `Host` header, add the rewritten authority to `BUNTZEN_ALLOWED_HOSTS` and the browser-facing origin to `BUNTZEN_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`. Public mode instead requires its configured public Host and trusted connector settings from the linked guide.
 
 2. Create the persistent data directory for the container's non-root user:
 

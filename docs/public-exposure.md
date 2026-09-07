@@ -39,7 +39,9 @@ cookies with browser-enforced `__Host-` names, `Path=/`, and no Domain. These
 attributes prevent sibling subdomains from injecting the same cookies in
 [current browsers](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie#cookie_prefixes).
 Enabling public mode requires signing in again; legacy private-mode cookie names
-are ignored. The app enforces the exact HTTPS browser origin, and emits HSTS without
+are ignored. Mutation requests require the exact HTTPS browser origin, or an
+absent Origin with browser-supplied `Sec-Fetch-Site: same-origin`; both paths also
+require the independent CSRF token. The app emits HSTS without
 applying it to sibling subdomains. HTTP requests to UI routes are rejected unless
 the trusted connector establishes that the visitor used HTTPS. Direct TLS
 requests use the actual socket peer for throttling and ignore forwarded IPs.
