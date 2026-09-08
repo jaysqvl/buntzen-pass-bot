@@ -104,12 +104,15 @@ scanning has no vulnerability exceptions and rejects HIGH/CRITICAL results,
 including unfixed vulnerabilities. Weekly CI refreshes advisory checks; reviewed
 updates are still required to replace pinned vulnerable code.
 
-The exact release image is smoke-tested before semantic tags are promoted. Signed
-provenance, SBOM and vulnerability-gate attestations bind publication to its source
-and hosted workflow. Deployment rechecks those claims and current advisories;
-its Portainer verification checks the actual running image and false schedule
-gate. Failed or ambiguous updates stop without an automatic compensating PUT,
-because Portainer can publish final status before stack-file cleanup completes. See [release controls](docs/release-and-deployment.md).
+The exact release image is smoke-tested before version and `latest` tags are
+promoted. Signed provenance, SBOM and vulnerability-gate attestations bind
+publication to its source and hosted workflow. `latest` advances only after the
+release checks pass. Portainer updates are operator-triggered and do not rerun
+vulnerability scans or attestation verification. Review release notes, preserve
+the configured schedule gate, and verify the actual running version and health
+after updating. Inspect failed or ambiguous updates before another operation;
+Portainer can publish final status before stack-file cleanup completes. See
+[release controls](docs/release-and-deployment.md).
 Hashes and signatures establish artifact identity and origin, not that accepted
 upstream code is benign. A clean scan is not proof of no unknown vulnerabilities.
 

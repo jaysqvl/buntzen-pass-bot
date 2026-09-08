@@ -1,138 +1,151 @@
 # Release and Portainer deployment
 
-The release path has two deliberately separate trust boundaries:
+GitHub builds, tests, scans, and publishes the Docker image. Portainer updates the
+existing stack when you choose to install a release. No GitHub deployment
+workflow, LAN runner, deployment approval, or Portainer API credential is needed.
 
-1. GitHub-hosted runners build and verify a release image.
-2. A protected, manually approved environment may deploy an already verified image digest to the existing LAN Buntzen stack.
+## Update from Portainer
 
-No pull-request workflow targets the LAN runner, and a deployment never accepts a branch, tag, image name, or Compose file from the operator. It accepts only an immutable digest and an exact stack-name confirmation.
-
-## Release image
-
-`release-please.yml` calls `release-image.yml` in the same workflow run when Release Please creates a `buntzen-pass-bot-v*` release. This is intentional: tags and releases created with the repository `GITHUB_TOKEN` do not trigger a second workflow.
-
-The publication job:
-
-- resolves the published GitHub release and requires its semantic-version tag to point to a commit on `main`;
-- checks out that exact commit and builds `linux/amd64` once;
-- pushes the build under `sha-<full commit>`, then promotes the accepted digest to the Release Please `v<major>.<minor>.<patch>`, `<major>.<minor>.<patch>`, and `<major>.<minor>` tags (no mutable `latest` tag);
-- records the resulting immutable `sha256` digest;
-- attaches and validates BuildKit max-mode provenance and an SPDX 2.3 SBOM, then signs that SBOM separately with GitHub/Sigstore;
-- fails on any HIGH or CRITICAL OS or library vulnerability reported by Trivy, including vulnerabilities without a published fix, using an explicitly empty exception policy;
-- creates keyless GitHub/Sigstore provenance and a separate signed vulnerability-gate attestation only after Trivy passes, recording an empty exception list in the gate, then verifies all three attestations' predicate types, repository, workflow, source branch, and GitHub-hosted-runner identity;
-- creates the semantic-version tags only after every gate passes and verifies that every published tag resolves to the accepted digest.
-
-There are no current vulnerability exceptions. The image removes unused WebKit
-GStreamer packages and Python build tools, including their cached wheels. Runtime
-tests exercise Chromium, while a separate container without the service's home
-tmpfs inspects the image for retained caches. Release scanning uses a policy
-written by the executing workflow, so manually rebuilding an older tag cannot
-reuse that tag's historical waivers while signing an empty exception list.
-
-All third-party actions in these workflows are pinned to full commit SHAs. Dependabot continues to propose reviewed updates.
-
-If a release job is interrupted, use **Re-run failed jobs** on that original run. A retry repeats all trust checks and may repeat the failed job's build; it never bypasses scanning or attestation. **Publish release image** also supports manual dispatch from `main` using an existing published component tag and its exact commit SHA. That path repeats the release checks and passes the resulting digest to the protected deployment workflow.
-
-The workflow summary prints the deployment coordinate:
+The [Portainer Compose template](../deploy/portainer.yml) defaults to:
 
 ```text
-ghcr.io/<owner>/<repository>@sha256:<digest>
+ghcr.io/jaysqvl/buntzen-pass-bot:latest
 ```
 
-An operator can independently verify it after authenticating to GHCR:
+`latest` follows the newest accepted stable release, including future minor and
+major versions. Publishing a release does not restart your container. You decide
+when to install it:
 
-```bash
-gh attestation verify \
-  oci://ghcr.io/<owner>/<repository>@sha256:<digest> \
-  --repo <owner>/<repository> \
-  --signer-workflow <owner>/<repository>/.github/workflows/release-image.yml \
-  --source-ref refs/heads/main \
-  --deny-self-hosted-runners \
-  --predicate-type https://slsa.dev/provenance/v1
+1. Read the release notes for configuration or database changes. Wait for active
+   jobs to finish and keep auto-queueing disabled during the update.
+2. In Portainer, open **Stacks**, select the existing Buntzen stack, and open
+   **Editor**. Apply any required Compose or environment changes there.
+3. Choose **Update the stack** and enable **Re-pull image and redeploy** so Docker
+   checks the registry for the new image.
+4. Wait for the container to become healthy. Open Buntzen and check the version
+   and build in the footer against the release you intended to install.
+5. Check the OTP source's **Test connection** and the relevant application flows.
+   Container health alone does not prove that Yodel checkout works.
 
-gh attestation verify \
-  oci://ghcr.io/<owner>/<repository>@sha256:<digest> \
-  --repo <owner>/<repository> \
-  --signer-workflow <owner>/<repository>/.github/workflows/release-image.yml \
-  --source-ref refs/heads/main \
-  --deny-self-hosted-runners \
-  --predicate-type https://spdx.dev/Document/v2.3
+Use the existing stack, port, and appdata directory. Re-pulling an image does not
+update your saved Compose file or add new environment settings. Portainer's
+[stack editing documentation](https://docs.portainer.io/user/docker/stacks/edit)
+explains the update controls.
 
-gh attestation verify \
-  oci://ghcr.io/<owner>/<repository>@sha256:<digest> \
-  --repo <owner>/<repository> \
-  --signer-workflow <owner>/<repository>/.github/workflows/release-image.yml \
-  --source-ref refs/heads/main \
-  --deny-self-hosted-runners \
-  --predicate-type https://github.com/<owner>/<repository>/attestations/trivy/v1
-```
+If your existing stack uses a literal `@sha256:...` image or an explicit version,
+change it to the `:latest` image above once. If it uses `${BUNTZEN_IMAGE}`, set that
+Portainer environment variable to the same `:latest` value, or use the current
+template's default with the variable unset. A force update of an old digest
+recreates the old image; it cannot choose a newer release.
 
-If the repository is private, ensure the Portainer Docker environment can pull the inherited private GHCR package. Use a read-only package credential; no registry write credential belongs on the Docker host.
+To stay on a chosen release, set `BUNTZEN_IMAGE` to a published version such as
+`ghcr.io/jaysqvl/buntzen-pass-bot:0.5.1`, or to the exact digest printed in the
+release workflow summary. To follow only patch releases within a minor version,
+use its tag, such as `:0.5`. The footer continues to display the version built into
+the running image regardless of the tag used to install it.
 
-## Protected Buntzen environment
+## Existing stack settings
 
-Create a GitHub Environment named `portainer-buntzen` with:
+Preserve the existing stack's name, port, appdata path, and configuration. The
+canonical [deploy/portainer.yml](../deploy/portainer.yml) uses:
 
-- required reviewers;
-- deployment branches restricted to `main`;
-- environment secrets:
-  - `PORTAINER_URL`: exact Portainer HTTP(S) origin, with no path;
-  - `PORTAINER_API_KEY`: a dedicated API token with access only to the Buntzen stack where the Portainer edition permits that restriction, including read access to that endpoint's Docker container list, container inspect and image inspect proxy APIs;
-  - `BUNTZEN_HEALTH_URL`: exact Buntzen URL ending in `/healthz`;
-- environment variables:
-  - `PORTAINER_ENDPOINT_ID`;
-  - `PORTAINER_STACK_ID`;
-  - `PORTAINER_STACK_NAME`.
+- `BUNTZEN_IMAGE`: optional image override; defaults to the project's `:latest`.
+- `BUNTZEN_WEB_PORT`: the host port already used by Buntzen.
+- `BUNTZEN_APPDATA_PATH`: the existing absolute appdata directory, owned by UID/GID
+  1001. Never share it with another container or a native development instance.
+- `BUNTZEN_SECCOMP_PROFILE_PATH`: the Playwright seccomp profile path as seen by
+  Portainer's Compose process. For containerized Portainer, keep it inside the
+  persistent `/data` mount, for example `/data/buntzen/seccomp_profile.json`.
+- `BLUEBUBBLES_URL` and `BUNTZEN_BLUEBUBBLES_ENDPOINTS`: when using BlueBubbles,
+  configure its exact [approved origin and network](public-exposure.md#outbound-provider-access).
+- `BUNTZEN_ALLOWED_HOSTS` and, when needed, `BUNTZEN_ALLOWED_ORIGINS`: the exact
+  authorities and origins used to access the app in private mode.
+- `MAX_CONCURRENT_JOBS`: preserve your chosen concurrency.
 
-Keep endpoint addresses and tokens in the protected environment, not in repository files. Do not use a Portainer administrator password as the API token.
+The template keeps `SCHEDULES_ENABLED=false`. Complete the
+[live booking tests](live-testing.md) before deliberately enabling unattended
+scheduling in your saved stack. Updating an image does not itself enable it.
 
-Protect `main` with required pull requests and passing `go`, `python-actions`, `integration` and `docker` checks from GitHub Actions, including for administrators. Disable force pushes and branch deletion. A sole owner can use zero required peer approvals while retaining the PR and check gates. Require owner approval for the deployment environment, restrict it to the `main` branch, and disable administrator bypass. Environment approval is a second gate, not a substitute for protecting the code that the runner will execute.
+The optional `BUNTZEN_KEY_DIRECTORY_PATH` must refer to an existing directory
+containing the original `master.key`, owned by UID/GID 1001 with mode 0400 or
+0600. To use its read-only mount, set
+`BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key` after following the
+[key relocation procedure](public-exposure.md#key-storage-and-recovery).
+Otherwise preserve the existing key location.
 
-Require full-SHA action references and an allowlist of the actions used by these workflows, including nested Trivy setup and cache actions. Keep workflow token defaults read-only. Release Please's explicit job permissions and the repository setting permitting Actions to create pull requests are needed for release PRs. Token-created release PRs can require owner approval of their CI runs; approve those runs or dispatch CI on the exact release branch before merging.
+Public HTTPS is optional for a private LAN installation. To enable it, follow
+[public HTTPS configuration](public-exposure.md#public-https-transport), including
+private administrator setup, `BUNTZEN_PUBLIC_ORIGIN`, and
+`BUNTZEN_TRUSTED_PROXIES`. Public mode changes which hosts may access the UI.
 
-Register one isolated runner with all four labels `self-hosted`, `linux`, `x64`, and `buntzen-deploy`. It needs outbound GitHub access, LAN access to Portainer and the Buntzen health endpoint, plus `bash`, `curl`, and `jq`. It does not need a Docker socket. Use a dedicated low-privilege host or VM and do not assign the `buntzen-deploy` label to a general-purpose runner.
+If GHCR package visibility requires authentication, configure a read-only pull
+credential in Portainer's registry settings. This is registry access; the app
+does not need a Portainer API credential.
 
-Every version published by Release Please passes its verified image digest directly to the protected deployment workflow. A GitHub-hosted job verifies the digest, signed release provenance, signed SPDX SBOM, and signed Trivy-gate attestation, then re-runs the strict Trivy scan against the current vulnerability database and the empty exception policy. GitHub applies the environment approval only after those checks pass, before scheduling the LAN job. The LAN job checks out the workflow's exact `main` revision; a manual redeploy uses the selected current workflow revision even when the image was built from an older release. Pull-request code is never executed on that runner. `workflow_dispatch` remains available for an explicit redeploy of an already published digest.
+### Upgrading from 0.5.0 or earlier
 
-## Existing Portainer stack setup
+Existing BlueBubbles sources require `BUNTZEN_BLUEBUBBLES_ENDPOINTS` from 0.5.1
+onwards. Without it, provider network access is disabled even if the source has a
+saved URL and password. Add the exact origin and its allowed network before
+updating the image; see the provider policy linked above.
 
-The workflow updates the existing `buntzen-pass-bot` standalone Docker Compose stack in place from `deploy/portainer.yml`. Do not create a second rollout stack or allocate another port or appdata directory. The deployment guard requires the selected stack to be file-based, with no Git configuration or automatic-update configuration, and already active with an exact `ok` response from `/healthz` before it will change anything. Confirm these environment values on the existing stack in Portainer:
+Apply the current template's CPU, memory, PID, read-only filesystem, and tmpfs
+settings to the existing stack. Image tests verify those settings in CI; they do
+not establish that an older Portainer stack has adopted them. Preserve the
+original encryption key and any deliberate local paths or network settings.
 
-- `BUNTZEN_IMAGE`: an initial `ghcr.io/<owner>/<repository>@sha256:<digest>` release coordinate;
-- `BUNTZEN_WEB_PORT`: the configured host port already used by Buntzen;
-- `BUNTZEN_APPDATA_PATH`: the configured absolute Buntzen appdata directory, owned by UID/GID 1001;
-- optional `BUNTZEN_KEY_DIRECTORY_PATH`: an existing separate host directory containing the original `master.key`, owned by UID/GID 1001 with mode 0400 or 0600; set `BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key` to use its read-only mount. Follow the [key relocation procedure](public-exposure.md#key-storage-and-recovery) before changing these values;
-- `BUNTZEN_SECCOMP_PROFILE_PATH`: absolute path to this repository's `docker/seccomp_profile.json` as seen by Portainer's Compose process. For containerized Portainer, place the file inside its persistent `/data` mount and use a container-visible path such as `/data/buntzen/seccomp_profile.json`; a host-only path is not sufficient;
-- `BLUEBUBBLES_URL` and, when using BlueBubbles, `BUNTZEN_BLUEBUBBLES_ENDPOINTS`: the [operator-approved provider origins and network pins](public-exposure.md#outbound-provider-access). Existing saved sources require this explicit policy too;
-- `BUNTZEN_ALLOWED_HOSTS` and, only when required, `BUNTZEN_ALLOWED_ORIGINS`;
-- for public HTTPS, `BUNTZEN_PUBLIC_ORIGIN` and `BUNTZEN_TRUSTED_PROXIES` after [private bootstrap and connector configuration](public-exposure.md); private-mode Host/origin aliases do not grant public UI access;
-- optional `BUNTZEN_SETUP_TOKEN`, `BUNTZEN_YODEL_ORIGINS`, `BUNTZEN_LOG_LEVEL`, `BUNTZEN_DEBUG`, and `MAX_CONCURRENT_JOBS`;
-- `SCHEDULES_ENABLED=false`.
+## Release publication
 
-The checked-in deployment Compose file hard-codes `SCHEDULES_ENABLED: "false"`; neither a workflow input nor a Portainer environment value can enable it during a rollout. The deployment script also refuses an inactive or unhealthy stack, a Git-backed or auto-updated stack, an unexpected environment shape, or any existing stack whose Portainer environment does not contain exactly one false schedule gate. Use the existing stack's exact ID, endpoint ID, and name so a configuration mistake cannot silently target a different stack.
+`release-please.yml` calls `release-image.yml` when it creates a
+`buntzen-pass-bot-v*` release. GitHub-token-created tags do not trigger a second
+release workflow, so publication is explicitly connected in the same run.
 
-Never share this appdata with another container or native macOS run, and never exercise the same Yodel identity concurrently from two installations.
+The publication jobs:
 
-## Deploy and observe
+- validate the release's exact commit on `main` and build `linux/amd64`;
+- run the actual image through the application and Chromium smoke tests;
+- reject HIGH and CRITICAL OS or library vulnerabilities, including those without
+  an available fix, with no current exceptions;
+- attach and verify build provenance, a signed SPDX SBOM, and a signed record of
+  the passed vulnerability gate;
+- promote the accepted digest to its version and commit tags; and
+- advance `latest` only after those checks pass, without letting an older release
+  rebuilt manually replace a newer stable release.
 
-For a normal release:
+Third-party Actions and Docker build inputs remain pinned to immutable commits
+or digests. The mutable `latest` tag is an installation choice; the workflow still
+records the exact accepted digest and the app retains its version and revision.
 
-1. Merge the Release Please pull request.
-2. Release Please publishes and verifies the immutable image.
-3. Approve the `portainer-buntzen` environment deployment.
+If publication fails, rerun the failed jobs in that original run. **Publish
+release image** also supports manual dispatch from `main` for an existing
+published component tag and exact commit SHA. It repeats the release checks and
+publishes the image without contacting your server.
 
-The approved deployment replaces the existing `buntzen-pass-bot` container in the same stack, on the same port and appdata path. It never creates a version-specific or parallel rollout container. For a manual redeploy, use **Actions → Deploy Buntzen → Run workflow**, paste the immutable `sha256:<digest>`, and type the exact protected stack name.
+Keep `main` protected with reviewed pull requests and passing `go`,
+`python-actions`, `integration`, and `docker` checks. Release Please still needs
+permission to create release pull requests and publish releases. None of these
+build/release permissions requires a runner or credentials on your LAN.
 
-Before writing, the script requires exactly one immutable `BUNTZEN_IMAGE` in the current stack environment and verifies the existing container against it. It finds exactly one container with the stack's Compose project label and the `buntzen-pass-bot` service label, rechecks its identity and labels through inspect, and requires running/healthy state and exactly one `SCHEDULES_ENABLED=false` environment entry. Both its configured image coordinate and its actual Docker image ID must match the requested image. Docker image inspect resolves that coordinate to the configuration ID; registry manifest digests and configuration IDs are different identifiers. These are read-only Docker proxy calls; the runner needs no Docker socket or container-exec permission. An old stack using a mutable tag must first be reconciled privately to its actual immutable release coordinate; changing only its Portainer variable will not satisfy this guard.
+## Verify and recover
 
-The script then preserves the Portainer-managed environment, replaces only the Compose revision and image digest, reasserts the false schedule gate, and asks Portainer to pull the image. Portainer 2.45 [updates Compose stacks asynchronously](https://github.com/portainer/portainer/blob/2.45.0/api/http/handler/stacks/stack_update.go): its successful update response means deployment has started, not that the new container is ready. The script waits through Deploying (status 3), requires Active (status 1), repeats the running-container checks against the new image, and requires an exact `ok` response from `/healthz`. A healthy old image cannot prove success even after the stack becomes Active. Each verification phase defaults to a two-minute budget shared by all its HTTP requests. Redeploying the same digest is supported.
+Before an upgrade with configuration or schema changes, stop active work and
+make a consistent private backup of appdata, its matching master key, the current
+Compose file and environment, and the running image digest. Retain the key in a
+separate private backup as well. Losing it makes encrypted credentials
+unrecoverable.
 
-If the update fails, its response is ambiguous, or verification expires, the script stops with a failed deployment and sends no compensating update. Portainer 2.45 publishes final stack status before its stack-file cleanup callback finishes; another PUT can overwrite or remove the backup still used by that callback. Neither a settled status nor a fixed delay proves cleanup completion. Automatic rollback is therefore disabled. Inspect Portainer, establish that the previous operation has finished, and reconcile the backed-up Compose, environment, appdata/key compatibility and image before a deliberate recovery. The script makes at most one update request per invocation and never reports a failed update as recovered.
+Verify the new version in the app footer and, from the container console, with
+`buntzen version` and `buntzen doctor`. Check the actual running image and health;
+a successful pull or a saved stack file alone does not prove deployment finished.
 
-Do not edit the Buntzen stack in Portainer while a deployment is running: workflow concurrency serializes workflow runs, but it cannot serialize an operator's direct Portainer edits. Portainer 2.45 rejects another update while the stack is Deploying, but final status alone does not prove its cleanup callback has completed.
+If deployment fails, inspect Portainer and establish that its update operation
+has finished before trying recovery. Do not overlap updates or automatically
+restore an older image against changed data. Reconcile the backed-up Compose,
+environment, image, and matching appdata/key before a deliberate rollback. A
+healthy older binary alone does not establish schema compatibility. Releases
+before `BUNTZEN_MASTER_KEY_FILE` require the key at their legacy appdata location.
 
-A healthy deployment still leaves schedules disabled. Complete setup/login, BlueBubbles connection, pairing, `auth-check`, dry-run, manual approval/cancellation, and one explicitly initiated automatic booking before enabling unattended schedules. Enabling schedules remains a deliberate Portainer change outside this workflow. Disable schedules again before every later rollout; the deployment preflight refuses a stack whose Portainer schedule gate is not exactly `false`.
-
-Before deploying schema changes, stop active work and make a consistent private backup of appdata, plus the current Compose file, environment and image digest. Retain the database's matching master key in a separate private backup, including when its live path is outside appdata; losing that key makes encrypted credentials unrecoverable. This revision uses schema 6 for immediate booking timing, profile login URLs and ordered pass preferences. Restore matching appdata and key with the container stopped if rolling back to an older release; an older binary may start against newer additive columns while ignoring their behavior, so a healthy image-only rollback is insufficient evidence of compatibility. Releases predating `BUNTZEN_MASTER_KEY_FILE` also require the original key at their legacy appdata path.
-
-Use [the live booking test procedure](live-testing.md) to test remaining availability with **Book now · manual approval** while schedules stay disabled. The fixed 15-minute expiry survives queueing and restarts; this path does not prove preparation or polling at the next release time.
+Keep booking evidence private. Never run the same Yodel identity concurrently
+from a development instance and the deployed service. Follow the
+[live testing procedure](live-testing.md) to distinguish a successful login or
+synthetic browser test from a pass actually issued by Yodel.

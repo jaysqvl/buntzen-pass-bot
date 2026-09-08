@@ -1,2 +1,7 @@
-self-hosted-runner:
-  labels: [buntzen-deploy]
+# GitHub supports queue: max, but the latest actionlint release (v1.7.12) does not.
+# Remove this exact, file-scoped compatibility exception once actionlint supports it.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency
+paths:
+  .github/workflows/release-image.yml:
+    ignore:
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

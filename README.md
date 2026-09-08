@@ -58,6 +58,19 @@ creating another request or changing confirmation mode will not bypass the guard
 
 Treat `appdata` as sensitive: it contains the database and browser profiles. The default encryption key is beside the database, so copying the whole directory also copies its decryption key. For a separate read-only key mount and matching backup/recovery procedure, see [key storage](docs/public-exposure.md#key-storage-and-recovery). Only one Buntzen instance may use an appdata directory.
 
+## Portainer installs and updates
+
+Use [deploy/portainer.yml](deploy/portainer.yml) for the published image. It defaults
+to `ghcr.io/jaysqvl/buntzen-pass-bot:latest`, which advances after a stable release
+passes the build, browser smoke test, vulnerability scan, and signature checks.
+GitHub publishes the image; you choose when to update the existing stack in
+Portainer with **Update the stack** and **Re-pull image and redeploy** enabled.
+The app footer shows the version and build actually running.
+
+See [Release and Portainer deployment](docs/release-and-deployment.md) for the
+stack settings, upgrade notes, and optional version pinning. No GitHub deployment
+runner or Portainer API key is needed.
+
 ## Set up and test a booking
 
 Keep `SCHEDULES_ENABLED=false` while completing these steps:
@@ -128,7 +141,7 @@ For live logs, use `docker compose logs --follow --tail=300 buntzen-pass-bot`. S
 ```bash
 go vet ./...
 go test -race ./...
-uvx --from ruff==0.12.10 ruff check actions scripts/deploy/tests
+uvx --from ruff==0.12.10 ruff check actions scripts/release
 uv run --project actions --locked python -m unittest discover -s actions/tests
 ```
 

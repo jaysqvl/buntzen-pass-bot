@@ -324,15 +324,38 @@ jobs:
             echo "The digest passed the HIGH/CRITICAL Trivy gate, signed SPDX SBOM verification, and both BuildKit and GitHub provenance checks."
           } >>"$GITHUB_STEP_SUMMARY"
 
-  deploy-dispatched-release:
-    name: Deploy manually dispatched release
-    if: github.event_name == 'workflow_dispatch'
+  promote-latest:
+    name: Update the latest release image
     needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Serialize this mutable tag across releases, including manual republishes.
+    concurrency:
+      group: release-image-latest
+      queue: max
+      cancel-in-progress: false
     permissions:
-      attestations: read
       contents: read
-      packages: read
-    uses: ./.github/workflows/deploy-portainer.yml
-    with:
-      image_digest: ${{ needs.publish.outputs.image_digest }}
-    secrets: inherit
+      packages: write
+    steps:
+      - name: Check out the executing workflow revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          # Recovery can build an older release that predates the promotion helper.
+          ref: ${{ github.workflow_sha }}
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Promote only the newest stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release/promote_latest.py
