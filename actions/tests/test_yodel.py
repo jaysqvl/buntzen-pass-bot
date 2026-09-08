@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from buntzen_actions.control import Credentials
 from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
 from buntzen_actions.pass_types import PASS_PREFERENCES
+from buntzen_actions.vehicle_selection import VehicleSelectionResult
 from buntzen_actions.yodel import (
     BookingResult,
     LOGIN_PHONE_SELECTORS,
@@ -216,7 +217,7 @@ class BookingAction(YodelAction):
 
     def _select_vehicle(self, container):
         self.events.append(("vehicle.select", self.config.vehicle_keyword))
-        return True
+        return VehicleSelectionResult(True, "selected")
 
     def _click_first(self, root, selectors, timeout_ms):
         self.events.append(("checkout.click", timeout_ms))
@@ -647,7 +648,7 @@ class YodelTests(unittest.TestCase):
         events = []
         action = object.__new__(YodelAction)
         action.config = SimpleNamespace(pass_order=("all_day", "afternoon", "morning"))
-        action.control = SimpleNamespace(inbox=Inbox())
+        action.control = FakeControl(events)
 
         def try_pass(preference, mode):
             events.append(preference.key)
@@ -659,7 +660,55 @@ class YodelTests(unittest.TestCase):
         result = action.try_booking_once("auto")
         self.assertTrue(result.success)
         self.assertEqual(result.pass_key, "afternoon")
-        self.assertEqual(events, ["all_day", "afternoon"])
+        self.assertEqual([event for event in events if isinstance(event, str)], ["all_day", "afternoon"])
+
+    def test_failed_preferences_keep_each_reason_in_progress_and_final_status(self) -> None:
+        action = object.__new__(YodelAction)
+        action.config = SimpleNamespace(pass_order=("all_day", "afternoon"))
+        action.control = SimpleNamespace(inbox=Inbox(), status=Mock())
+        messages = (
+            "All-Day pass is not available.",
+            "Afternoon pass was available, but the vehicle selector did not open.",
+        )
+        action._try_pass = Mock(side_effect=[BookingResult(False, message) for message in messages])
+
+        result = action.try_booking_once("auto")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.message, " ".join(messages))
+        self.assertEqual(
+            [call.args for call in action.control.status.call_args_list],
+            [("pass_result", message) for message in messages],
+        )
+
+    @patch("buntzen_actions.yodel.select_target_date", return_value=True)
+    def test_vehicle_failure_stops_before_cart_and_preserves_safe_reason(self, _date) -> None:
+        events = []
+        action = BookingAction(events)
+        action._select_vehicle = lambda container: VehicleSelectionResult(False, "save_unconfirmed")
+        result = action._try_pass(PASS_PREFERENCES["afternoon"], "auto")
+        self.assertFalse(result.success)
+        self.assertEqual(
+            result.message,
+            "Afternoon pass was available, but Yodel did not show the saved vehicle on the pass.",
+        )
+        self.assertNotIn("checkout.click", [event[0] for event in events])
+        self.assertNotIn(action.config.vehicle_keyword, result.message)
+
+    @patch("buntzen_actions.yodel.time.monotonic", side_effect=[0, 0, 2])
+    def test_poll_deadline_keeps_the_actual_vehicle_failure(self, _clock) -> None:
+        action = object.__new__(YodelAction)
+        action.config = SimpleNamespace(pass_order=("afternoon",), poll_deadline_seconds=1)
+        action.control = FakeControl([])
+        action.page = object()
+        action.diagnostics = SimpleNamespace(screenshot=Mock())
+        message = "Afternoon pass was available, but the vehicle selector did not open."
+        action._try_pass = Mock(return_value=BookingResult(False, message, "afternoon"))
+
+        result = action.poll_for_booking("auto")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.message, f"Polling deadline reached. Last status: {message}")
 
     @patch("buntzen_actions.yodel.require_empty_cart")
     @patch("buntzen_actions.yodel.require_single_pass_cart")
