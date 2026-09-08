@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.5.1...buntzen-pass-bot-v0.5.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **release:** support latest images and Portainer-managed updates ([#73](https://github.com/jaysqvl/buntzen-pass-bot/issues/73)) ([1217160](https://github.com/jaysqvl/buntzen-pass-bot/commit/1217160ed2536c512ff3a9421082c5d8e2fbf1f9))
+
 ## [0.5.1](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.5.0...buntzen-pass-bot-v0.5.1) (2026-09-07)
 
 
