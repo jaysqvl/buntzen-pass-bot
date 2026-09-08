@@ -16,6 +16,7 @@ from .control import ControlPort
 from .diagnostics import SafeDiagnostics
 from .errors import ActionError, OutcomeUnknown
 from .pass_types import PASS_PREFERENCES, PassPreference
+from .vehicle_selection import VehicleSelectionResult, select_vehicle
 
 
 logger = logging.getLogger("buntzen_actions.yodel")
@@ -73,11 +74,16 @@ OTP_SUBMIT_SELECTORS = (
     "button:has-text('Confirm')",
     "a:has-text('Continue')",
 )
-VEHICLE_SELECTOR_SELECTORS = (
-    ".smartSelectCustom",
-    "text=Select Vehicle",
-    "text=Vehicle",
-)
+VEHICLE_FAILURE_MESSAGES = {
+    "selector_missing": "the vehicle selector was not found",
+    "selector_ambiguous": "more than one vehicle selector was found",
+    "popup_unavailable": "the vehicle selector did not open",
+    "vehicle_missing": "no visible saved vehicle matched the profile's vehicle keyword",
+    "vehicle_ambiguous": "multiple saved vehicles matched; use a more specific vehicle keyword",
+    "selection_unconfirmed": "Yodel did not mark the matching vehicle as selected",
+    "save_unavailable": "the vehicle Save button was not enabled",
+    "save_unconfirmed": "Yodel did not show the saved vehicle on the pass",
+}
 ADD_TO_CART_SELECTORS = (
     "a:has-text('Add To Cart')",
     "button:has-text('Add To Cart')",
@@ -406,13 +412,16 @@ class YodelAction:
             raise ActionError("Yodel session keepalive failed") from exc
 
     def try_booking_once(self, mode: str) -> BookingResult:
+        failures = []
         for key in self.config.pass_order:
             preference = PASS_PREFERENCES[key]
             self.control.inbox.check_cancelled()
             result = self._try_pass(preference, mode=mode)
+            self.control.status("pass_result", result.message)
             if result.success:
                 return result
-        return BookingResult(False, "No selected pass was available or actionable.")
+            failures.append(result.message)
+        return BookingResult(False, " ".join(failures) or "No pass preferences were configured.")
 
     def poll_for_booking(self, mode: str) -> BookingResult:
         deadline = time.monotonic() + self.config.poll_deadline_seconds
@@ -469,13 +478,21 @@ class YodelAction:
             return BookingResult(
                 False, f"{preference.label} pass is not available.", preference.key
             )
-        if not self._select_vehicle(container):
+        self.control.status(
+            "selecting_vehicle", f"Selecting the saved vehicle for the {preference.label} pass."
+        )
+        vehicle = self._select_vehicle(container)
+        if not vehicle.success:
             self.diagnostics.screenshot(self.page, f"{preference.key}-vehicle-not-found")
             return BookingResult(
                 False,
-                f"{preference.label} pass was available, but the vehicle was not selected.",
+                f"{preference.label} pass was available, but "
+                f"{VEHICLE_FAILURE_MESSAGES.get(vehicle.reason, 'vehicle selection could not be verified')}.",
                 preference.key,
             )
+        self.control.status(
+            "vehicle_selected", f"The saved vehicle was verified on the {preference.label} pass."
+        )
 
         if mode == "dry-run":
             self.diagnostics.screenshot(self.page, f"{preference.key}-dry-run-ready")
@@ -767,69 +784,13 @@ class YodelAction:
             return True
         return "available" in text
 
-    def _select_vehicle(self, container: Any) -> bool:
-        keyword = self.config.vehicle_keyword.lower()
-        if not self._click_first(
-            container, VEHICLE_SELECTOR_SELECTORS, timeout_ms=3_000
-        ):
-            self._click_first(self.page, VEHICLE_SELECTOR_SELECTORS, timeout_ms=3_000)
-        self._human_pause(0.3, 1.0)
-        popup = self._visible_locator(
-            (
-                ".popup.smart-select-popup.modal-in",
-                ".smart-select-popup",
-                ".modal-in",
-                "[role='dialog']",
-            ),
-            timeout_ms=5_000,
-        )
-        root = popup if popup is not None else self.page
-        labels = root.locator("label.item-radio, label:has(.item-title), label")
-        try:
-            count = labels.count()
-        except Exception:
-            count = 0
-        for index in range(count):
-            label = labels.nth(index)
-            try:
-                text = label.inner_text(timeout=500).strip()
-                if keyword in text.lower():
-                    label.click()
-                    self._human_pause(0.2, 0.7)
-                    self._close_vehicle_popup_if_open()
-                    return True
-            except Exception:
-                continue
-        selects = self.page.locator("select")
-        try:
-            select_count = selects.count()
-        except Exception:
-            select_count = 0
-        for index in range(select_count):
-            select = selects.nth(index)
-            try:
-                options = select.locator("option")
-                for option_index in range(options.count()):
-                    option = options.nth(option_index)
-                    label = option.inner_text(timeout=500).strip()
-                    value = option.get_attribute("value") or label
-                    if keyword in label.lower():
-                        select.select_option(value=value)
-                        return True
-            except Exception:
-                continue
-        return False
-
-    def _close_vehicle_popup_if_open(self) -> None:
-        self._click_first(
+    def _select_vehicle(self, container: Any) -> VehicleSelectionResult:
+        return select_vehicle(
             self.page,
-            (
-                ".link.popup-close",
-                "a.popup-close",
-                "button:has-text('Done')",
-                "button:has-text('Close')",
-            ),
-            timeout_ms=1_000,
+            container,
+            self.config.vehicle_keyword,
+            timeout_ms=5_000,
+            check_cancelled=self.control.inbox.check_cancelled,
         )
 
     def _click_first(

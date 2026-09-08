@@ -163,6 +163,42 @@ func TestControlPlanePythonBrowserBooking(t *testing.T) {
 	}
 }
 
+func TestControlPlanePythonBrowserBookingVehicleFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-browser integration test")
+	}
+
+	outcome := runSyntheticBrowserBooking(t, 9110, model.CommandDryRun, model.RunModeDryRun, "", "vehicle_missing")
+	if outcome.err != nil {
+		t.Fatalf("run coordinated booking: %v\nworker stderr:\n%s", outcome.err, strings.Join(outcome.stderr, "\n"))
+	}
+	wantMessage := "All-day pass was available, but no visible saved vehicle matched the profile's vehicle keyword."
+	if outcome.result.Status != model.JobFailed || outcome.result.Message != wantMessage {
+		t.Fatalf("missing vehicle result = %#v, want failed with %q", outcome.result, wantMessage)
+	}
+	snapshot := outcome.flow
+	if len(snapshot.errors) != 0 {
+		t.Fatalf("fake Yodel contract violations: %s", strings.Join(snapshot.errors, "; "))
+	}
+	if snapshot.probeLoads != 1 || snapshot.passLoads != 1 || snapshot.dateSelections != 1 || snapshot.vehicleSelections != 0 {
+		t.Errorf("missing vehicle flow = %#v, want one authenticated pass/date check with no saved selection", snapshot)
+	}
+	if snapshot.cartAdds != 0 || snapshot.checkouts != 0 || snapshot.confirmations != 0 || outcome.approvalRequests != 0 || outcome.confirmationStarts != 0 {
+		t.Errorf("missing vehicle crossed purchase boundary: flow=%#v approvals=%d barriers=%d", snapshot, outcome.approvalRequests, outcome.confirmationStarts)
+	}
+	if !strings.Contains(strings.Join(outcome.events, "\n"), "run.pass_result:"+wantMessage) {
+		t.Errorf("specific vehicle failure did not reach durable events: %v", outcome.events)
+	}
+	assertEventKindsAbsent(t, outcome.events, "run.vehicle_selected", "confirmation.starting", "confirmation.completed")
+	if outcome.blueBubblesCalls != 0 {
+		t.Errorf("already-authenticated vehicle failure touched BlueBubbles %d times", outcome.blueBubblesCalls)
+	}
+	observed := strings.Join(append(append([]string{}, outcome.stderr...), outcome.events...), "\n")
+	assertExcludesValues(t, []byte(observed), "vehicle failure worker stderr and durable events", testPhone, testOTP, testBBPassword, bookingBearerToken, bookingVehicle)
+	assertTreeExcludesValues(t, outcome.artifactDir, testPhone, testOTP, testBBPassword, bookingBearerToken, bookingVehicle)
+	assertNoBrowserArtifacts(t, outcome.artifactDir)
+}
+
 type bookingRunOutcome struct {
 	result             control.RunResult
 	err                error
@@ -416,6 +452,11 @@ func (f *bookingFlow) serveYodel(response http.ResponseWriter, request *http.Req
 		if f.receipt == "stale_cart" {
 			page = strings.Replace(page, emptyBookingCart, singleBookingCart, 1)
 		}
+		if f.receipt == "vehicle_missing" {
+			// Change the visible saved choice's ARIA label and text while leaving
+			// the matching label in the independent hidden make picker as a decoy.
+			page = strings.Replace(page, bookingVehicle, "Another saved vehicle", 2)
+		}
 		// Post-authentication DOM, headers, cookies and bodies intentionally
 		// retain synthetic secrets. Diagnostics must never capture any of them.
 		page = strings.Replace(page, "</body>", `<input type="hidden" value="`+testPhone+`"><input type="hidden" value="`+testOTP+`"><p id="private-details">Phone `+testPhone+` OTP `+testOTP+`</p>
@@ -514,6 +555,31 @@ const bookingPassPage = `<!doctype html>
         request.open("POST", path, false);
         request.send();
       }
+      function chooseVehicle(choice) {
+        const popup = choice.closest('.popup');
+        for (const item of popup.querySelectorAll('[role="radio"]')) {
+          item.setAttribute('aria-checked', String(item === choice));
+          item.querySelector('input[type="radio"]').checked = item === choice;
+        }
+        const save = document.getElementById(popup.id + '-save-btn');
+        save.setAttribute('aria-disabled', 'false');
+        save.classList.remove('disabled', 'btn-disbled');
+      }
+      function saveVehicle(save) {
+        if (save.getAttribute('aria-disabled') === 'true') return false;
+        const popup = save.closest('.popup');
+        const selected = popup.querySelector('[role="radio"][aria-checked="true"]');
+        if (!selected || !selected.querySelector('input[type="radio"]').checked) return false;
+        const label = selected.getAttribute('aria-label');
+        const trigger = document.getElementById(popup.id.replace('vehicleSmartSelect_', 'vehicleSelectTrigger_'));
+        trigger.textContent = label;
+        trigger.classList.add('selectedProfileValue');
+        trigger.setAttribute('aria-label', 'VEHICLE INFO mandatory, ' + label + ' selected');
+        document.getElementById('vehicle').value = label;
+        popup.style.display = 'none';
+        recordSelection('/synthetic/vehicle-selected');
+        return false;
+      }
     </script>
     <div class="card ImageCard">
       <h2>All-day pass</h2>
@@ -525,12 +591,28 @@ const bookingPassPage = `<!doctype html>
             onclick="this.previousElementSibling.classList.remove('active'); this.classList.add('active'); document.getElementById('target-date').value='2030-01-06'; recordSelection('/synthetic/date-selected')">06</button>
         </div>
       </div>
-      <a class="smartSelectCustom" href="#" onclick="document.getElementById('vehicle-popup').style.display='block'; return false">Choose a vehicle</a>
-      <div id="vehicle-popup" class="popup smart-select-popup" style="display:none">
-        <label class="item-radio" onclick="document.getElementById('vehicle').value='Synthetic vehicle'; recordSelection('/synthetic/vehicle-selected')">
-          <input type="radio" name="vehicle-choice"><span class="item-title">Synthetic vehicle</span>
-        </label>
-        <a class="link popup-close" href="#" onclick="document.getElementById('vehicle-popup').style.display='none'; return false">Done</a>
+      <!-- Match the September 2026 Yodel widget, including the misleading heading,
+           hidden choices, explicit Save, and the selected value on the pass card. -->
+      <div class="listing shadowSpace row">
+        <span class="cartLabel" aria-label="2. Select a Vehicle / Boat Trailer Info mandatory" tabindex="-1"><span aria-hidden="true">2. Select a Vehicle / Boat Trailer Info*</span></span>
+        <div class="profileCol selectCustomSearch spacingAround col-100">
+          <span class="profileLabel item-label" aria-label="VEHICLE INFO mandatory" tabindex="-1"><span aria-hidden="true">VEHICLE INFO*</span></span>
+          <a id="vehicleSelectTrigger_101_101_Vehicle_1" class="themeBtn largeBtn themeBtnYellow selectModalMake button button-round" href="#" type="text" aria-label="Select VEHICLE INFO mandatory"
+            onclick="document.getElementById('vehicleSmartSelect_101_101_Vehicle_1').style.display='block'; return false">Select...</a>
+          <div id="vehicleSmartSelect_101_101_Vehicle_1" class="themeModel commanModal selectStateModal popup" style="display:none">
+            <div class="main-yselectModal"><div class="yselectModal">
+              <div class="cardHeader"><h2 class="heading" tabindex="0">Select Vehicle for this Pass</h2></div>
+              <div class="card-body">
+                <ul role="radiogroup" aria-label="Select Vehicle for this Pass">
+                  <li tabindex="0" role="radio" aria-checked="false" aria-label="Synthetic vehicle" onclick="chooseVehicle(this)">
+                    <label>Synthetic vehicle<input type="radio" tabindex="-1" aria-hidden="true" name="select-vehicleSmartSelect_101_101_Vehicle_1" value="SYNTHETIC__BC"><span></span></label>
+                  </li>
+                </ul>
+              </div>
+              <div class="cardfooter"><a id="vehicleSmartSelect_101_101_Vehicle_1-save-btn" class="themeBtn btn-disbled button disabled" href="#" type="text" aria-disabled="true" onclick="return saveVehicle(this)">Save</a></div>
+            </div></div>
+          </div>
+        </div>
       </div>
       <form method="post" action="/cart">
         <input id="target-date" type="hidden" name="target_date">
@@ -538,6 +620,9 @@ const bookingPassPage = `<!doctype html>
         <input type="hidden" name="pass" value="all_day">
         <a href="#" onclick="this.closest('form').requestSubmit(); return false">Add To Cart</a>
       </form>
+    </div>
+    <div id="addVehicleSelectMakeModel" class="themeModel commanModal selectStateModal popup" style="display:none">
+      <ul role="radiogroup" aria-label="Select Make "><li tabindex="0" role="radio" aria-checked="false" aria-label="Synthetic vehicle"><label>Synthetic vehicle</label></li></ul>
     </div>
   </body>
 </html>`
