@@ -21,13 +21,36 @@ from buntzen_actions.pass_types import PASS_PREFERENCES
 from buntzen_actions.yodel import YodelAction
 
 
-_SELECT_DATE = """<script>
+_PASS_PAGE_HANDLERS = """<script>
 function chooseDate(button) {
   const card = button.closest('.card');
   card.querySelectorAll('button.date').forEach(item => item.classList.remove('active'));
   button.classList.add('active');
   card.dataset.selected = button.innerText;
   document.body.dataset.dateClicks = String(Number(document.body.dataset.dateClicks || 0) + 1);
+}
+function chooseVehicle(choice) {
+  const popup = choice.closest('.popup');
+  for (const item of popup.querySelectorAll('[role="radio"]')) {
+    item.setAttribute('aria-checked', String(item === choice));
+    item.querySelector('input[type="radio"]').checked = item === choice;
+  }
+  const save = document.getElementById(popup.id + '-save-btn');
+  save.setAttribute('aria-disabled', 'false');
+  save.classList.remove('disabled', 'btn-disbled');
+}
+function saveVehicle(save) {
+  if (save.getAttribute('aria-disabled') === 'true') return false;
+  const popup = save.closest('.popup');
+  const selected = popup.querySelector('[role="radio"][aria-checked="true"]');
+  if (!selected || !selected.querySelector('input[type="radio"]').checked) return false;
+  const label = selected.getAttribute('aria-label');
+  const trigger = document.getElementById(popup.id.replace('vehicleSmartSelect_', 'vehicleSelectTrigger_'));
+  trigger.textContent = label;
+  trigger.classList.add('selectedProfileValue');
+  trigger.setAttribute('aria-label', 'VEHICLE INFO mandatory, ' + label + ' selected');
+  popup.style.display = 'none';
+  return false;
 }
 </script>"""
 
@@ -94,11 +117,16 @@ def pass_card(kind: str, days: tuple[int, ...], month: str = "September-2026") -
     return f"""<div class="card ImageCard" id="{kind}" data-selected="{days[0]:02}">
       <h2>{kind.title()} Pass</h2><span class="month">{month}</span>
       <div class="datelist">{buttons}</div>
-      <a class="smartSelectCustom" onclick="this.nextElementSibling.style.display='block'">Select Vehicle</a>
-      <div class="popup smart-select-popup modal-in" style="display:none">
-        <label class="item-radio"><input type="radio" name="{kind}-vehicle">
-          <span class="item-title">Synthetic Vehicle</span></label>
-        <a class="link popup-close" onclick="this.parentElement.style.display='none'">Done</a>
+      <span class="cartLabel" aria-label="2. Select a Vehicle / Boat Trailer Info mandatory"><span aria-hidden="true">2. Select a Vehicle / Boat Trailer Info*</span></span>
+      <a id="vehicleSelectTrigger_{kind}" class="themeBtn largeBtn themeBtnYellow selectModalMake button button-round" href="#" aria-label="Select VEHICLE INFO mandatory"
+        onclick="document.getElementById('vehicleSmartSelect_{kind}').style.display='block'; return false">Select...</a>
+      <div id="vehicleSmartSelect_{kind}" class="themeModel commanModal selectStateModal popup" style="display:none">
+        <ul role="radiogroup" aria-label="Select Vehicle for this Pass">
+          <li tabindex="0" role="radio" aria-checked="false" aria-label="Synthetic Vehicle" onclick="chooseVehicle(this)">
+            <label>Synthetic Vehicle<input type="radio" tabindex="-1" aria-hidden="true" name="{kind}-vehicle" value="SYNTHETIC__BC"><span></span></label>
+          </li>
+        </ul>
+        <a id="vehicleSmartSelect_{kind}-save-btn" class="themeBtn btn-disbled button disabled" href="#" aria-disabled="true" onclick="return saveVehicle(this)">Save</a>
       </div>
       <a onclick="throw new Error('dry-run must never add to cart')">Add To Cart</a>
     </div>"""
@@ -143,7 +171,7 @@ class CalendarBrowserTests(unittest.TestCase):
         for order in (("morning", "afternoon"), ("afternoon", "morning")):
             with self.subTest(order=order):
                 self.page.set_content(
-                    _SELECT_DATE
+                    _PASS_PAGE_HANDLERS
                     + pass_card("afternoon", (5, 6))
                     + pass_card("morning", (5, 6))
                 )
@@ -163,7 +191,7 @@ class CalendarBrowserTests(unittest.TestCase):
         for current, target in ((5, 6), (14, 15)):
             with self.subTest(target=target):
                 self.page.set_content(
-                    _SELECT_DATE
+                    _PASS_PAGE_HANDLERS
                     + pass_card("morning", (current, target))
                     + pass_card("afternoon", (current, target))
                 )
@@ -211,7 +239,7 @@ class CalendarBrowserTests(unittest.TestCase):
         )
         for name, target, markup in cases:
             with self.subTest(case=name):
-                self.page.set_content(_SELECT_DATE + markup)
+                self.page.set_content(_PASS_PAGE_HANDLERS + markup)
                 self.action.config.target_date = target
                 self.assertFalse(
                     select_target_date(
@@ -242,7 +270,7 @@ class CalendarBrowserTests(unittest.TestCase):
 
     def test_waits_for_delayed_selected_state(self) -> None:
         self.page.set_content(
-            _SELECT_DATE
+            _PASS_PAGE_HANDLERS
             + pass_card("afternoon", (5, 6)).replace(
                 'onclick="chooseDate(this)"',
                 'onclick="setTimeout(() => chooseDate(this), 100)"',
@@ -266,7 +294,7 @@ class CalendarBrowserTests(unittest.TestCase):
         self.assertEqual(locator.get_attribute("id"), "visible")
 
     def test_cancellation_is_preserved_during_date_selection(self) -> None:
-        self.page.set_content(_SELECT_DATE + pass_card("afternoon", (5, 6)))
+        self.page.set_content(_PASS_PAGE_HANDLERS + pass_card("afternoon", (5, 6)))
 
         def cancelled() -> None:
             raise Cancelled("synthetic cancellation")
