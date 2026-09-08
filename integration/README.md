@@ -25,6 +25,23 @@ afternoon calendars, missing dates, month mismatches, ambiguous metadata, delaye
 selection, and cancellation. These fixtures check known website contracts; they
 do not authenticate or make reservations on the live Yodel service.
 
+The vehicle cases run the production selection helper in Chromium against a
+sanitized copy of Yodel's September 2026 vehicle widget DOM. The fixture retains
+the separate pass cards, hidden saved-vehicle popups, an unrelated hidden make
+picker, accessible radio choices, and the explicit Save button. Names, plate
+values, and dynamic IDs are synthetic. The cases reproduce the previous heading
+click and hidden-label failure conditions and require a unique visible choice,
+checked radio state, Save, and the selected vehicle appearing back on the correct
+pass card. They also cover ambiguous or missing matches, disabled or ineffective
+Save, incorrect saved selection, cancellation, and bounded interaction timeouts.
+
+These vehicle fixtures model the website's event handlers locally. Passing them
+proves the helper handles the captured structure and modeled transitions; it
+does not prove that a live account can complete checkout, that inventory remains
+available, or that future provider markup will be unchanged. Live authentication,
+saved-profile inspection, and a completed reservation are separate evidence and
+must be reported separately.
+
 Run it from the repository root after syncing the locked Python environment and
 installing the pinned Playwright browser:
 
