@@ -85,7 +85,7 @@ For Python changes:
 
 ```bash
 uv sync --project actions --locked
-uvx --from ruff==0.12.10 ruff check actions scripts/deploy/tests integration/*.py
+uvx --from ruff==0.12.10 ruff check actions scripts/release integration/*.py
 uv run --project actions --locked python -m unittest discover -s actions/tests
 ```
 
@@ -96,7 +96,9 @@ node --test internal/web/testdata/client.test.cjs
 ```
 
 Run [browser integration](integration/README.md) for browser or cross-process
-changes and `bash scripts/deploy/tests/test_portainer.sh` for deployment changes.
+changes. For release changes, run
+`python3 -m unittest discover -s scripts/release/tests`; CI also validates the
+Portainer template with both the default `latest` image and an explicit digest.
 CI additionally checks release metadata, public-tree privacy, dependencies, and
 the built container. A passing synthetic test is not proof of a completed live
 Yodel booking; report that distinction in reviews.

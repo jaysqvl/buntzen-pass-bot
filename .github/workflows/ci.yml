@@ -37,10 +37,10 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Shell syntax
         run: |
-          bash -n scripts/docker_smoke.sh scripts/deploy/portainer.sh scripts/deploy/tests/test_portainer.sh
-          python3 -m py_compile scripts/check_release_config.py scripts/check_build_backend.py scripts/docker_*_smoke.py scripts/deploy/tests/*.py
-      - name: Portainer deployment integration
-        run: bash scripts/deploy/tests/test_portainer.sh
+          bash -n scripts/docker_smoke.sh
+          python3 -m py_compile scripts/check_release_config.py scripts/check_build_backend.py scripts/docker_*_smoke.py scripts/release/*.py scripts/release/tests/*.py
+      - name: Release publication tests
+        run: python3 -m unittest discover -s scripts/release/tests
       - name: Vet
         run: go vet ./...
       - name: Unit and package tests
@@ -69,7 +69,7 @@ jobs:
       - name: Sync locked environment
         run: uv sync --project actions --locked
       - name: Lint
-        run: uvx --from ruff==0.12.10 ruff check actions scripts/check_build_backend.py scripts/docker_*_smoke.py scripts/deploy/tests integration/*.py
+        run: uvx --from ruff==0.12.10 ruff check actions scripts/check_build_backend.py scripts/docker_*_smoke.py scripts/release integration/*.py
       - name: Tests
         run: uv run --project actions python -m unittest discover -s actions/tests
       - name: Compile package
@@ -120,10 +120,16 @@ jobs:
           BLUEBUBBLES_URL: http://bluebubbles.example:1234
           BUNTZEN_ALLOWED_HOSTS: buntzen.example
           BUNTZEN_APPDATA_PATH: /tmp/buntzen-appdata
-          BUNTZEN_IMAGE: ghcr.io/example/buntzen-pass-bot@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           BUNTZEN_SECCOMP_PROFILE_PATH: /tmp/buntzen-seccomp.json
           BUNTZEN_WEB_PORT: "18091"
         run: |
+          docker compose -f deploy/portainer.yml config --format json | jq -e '
+            .services["buntzen-pass-bot"].image == "ghcr.io/jaysqvl/buntzen-pass-bot:latest"
+          ' >/dev/null
+          export BUNTZEN_IMAGE=ghcr.io/example/buntzen-pass-bot@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          docker compose -f deploy/portainer.yml config --format json | jq -e --arg image "$BUNTZEN_IMAGE" '
+            .services["buntzen-pass-bot"].image == $image
+          ' >/dev/null
           for manifest in docker-compose.yml deploy/portainer.yml; do
             docker compose -f "$manifest" config --format json | jq -e '
               .services["buntzen-pass-bot"] |
