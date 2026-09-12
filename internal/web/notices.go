@@ -27,10 +27,10 @@ func noticeFor(code string) *Flash {
 		"booking-date-passed":  "This booking date has passed. Choose today or a future date.",
 		"booking-window-ended": "The release window has ended. Choose another date, or use Book now to check released passes.",
 		"booking-disabled":     "Enable this booking request before starting a job.",
-		"profile-disabled":     "Enable the selected Yodel sign-in on Home before starting a job.",
+		"profile-disabled":     "Enable the selected account from its lake's Connection section before starting a job.",
 		"booking-action":       "That booking action is unavailable. Choose an action from the booking card.",
 		"provider-unavailable": "The OTP source connection test failed. Check its server address and credentials, and make sure the provider is running.",
-		"pairing-unavailable":  "Pairing could not start. Check your Yodel sign-in on Home, then try again.",
+		"pairing-unavailable":  "Pairing could not start. Check your account in the lake's Connection section, then try again.",
 	}
 	if message := messages[code]; message != "" {
 		return &Flash{Kind: "error", Message: message}

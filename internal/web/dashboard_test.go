@@ -13,7 +13,7 @@ import (
 	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
-func TestHomeShowsGlobalYodelSignInsAndOnlyOwnedResources(t *testing.T) {
+func TestHomeShowsLakeStatusAndLakeOwnsSignInManagement(t *testing.T) {
 	f := newWebFixture(t)
 	ctx := context.Background()
 	member, err := f.store.CreateMember(ctx, store.CreateUserInput{Username: "other-member", Password: "other-member-password"})
@@ -41,29 +41,51 @@ func TestHomeShowsGlobalYodelSignInsAndOnlyOwnedResources(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("home=%d %s", response.Code, body)
 	}
-	for _, text := range []string{`id="yodel-sign-in"`, "Yodel sign-in", "Owned inbox", "Owned sign-in 1", "Owned sign-in 2", "Signing in does not book a pass", `href="/profiles/new"`, `href="/sources"`, `href="/lakes"`, `href="/settings"`, "2. Sign in to Yodel", "Already queued jobs remain scheduled"} {
+	for _, text := range []string{`id="home-lakes"`, "Your lakes", "Buntzen Lake", `href="/lakes/buntzen#connection"`, `href="/lakes"`, "Already queued jobs remain scheduled"} {
 		if !strings.Contains(body, text) {
 			t.Errorf("Home missing %q", text)
 		}
 	}
-	for _, profile := range own {
-		if !strings.Contains(body, fmt.Sprintf(`action="/profiles/%d/sign-in"`, profile.ID)) {
-			t.Errorf("Home lost action for existing sign-in%d", profile.ID)
+	for _, text := range []string{`id="yodel-sign-in"`, `action="/profiles/`, "Sign in to Yodel", "Private inbox", "Private sign-in", "legacy vehicle", "5559876543", "https://example.test/login"} {
+		if strings.Contains(body, text) {
+			t.Errorf("Home exposed provider setup or private data %q", text)
 		}
 	}
-	for _, text := range []string{"Private inbox", "Private sign-in", "legacy vehicle", "5559876543", "synthetic", "https://example.test/login"} {
-		if strings.Contains(body, text) {
-			t.Errorf("Home exposed %q", text)
+	lake := serveForm(f, http.MethodGet, "/lakes/buntzen", loginCookies(t, f), nil)
+	if lake.Code != http.StatusOK {
+		t.Fatalf("lake=%d %s", lake.Code, lake.Body.String())
+	}
+	for _, profile := range own {
+		if !strings.Contains(lake.Body.String(), fmt.Sprintf(`action="/profiles/%d/sign-in"`, profile.ID)) {
+			t.Errorf("Lake lost existing sign-in %d", profile.ID)
+		}
+	}
+	for _, text := range []string{"Private inbox", "Private sign-in", "5559876543"} {
+		if strings.Contains(lake.Body.String(), text) {
+			t.Errorf("Lake exposed %q", text)
 		}
 	}
 }
 
-func TestHomeGuidesDefaultOTPSetupBeforeYodelSignIn(t *testing.T) {
+func TestHomeRedirectsUnconfiguredAccountToLakes(t *testing.T) {
 	f := newWebFixture(t)
-	response := serveForm(f, http.MethodGet, "/", loginCookies(t, f), nil)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "Choose default OTP source") || !strings.Contains(body, "Configure BlueBubbles or Twilio") || strings.Contains(body, `action="/profiles/`) {
-		t.Fatalf("empty Home=%d %s", response.Code, body)
+	cookies := loginCookies(t, f)
+	response := serveForm(f, http.MethodGet, "/", cookies, nil)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/lakes" {
+		t.Fatalf("Home setup redirect=%d %s", response.Code, response.Header().Get("Location"))
+	}
+	lakes := serveForm(f, http.MethodGet, "/lakes", cookies, nil)
+	if lakes.Code != http.StatusOK || !strings.Contains(lakes.Body.String(), "Start with a lake") || !strings.Contains(lakes.Body.String(), "Buntzen Lake") || strings.Contains(lakes.Body.String(), "Yodel sign-in") {
+		t.Fatalf("lake onboarding=%d %s", lakes.Code, lakes.Body.String())
+	}
+	lake := serveForm(f, http.MethodGet, "/lakes/buntzen", cookies, nil)
+	if lake.Code != http.StatusOK || !strings.Contains(lake.Body.String(), "Set up login codes first") || !strings.Contains(lake.Body.String(), `href="/sources"`) {
+		t.Fatalf("lake connection setup=%d %s", lake.Code, lake.Body.String())
+	}
+	createDefaultSignInSource(t, f, f.admin.ID, "My inbox")
+	response = serveForm(f, http.MethodGet, "/", cookies, nil)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/lakes" {
+		t.Fatal("OTP source alone must not complete lake setup")
 	}
 }
 

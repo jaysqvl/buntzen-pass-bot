@@ -59,7 +59,7 @@ func TestSourcesPairFromTheLinkedProfileWithoutABooking(t *testing.T) {
 				if strings.Contains(body, `action="`+pairURL+`"`) {
 					t.Fatal("incomplete source offers a pairing action that cannot succeed")
 				}
-				wantURL := fmt.Sprintf("/profiles/%d", profile.ID)
+				wantURL := "/lakes/buntzen#connection"
 				if !strings.Contains(body, `href="`+wantURL+`"`) {
 					t.Fatalf("sources lacks corrective profile link %q", wantURL)
 				}

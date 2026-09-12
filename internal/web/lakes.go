@@ -16,10 +16,14 @@ import (
 
 type lakePageData struct {
 	BaseData
-	Lake      destinations.Lake
-	Saved     bool
-	FormError string
-	Sections  []formSection
+	Lake            destinations.Lake
+	Saved           bool
+	FormError       string
+	Sections        []formSection
+	Connection      lakeConnection
+	Profiles        []dashboardCard
+	ProviderName    string
+	ConnectionError string
 }
 
 // The catalog owns identity/support; preferences belong only to this account.
@@ -58,26 +62,38 @@ func (s *Server) effectiveLakeSettings(r *http.Request, lakeID string) (destinat
 	return lake, settings, err == nil, err
 }
 
+type lakeOverview struct {
+	lakeConnection
+	Fields []labelValue
+}
+
+type lakesPageData struct {
+	BaseData
+	Configured  bool
+	Connections []lakeOverview
+}
+
 func (s *Server) lakesPage(w http.ResponseWriter, r *http.Request) {
-	data := listData{BaseData: base(r, "Lakes"), Eyebrow: "Your destinations", Heading: "Lakes", Description: "Manage vehicle selection and booking defaults for each lake. Your settings are personal to this account."}
-	for _, supported := range destinations.List() {
-		lake, settings, saved, err := s.effectiveLakeSettings(r, supported.ID)
+	connections, err := s.lakeConnections(r)
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	data := lakesPageData{BaseData: base(r, "Lakes")}
+	for _, connection := range connections {
+		_, settings, _, err := s.effectiveLakeSettings(r, connection.Lake.ID)
 		if err != nil {
 			s.internal(w)
 			return
 		}
-		status := "Default preferences"
-		if saved {
-			status = "Personal defaults"
-		}
-		path := "/lakes/" + url.PathEscape(lake.ID)
-		data.Cards = append(data.Cards, listCard{
-			Title: lake.Name, Subtitle: "Booking provider: " + providerLabel(lake.ProviderID), Status: status, StatusClass: "active", URL: path,
-			Fields:  []labelValue{{"Release", releaseDaysLabel(settings.ReleaseDaysBefore) + " · " + settings.ReleaseTime}, {"Timezone", settings.Timezone}, {"Vehicle keyword", vehicleKeywordLabel(settings.VehicleKeyword)}, {"Pass preferences", strings.Join(passNames(settings.PreferredPasses), " → ")}},
-			Actions: []cardAction{{"Manage lake", path, "primary"}, {"New booking", "/bookings/new?lake_id=" + url.QueryEscape(lake.ID), ""}},
-		})
+		data.Configured = data.Configured || connection.Configured
+		data.Connections = append(data.Connections, lakeOverview{lakeConnection: connection, Fields: []labelValue{
+			{"Release", releaseDaysLabel(settings.ReleaseDaysBefore) + " · " + settings.ReleaseTime},
+			{"Timezone", settings.Timezone},
+			{"Vehicle keyword", vehicleKeywordLabel(settings.VehicleKeyword)},
+		}})
 	}
-	s.render(w, http.StatusOK, "list", data)
+	s.render(w, http.StatusOK, "lakes", data)
 }
 
 func providerLabel(id string) string {
@@ -113,7 +129,35 @@ func (s *Server) renderLakePage(w http.ResponseWriter, r *http.Request, submitte
 	if submitted != nil {
 		settings = *submitted
 	}
-	data := lakePageData{BaseData: base(r, lake.Name), Lake: lake, Saved: saved, FormError: formError}
+	data := lakePageData{BaseData: base(r, lake.Name), Lake: lake, Saved: saved, FormError: formError, ProviderName: providerLabel(lake.ProviderID)}
+	connections, err := s.lakeConnections(r)
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	for _, connection := range connections {
+		if connection.Lake.ID == lake.ID {
+			data.Connection = connection
+			break
+		}
+	}
+	for _, profile := range data.Connection.Profiles {
+		card := profileCard(profile.Profile, data.Connection.DefaultSourceName)
+		card.Status, card.StatusClass, card.Description = profile.Status, profile.StatusClass, profile.Description
+		if !profile.Configured {
+			card.PostActions = nil
+		}
+		if profile.Pending {
+			card.PostActions = nil
+			card.Actions = []cardAction{{"View job", profile.JobURL, "primary"}}
+		} else if profile.JobURL != "" {
+			card.Actions = append(card.Actions, cardAction{"View last check", profile.JobURL, ""})
+		}
+		data.Profiles = append(data.Profiles, dashboardCard{listCard: card, CSRFToken: data.CSRFToken})
+	}
+	if submitted == nil && formError != "" {
+		data.ConnectionError, data.FormError = formError, ""
+	}
 	data.Sections = lakeSettingsSections(lake, settings)
 	// Preserve submitted number text and pass slots, including None gaps.
 	if r.Method == http.MethodPost && submitted != nil {

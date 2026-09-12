@@ -10,7 +10,7 @@ Lake Pass Bot is a self-hosted app for planning and booking lake passes. Choose 
 - Scheduled and on-demand bookings with dry-run, manual approval, and automatic confirmation modes.
 - Configurable pass priority and an immediate, manually approved checkout for passes already released.
 - Administrator and member accounts with isolated Yodel sign-ins, OTP sources, personal defaults, requests, and job history. Change your own username or password from Account.
-- Yodel sign-in on Home, an independent OTP sources page, general defaults in Settings, and vehicle choices and booking rules for each lake.
+- Lake connection status on Home, provider sign-in within each lake, an independent OTP sources page, and general defaults in Settings.
 - Read-only inbound OTP retrieval through either BlueBubbles or Twilio, with no provider fallback or outbound messaging.
 - Durable jobs, restart recovery, and an `outcome_unknown` state that prevents unsafe retries after an ambiguous confirmation.
 
@@ -28,7 +28,7 @@ creating another request or changing confirmation mode will not bypass the guard
 
 The destination catalog supplies each lake's supported passes, URLs, and release
 defaults. **Lakes** lets each account choose its vehicle keyword and customize
-the lake's booking rules. Yodel sign-ins are shared across supported lakes.
+the lake's booking rules. Each lake owns its provider connection and booking preferences.
 Provider browser behavior is kept in its adapter.
 See [lake settings and provider extension](docs/lakes.md).
 Only the lake listed above is currently supported.
@@ -93,19 +93,19 @@ for existing data and configuration compatibility.
 
 Keep `SCHEDULES_ENABLED=false` while completing these steps:
 
-1. Open **OTP sources** and configure BlueBubbles or Twilio. For BlueBubbles, enter its operator-approved server URL and password, then use **Test connection**. The first source becomes your default; use **Make default** to select another source.
-2. On **Home**, choose **Add Yodel sign-in**, enter a name and the 10-digit Canadian or US mobile number used by Yodel, and save it enabled. Set your preferred browser defaults in **Settings** before adding a sign-in if needed.
-3. Choose **Sign in to Yodel** on Home. With BlueBubbles, select the fresh OTP candidate after Yodel sends a code. This signs in without creating a booking request or reserving a pass.
+1. Open **Lakes**, choose **Buntzen Lake**, and follow its connection setup. Open **OTP sources** and configure BlueBubbles or Twilio. For BlueBubbles, enter its operator-approved server URL and password, then use **Test connection**. The first source becomes your default; use **Make default** to select another source.
+2. Return to **Lakes → Buntzen Lake**, choose **Add Yodel account**, enter a name and the 10-digit Canadian or US mobile number used by Yodel, and save it enabled. Set your preferred browser defaults in **Settings** before adding a sign-in if needed.
+3. Choose **Sign in to Yodel** in that lake’s Connection section. With BlueBubbles, select the fresh OTP candidate after Yodel sends a code. This signs in without creating a booking request or reserving a pass.
 4. Open **Lakes**, choose a lake, and save its vehicle keyword and booking rules. Then create a request in **Bookings**, choosing the lake, Yodel sign-in, and visit date. Choose up to three pass priorities: All-day, Afternoon, Morning, or None. The bot tries them in your saved order; select at least one pass without duplicates.
-5. Run **Auth check**, then **Dry run**, from the booking card. Neither proves a pass can be issued.
+5. Run **Sign-in check**, then **Booking rehearsal**, from the booking card. Neither proves a pass can be issued.
 6. For already released passes, choose **Book now · manual approval**. Approve only the intended reservation, then verify the issued pass in Yodel. See [Testing a live booking](docs/live-testing.md) for timing, expiry, cancellation and retry behavior.
 7. Test **Queue for release** separately before relying on release timing or automatic confirmation. Verify the OTP provider still works after its host restarts before enabling unattended schedules.
 
-**Home** manages your Yodel sign-ins. **OTP sources** is an independent page for
+**Home** shows lake connection status, upcoming visits, and recent jobs. Accounts without a configured lake connection are directed to **Lakes** to begin setup. **OTP sources** is an independent page for
 configuring inbox connections and choosing the account's default source.
 **Settings** holds personal preparation and retry timing shared across lakes,
 browser defaults, and links to account management.
-**Lakes** holds each lake's vehicle keyword, release schedule, pass preferences,
+**Lakes** holds each lake’s provider connection, vehicle keyword, release schedule, pass preferences,
 and booking URLs. Sign-in URLs are managed internally. The visit date,
 Yodel sign-in, vehicle snapshot, and confirmation choice belong to the request.
 

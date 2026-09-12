@@ -1,8 +1,22 @@
 {{define "content"}}
 <section class="section-head">
-  <div><p class="eyebrow"><a class="text-link" href="/lakes">Lakes</a> / Lake settings</p><h1>{{.Lake.Name}}</h1><p>Your vehicle, release schedule, and pass preferences.</p></div>
-  <a class="button" href="/bookings/new?lake_id={{.Lake.ID}}">New booking</a>
+  <div><p class="eyebrow"><a class="text-link" href="/lakes">Lakes</a> / Connection &amp; preferences</p><h1>{{.Lake.Name}}</h1><p>Manage your connection and booking preferences for this lake.</p></div>
+  {{if .Connection.Configured}}<a class="button" href="/bookings/new?lake_id={{.Lake.ID}}">New booking</a>{{end}}
 </section>
+<section class="dashboard-panel lake-connection" id="connection" aria-labelledby="lake-connection-heading">
+  <div class="panel-heading"><div><h2 id="lake-connection-heading">Connection</h2><p>{{.Lake.Name}} uses {{.ProviderName}} for pass reservations.</p></div><span class="pill {{.Connection.StatusClass}}">{{.Connection.Status}}</span></div>
+  {{if .ConnectionError}}<div class="flash error" id="form-error" role="alert" tabindex="-1">{{.ConnectionError}}</div>{{end}}
+  {{if .Connection.DefaultSourceName}}
+    {{if .Profiles}}<div class="sign-in-list">{{range .Profiles}}{{template "resource-card" .}}{{end}}</div>{{else}}
+    <div class="empty-state"><h3>Connect your account</h3><p>Add the mobile number you use with {{.ProviderName}}, then sign in to verify the connection.</p><a class="button primary" href="/profiles/new?lake_id={{.Lake.ID}}">Add {{.ProviderName}} account</a></div>
+    {{end}}
+    <div class="panel-note connection-footer"><p>Login codes use <strong>{{.Connection.DefaultSourceName}}</strong>. <a class="text-link" href="/sources">Manage OTP sources</a></p>{{if .Profiles}}<a class="text-link" href="/profiles/new?lake_id={{.Lake.ID}}">Add another account</a>{{end}}</div>
+  {{else}}
+    <div class="empty-state"><h3>Set up login codes first</h3><p>Choose an OTP source for your account, then return here to connect through {{.ProviderName}}.</p><a class="button primary" href="/sources">Set up OTP source</a></div>
+    {{if .Profiles}}<div class="sign-in-list">{{range .Profiles}}{{template "resource-card" .}}{{end}}</div>{{end}}
+  {{end}}
+</section>
+<section class="section-head lake-preferences-heading"><div><h2>Booking preferences</h2><p>Your vehicle, release schedule, and pass choices for new requests.</p></div></section>
 {{if .FormError}}<div id="form-error" class="flash error" role="alert" tabindex="-1">{{.FormError}}</div>{{end}}
 <form action="/lakes/{{.Lake.ID}}" method="post" class="form-card" autocomplete="off" id="defaults">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">

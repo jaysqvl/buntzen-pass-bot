@@ -63,7 +63,10 @@ func newRenderer(version, revision string) (*Renderer, error) {
 		"appBuild": func() buildDisplay { return build },
 		"navCurrent": func(path, section string) bool {
 			if section == "/" {
-				return path == "/" || strings.HasPrefix(path, "/profiles")
+				return path == "/"
+			}
+			if section == "/lakes" && strings.HasPrefix(path, "/profiles") {
+				return true
 			}
 			if section == "/settings" && (strings.HasPrefix(path, "/account") || strings.HasPrefix(path, "/admin/")) {
 				return true
@@ -78,7 +81,8 @@ func newRenderer(version, revision string) (*Renderer, error) {
 		"account":   {"assets/templates/base.html", "assets/templates/settings_nav.html", "assets/templates/account.html"},
 		"users":     {"assets/templates/base.html", "assets/templates/settings_nav.html", "assets/templates/users.html"},
 		"user":      {"assets/templates/base.html", "assets/templates/settings_nav.html", "assets/templates/user.html"},
-		"dashboard": {"assets/templates/base.html", "assets/templates/resource_card.html", "assets/templates/jobs_table.html", "assets/templates/dashboard.html"},
+		"dashboard": {"assets/templates/base.html", "assets/templates/lake_icon.html", "assets/templates/jobs_table.html", "assets/templates/dashboard.html"},
+		"lakes":     {"assets/templates/base.html", "assets/templates/lake_icon.html", "assets/templates/lakes.html"},
 		"list":      {"assets/templates/base.html", "assets/templates/list.html"},
 		"form":      {"assets/templates/base.html", "assets/templates/form_fields.html", "assets/templates/form.html"},
 		"lake":      {"assets/templates/base.html", "assets/templates/form_fields.html", "assets/templates/resource_card.html", "assets/templates/lake.html"},

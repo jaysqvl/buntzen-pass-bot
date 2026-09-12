@@ -26,21 +26,24 @@ func createDefaultSignInSource(t *testing.T, f webFixture, userID int64, name st
 	return source
 }
 
-func assertGlobalSignInFields(t *testing.T, body string) {
+func assertLakeSignInFields(t *testing.T, body string) {
 	t.Helper()
+	if !strings.Contains(body, `type="hidden" name="lake_id" value="buntzen"`) || !strings.Contains(body, `href="/lakes/buntzen#connection"`) {
+		t.Error("sign-in form lost its lake context")
+	}
 	for _, name := range []string{"name", "yodel_phone", "enabled"} {
 		if !strings.Contains(body, `name="`+name+`"`) {
 			t.Errorf("sign-in form missing %s", name)
 		}
 	}
-	for _, name := range []string{"lake_id", "provider_id", "default_vehicle", "otp_source_id", "login_probe_url", "headless", "browser_channel", "browser_executable", "default_timeout_ms"} {
+	for _, name := range []string{"provider_id", "default_vehicle", "otp_source_id", "login_probe_url", "headless", "browser_channel", "browser_executable", "default_timeout_ms"} {
 		if strings.Contains(body, `name="`+name+`"`) {
 			t.Errorf("sign-in form exposes non-sign-in field %s", name)
 		}
 	}
 }
 
-func TestGlobalYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testing.T) {
+func TestLakeYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testing.T) {
 	f := newWebFixture(t)
 	ctx := context.Background()
 	resources := f.store.ForUser(f.admin.ID)
@@ -51,14 +54,14 @@ func TestGlobalYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testi
 		t.Fatal(err)
 	}
 	cookies := loginCookies(t, f)
-	page := serveForm(f, http.MethodGet, "/profiles/new?lake_id=irrelevant&source_id=99999", cookies, nil)
+	page := serveForm(f, http.MethodGet, "/profiles/new?lake_id=buntzen&source_id=99999", cookies, nil)
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Add Yodel sign-in") || !strings.Contains(page.Body.String(), source.Name) || !strings.Contains(page.Body.String(), `href="/sources"`) {
-		t.Fatalf("global sign-in form=%d %s", page.Code, page.Body.String())
+		t.Fatalf("lake sign-in form=%d %s", page.Code, page.Body.String())
 	}
-	assertGlobalSignInFields(t, page.Body.String())
-	form := url.Values{"csrf_token": {csrfFrom(cookies)}, "name": {"My Yodel account"}, "yodel_phone": {"5559876543"}, "enabled": {"1"}, "default_vehicle": {"Ignored vehicle"}, "otp_source_id": {"99999"}, "login_probe_url": {"https://unapproved.example/login"}, "browser_channel": {"chrome-beta"}, "default_timeout_ms": {"5000"}, "lake_id": {"ignored-lake"}}
+	assertLakeSignInFields(t, page.Body.String())
+	form := url.Values{"csrf_token": {csrfFrom(cookies)}, "name": {"My Yodel account"}, "yodel_phone": {"5559876543"}, "enabled": {"1"}, "default_vehicle": {"Ignored vehicle"}, "otp_source_id": {"99999"}, "login_probe_url": {"https://unapproved.example/login"}, "browser_channel": {"chrome-beta"}, "default_timeout_ms": {"5000"}, "lake_id": {"buntzen"}}
 	created := serveForm(f, http.MethodPost, "/profiles/new", cookies, form)
-	if created.Code != http.StatusSeeOther || created.Header().Get("Location") != "/?ok=created#yodel-sign-in" {
+	if created.Code != http.StatusSeeOther || created.Header().Get("Location") != "/lakes/buntzen?ok=created#connection" {
 		t.Fatalf("create=%d %s", created.Code, created.Body.String())
 	}
 	profiles, err := resources.ListProfiles(ctx)
@@ -67,7 +70,7 @@ func TestGlobalYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testi
 	}
 	profile := profiles[0]
 	lake, _ := destinations.Resolve(destinations.DefaultLakeID)
-	if profile.EffectiveProviderID() != "yodel" || profile.OTPSourceID != source.ID || profile.BrowserChannel != "chrome" || profile.Headless || profile.DefaultTimeoutMS != 29000 || profile.DefaultVehicle != "" || profile.LoginProbeURL != lake.WithOrigin(f.cfg.YodelOrigins[0]).LoginURL {
+	if profile.EffectiveProviderID() != "yodel" || profile.LakeID != "buntzen" || profile.OTPSourceID != source.ID || profile.BrowserChannel != "chrome" || profile.Headless || profile.DefaultTimeoutMS != 29000 || profile.DefaultVehicle != "" || profile.LoginProbeURL != lake.WithOrigin(f.cfg.YodelOrigins[0]).LoginURL {
 		t.Fatalf("new sign-in did not inherit trusted defaults: %+v", profile)
 	}
 	otherDefault := createDefaultSignInSource(t, f, f.admin.ID, "New default inbox")
@@ -78,11 +81,11 @@ func TestGlobalYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testi
 	form.Set("name", "Renamed Yodel account")
 	form.Del("yodel_phone")
 	edited := serveForm(f, http.MethodPost, fmt.Sprintf("/profiles/%d", profile.ID), cookies, form)
-	if edited.Code != http.StatusSeeOther || edited.Header().Get("Location") != "/?ok=updated#yodel-sign-in" {
+	if edited.Code != http.StatusSeeOther || edited.Header().Get("Location") != "/lakes/buntzen?ok=updated#connection" {
 		t.Fatalf("edit=%d %s", edited.Code, edited.Body.String())
 	}
 	retained, err := resources.GetProfile(ctx, profile.ID)
-	if err != nil || retained.Name != "Renamed Yodel account" || retained.OTPSourceID != source.ID || retained.BrowserChannel != profile.BrowserChannel || retained.Headless != profile.Headless || retained.DefaultTimeoutMS != profile.DefaultTimeoutMS || retained.LoginProbeURL != profile.LoginProbeURL || retained.DefaultVehicle != profile.DefaultVehicle {
+	if err != nil || retained.Name != "Renamed Yodel account" || retained.OTPSourceID != source.ID || retained.BrowserChannel != profile.BrowserChannel || retained.Headless != profile.Headless || retained.DefaultTimeoutMS != profile.DefaultTimeoutMS || retained.LoginProbeURL != profile.LoginProbeURL || retained.DefaultVehicle != profile.DefaultVehicle || retained.LakeID != profile.LakeID {
 		t.Fatalf("edit changed saved private settings: %+v %v", retained, err)
 	}
 	credentials, err := f.store.SystemGetProfileCredentials(ctx, profile.ID)
@@ -93,7 +96,7 @@ func TestGlobalYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testi
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), otherDefault.Name) || strings.Contains(page.Body.String(), credentials.Phone) {
 		t.Fatalf("edit default summary or credential privacy failed: %d %s", page.Code, page.Body.String())
 	}
-	assertGlobalSignInFields(t, page.Body.String())
+	assertLakeSignInFields(t, page.Body.String())
 	// Two existing identities may intentionally share the selected inbox.
 	form.Set("name", "Second Yodel account")
 	form.Set("yodel_phone", "5559876543")
@@ -108,7 +111,7 @@ func TestGlobalYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testi
 		t.Fatalf("shared source identities lost: %d %+v %v", created.Code, profiles, err)
 	}
 	index := serveForm(f, http.MethodGet, "/profiles", cookies, nil)
-	if index.Code != http.StatusSeeOther || index.Header().Get("Location") != "/#yodel-sign-in" {
+	if index.Code != http.StatusSeeOther || index.Header().Get("Location") != "/lakes" {
 		t.Fatalf("legacy profile index=%d %q", index.Code, index.Header().Get("Location"))
 	}
 }
@@ -127,14 +130,14 @@ func TestYodelSignInRequiresDefaultSourceAndPreservesInvalidDraft(t *testing.T) 
 	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `name="name" value="Draft Yodel account"`) || strings.Contains(response.Body.String(), "not-a-phone") {
 		t.Fatalf("invalid sign-in draft handling=%d %s", response.Code, response.Body.String())
 	}
-	assertGlobalSignInFields(t, response.Body.String())
+	assertLakeSignInFields(t, response.Body.String())
 	profiles, err := f.store.ForUser(f.admin.ID).ListProfiles(context.Background())
 	if err != nil || len(profiles) != 0 {
 		t.Fatalf("invalid sign-in persisted: %+v %v", profiles, err)
 	}
 }
 
-func TestHomeYodelSignInQueuesOwnedProfileOnlyAuthWithDefaultSource(t *testing.T) {
+func TestLakeYodelSignInQueuesOwnedProfileOnlyAuthWithDefaultSource(t *testing.T) {
 	f := newWebFixture(t)
 	ctx := context.Background()
 	resources := f.store.ForUser(f.admin.ID)
@@ -163,7 +166,7 @@ func TestHomeYodelSignInQueuesOwnedProfileOnlyAuthWithDefaultSource(t *testing.T
 		t.Fatalf("sign-in job became booking or used wrong source: %+v", job)
 	}
 	response = serveForm(f, http.MethodPost, path, cookies, url.Values{"csrf_token": {csrfFrom(cookies)}})
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "Check Jobs before trying again") {
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "Check Jobs before trying again") || !strings.Contains(response.Body.String(), `id="connection"`) || !strings.Contains(response.Body.String(), "Buntzen Lake") {
 		t.Fatalf("duplicate sign-in=%d %s", response.Code, response.Body.String())
 	}
 	member, err := f.store.CreateMember(ctx, store.CreateUserInput{Username: "foreign-sign-in", Password: "foreign sign in password"})
@@ -180,5 +183,34 @@ func TestHomeYodelSignInQueuesOwnedProfileOnlyAuthWithDefaultSource(t *testing.T
 	jobs, err = resources.ListJobs(ctx, 10)
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("rejected calls queued more jobs: %+v %v", jobs, err)
+	}
+}
+
+func TestLakeSignInRejectsUnknownContextAndIgnoresReturnURL(t *testing.T) {
+	f := newWebFixture(t)
+	createDefaultSignInSource(t, f, f.admin.ID, "Lake context source")
+	cookies := loginCookies(t, f)
+	for _, target := range []string{"/profiles/new?lake_id=unknown", "/profiles/new?lake_id=https%3A%2F%2Fforeign.example"} {
+		response := serveForm(f, http.MethodGet, target, cookies, nil)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("unknown lake GET %s = %d", target, response.Code)
+		}
+	}
+	form := url.Values{"csrf_token": {csrfFrom(cookies)}, "name": {"Scoped account"}, "yodel_phone": {"5559876543"}, "enabled": {"1"}, "lake_id": {"unknown"}}
+	response := serveForm(f, http.MethodPost, "/profiles/new", cookies, form)
+	profiles, err := f.store.ForUser(f.admin.ID).ListProfiles(context.Background())
+	if response.Code != http.StatusNotFound || err != nil || len(profiles) != 0 {
+		t.Fatalf("unknown lake POST = %d, persisted %d profiles, error %v", response.Code, len(profiles), err)
+	}
+	form.Set("lake_id", "buntzen")
+	form.Set("return_to", "https://foreign.example")
+	form.Set("provider_id", "unsupported")
+	response = serveForm(f, http.MethodPost, "/profiles/new?return_to=https%3A%2F%2Fforeign.example", cookies, form)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/lakes/buntzen?ok=created#connection" {
+		t.Fatalf("caller-controlled redirect/provider = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	profiles, err = f.store.ForUser(f.admin.ID).ListProfiles(context.Background())
+	if err != nil || len(profiles) != 1 || profiles[0].ProviderID != destinations.ProviderYodel || profiles[0].LakeID != destinations.DefaultLakeID {
+		t.Fatalf("profile lost catalog/provider binding: %+v %v", profiles, err)
 	}
 }

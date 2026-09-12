@@ -12,17 +12,22 @@ another account or the server's deployment configuration.
 
 | Page | Settings and resources |
 | --- | --- |
-| **Home** | Yodel sign-in names, mobile numbers, enabled state, and the **Sign in to Yodel** action. |
+| **Home** | A visual overview of your lake connections, booking requests, and jobs. Open a lake to complete setup or manage its connection. |
 | **OTP sources** | BlueBubbles or Twilio configuration, connection checks, pairing, and the default source for newly queued jobs. |
 | **Settings** | Preparation and sign-in deadlines, availability check window, and retry delay defaults shared across lakes; browser channel, headless mode, and action timeout defaults for new sign-ins; links to account management. |
-| **Lakes → a lake** | Vehicle keyword, release schedule, pass preferences, and booking URLs. |
+| **Lakes → a lake** | Connection status and provider sign-in setup, plus vehicle keyword, release schedule, pass preferences, and booking URLs. For Buntzen Lake, the connection uses Yodel. |
 | **Bookings** | Each visit's lake, Yodel sign-in, date, saved vehicle keyword and other defaults, confirmation mode, and automation choices. |
 
-Yodel sign-ins belong to the account and work across supported lakes using
-Yodel. Existing sign-in IDs and credentials remain separate; the app does not
-merge identities. The Home form edits only the name, mobile number, and enabled
-state. New sign-ins receive an internally managed approved login URL and the
-account's browser defaults. Editing an existing sign-in preserves its saved
+Provider sign-ins are managed from their lake page. Buntzen Lake contains its
+Yodel connection, including sign-in names, mobile numbers, enabled state, and
+the action to connect. Home presents lake status and links back to that setup;
+it does not expose Yodel account management as a global task. Accounts without
+a configured lake connection are directed to Lakes.
+
+Existing sign-in IDs and credentials remain separate; the app does not merge
+identities or reset existing sessions. The sign-in form edits only the name,
+mobile number, and enabled state. New sign-ins receive an internally managed
+approved login URL and the account's browser defaults. Editing an existing sign-in preserves its saved
 browser and login configuration. Saving an older sign-in fills a missing login
 URL from the approved provider defaults and clears any retired executable-path
 override. If its mobile number was not migrated, re-enter the number to enable it.
@@ -67,8 +72,9 @@ migration; credentials, identities, schedules, and job history are retained.
   lake IDs. `internal/destinations/buntzen.go` owns this lake's URLs, supported
   passes, local timezone, and release defaults.
 - Sign-ins persist a `provider_id`; booking requests persist `lake_id`,
-  `vehicle_keyword`, and `release_days_before`. Legacy profile lake/vehicle
-  fields remain for migration compatibility. Account and lake default tables
+  `vehicle_keyword`, and `release_days_before`. Profile lake context routes
+  provider setup to its lake; legacy vehicle fields remain for migration
+  compatibility. Account and lake default tables
   are scoped by `user_id`. The engine resolves the destination
   before dispatching a job and sends its lake and provider IDs to the worker.
   The scheduler uses the booking's saved release policy rather than looking up
@@ -84,7 +90,9 @@ Unknown explicit lake IDs are rejected. Missing IDs are accepted only through th
 compatibility path for records and callers predating lake selection. Sign-ins
 currently represent Yodel identities; the engine rejects a destination using a
 provider incompatible with that sign-in. Sign-in jobs operate without a booking
-request and cannot reserve a pass.
+request and cannot reserve a pass. New sign-in forms accept only catalog lake IDs
+that match the sign-in provider; return links are generated from that catalog
+context. The compatibility `/profiles` index redirects to Lakes.
 
 ## Adding a lake using Yodel
 

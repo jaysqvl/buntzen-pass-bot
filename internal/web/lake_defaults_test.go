@@ -275,7 +275,7 @@ func TestLakeSelectorScopesProvidersAndKeepsCurrentDisabledSignIn(t *testing.T) 
 	if err := json.Unmarshal([]byte(option.LakeDefaults), &defaults); err != nil {
 		t.Fatal(err)
 	}
-	if len(defaults.Profiles) != 3 || defaults.Profiles[0].Value != "1" || defaults.Profiles[1].Value != "4" || defaults.Profiles[2].Value != "5" {
+	if len(defaults.Profiles) != 2 || defaults.Profiles[0].Value != "1" || defaults.Profiles[1].Value != "4" {
 		t.Fatalf("lake defaults offered incompatible or unrelated disabled profiles: %+v", defaults.Profiles)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/jaysqvl/lake-pass-bot/internal/config"
@@ -13,7 +14,7 @@ import (
 )
 
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/#yodel-sign-in", http.StatusSeeOther)
+	http.Redirect(w, r, "/lakes", http.StatusSeeOther)
 }
 
 func profileCard(profile model.Profile, sourceName string) listCard {
@@ -37,6 +38,11 @@ func profileCard(profile model.Profile, sourceName string) listCard {
 
 func (s *Server) profileNew(w http.ResponseWriter, r *http.Request) { s.profileForm(w, r, nil, "") }
 func (s *Server) profileCreate(w http.ResponseWriter, r *http.Request) {
+	lake, err := profileLakeContext(r, nil)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	input, err := s.profileInput(r, nil)
 	if err == nil {
 		_, err = s.userStore(r).CreateProfile(r.Context(), input)
@@ -45,7 +51,7 @@ func (s *Server) profileCreate(w http.ResponseWriter, r *http.Request) {
 		s.profileForm(w, r, nil, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/?ok=created#yodel-sign-in", http.StatusSeeOther)
+	http.Redirect(w, r, lakeConnectionURL(lake)+"?ok=created#connection", http.StatusSeeOther)
 }
 func (s *Server) profileEdit(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
@@ -77,7 +83,8 @@ func (s *Server) profileUpdate(w http.ResponseWriter, r *http.Request) {
 		s.profileForm(w, r, &current, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/?ok=updated#yodel-sign-in", http.StatusSeeOther)
+	lake, _ := profileLakeContext(r, &current)
+	http.Redirect(w, r, lakeConnectionURL(lake)+"?ok=updated#connection", http.StatusSeeOther)
 }
 
 func (s *Server) profileSignIn(w http.ResponseWriter, r *http.Request) {
@@ -85,28 +92,68 @@ func (s *Server) profileSignIn(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	profile, err := s.userStore(r).GetProfile(r.Context(), id)
+	if err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	lake, err := profileLakeContext(r, &profile)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	r.SetPathValue("lakeID", lake.ID)
 	job, err := s.engine.QueueProfileSignIn(r.Context(), s.userStore(r).UserID(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
 	if errors.Is(err, store.ErrConflict) {
-		s.renderDashboard(w, r, "A sign-in or booking is already using this account or its OTP source. Check Jobs before trying again.")
+		s.renderLakePage(w, r, nil, "A sign-in or booking is already using this account or its OTP source. Check Jobs before trying again.")
 		return
 	}
 	if err != nil {
-		s.renderDashboard(w, r, safeFormError(err))
+		s.renderLakePage(w, r, nil, safeFormError(err))
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d", job.ID), http.StatusSeeOther)
 }
 
+// A connection is configured through a catalog lake, never through a caller's
+// arbitrary return URL or provider choice. Legacy identities keep their IDs and
+// provider configuration while their original lake remains the editing context.
+func profileLakeContext(r *http.Request, current *model.Profile) (destinations.Lake, error) {
+	id := strings.TrimSpace(r.URL.Query().Get("lake_id"))
+	provider := destinations.ProviderYodel
+	if current != nil {
+		id, provider = current.EffectiveLakeID(), current.EffectiveProviderID()
+	} else if r.Method == http.MethodPost {
+		id = strings.TrimSpace(r.Form.Get("lake_id"))
+	}
+	lake, err := destinations.Resolve(id)
+	if err != nil {
+		return destinations.Lake{}, err
+	}
+	if lake.ProviderID != provider {
+		return destinations.Lake{}, errors.New("this lake uses a different sign-in provider")
+	}
+	return lake, nil
+}
+
+func lakeConnectionURL(lake destinations.Lake) string {
+	return "/lakes/" + url.PathEscape(lake.ID)
+}
+
 func (s *Server) profileInput(r *http.Request, current *model.Profile) (store.ProfileInput, error) {
+	lake, err := profileLakeContext(r, current)
+	if err != nil {
+		return store.ProfileInput{}, err
+	}
 	// Browser programs are controlled by the operator even for old clients.
 	if strings.TrimSpace(r.Form.Get("browser_executable")) != "" {
 		return store.ProfileInput{}, errors.New("browser executable paths are operator-controlled")
 	}
-	input := store.ProfileInput{ProviderID: destinations.ProviderYodel, Name: strings.TrimSpace(r.Form.Get("name")), Enabled: checked(r, "enabled")}
+	input := store.ProfileInput{ProviderID: lake.ProviderID, LakeID: lake.ID, Name: strings.TrimSpace(r.Form.Get("name")), Enabled: checked(r, "enabled")}
 	if current != nil {
 		input.ProviderID, input.LakeID = current.EffectiveProviderID(), current.LakeID
 		input.DefaultVehicle, input.LoginProbeURL, input.OTPSourceID = current.DefaultVehicle, current.LoginProbeURL, current.OTPSourceID
@@ -135,7 +182,6 @@ func (s *Server) profileInput(r *http.Request, current *model.Profile) (store.Pr
 		if len(s.config.YodelOrigins) > 0 {
 			approvedOrigin = s.config.YodelOrigins[0]
 		}
-		lake, _ := destinations.Resolve(destinations.DefaultLakeID)
 		input.LoginProbeURL = lake.WithOrigin(approvedOrigin).LoginURL
 	}
 	phone := strings.TrimSpace(r.Form.Get("yodel_phone"))
@@ -149,6 +195,11 @@ func (s *Server) profileInput(r *http.Request, current *model.Profile) (store.Pr
 }
 
 func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *model.Profile, formError string) {
+	lake, err := profileLakeContext(r, profile)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	source, err := s.userStore(r).GetDefaultOTPSource(r.Context())
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.internal(w)
@@ -173,10 +224,11 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 		phoneHelp = "Leave blank to keep your saved mobile number. Enter a new number only to replace it."
 	}
 	data := formData{
-		BaseData: base(r, heading), Eyebrow: "Your account", Heading: heading,
-		Description: "Save your Yodel account once and use it across supported lakes.",
-		CancelURL:   "/#yodel-sign-in", ActionURL: actionURL, SubmitLabel: submit, FormError: formError,
-		SubmitHelp:     "Saving does not start a sign-in. Use Sign in to Yodel on Home when you’re ready.",
+		BaseData: base(r, heading), Eyebrow: lake.Name, Heading: heading,
+		Description: "Connect to " + lake.Name + " using the Yodel account you use to book passes.",
+		CancelURL:   lakeConnectionURL(lake) + "#connection", ActionURL: actionURL, SubmitLabel: submit, FormError: formError,
+		HiddenFields:   []hiddenField{{Name: "lake_id", Value: lake.ID}},
+		SubmitHelp:     "Saving keeps your account details. Return to " + lake.Name + " to connect and check your sign-in status.",
 		SubmitDisabled: creating && source.ID == 0,
 		Sections: []formSection{{Title: "Account details", Fields: []formField{
 			{Name: "name", Label: "Sign-in name", Type: "text", Value: value.Name, Required: true, Help: "Use a name you’ll recognize when choosing a booking account."},

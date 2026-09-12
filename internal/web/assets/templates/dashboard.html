@@ -1,25 +1,22 @@
 {{define "content"}}
-<section class="section-head"><div><p class="eyebrow">Workspace</p><h1>Home</h1><p>Your booking requests, sign-ins, and recent activity.</p></div><a class="button primary" href="/bookings/new">New booking</a></section>
+<section class="section-head"><div><p class="eyebrow">Workspace</p><h1>Home</h1><p>Your lakes, upcoming visits, and recent activity.</p></div><a class="button primary" href="/bookings/new">New booking</a></section>
 {{if not .SchedulesEnabled}}<details class="context-note"><summary>Automatic queueing is off</summary><p>{{.AutoQueueNotice}}</p></details>{{end}}
 <div class="dashboard-grid">
   <section class="dashboard-panel" aria-labelledby="home-bookings">
     <div class="panel-heading"><div><h2 id="home-bookings">Upcoming visits</h2><p>{{.BookingCount}} saved {{if eq .BookingCount 1}}request{{else}}requests{{end}}</p></div><a class="text-link" href="/bookings">View all</a></div>
     <div class="visit-list">{{range .Bookings}}<a class="visit-row" href="{{.URL}}"><strong>{{.Name}}</strong><span>{{.Lake}} · {{.Date}}</span><span class="visit-arrow" aria-hidden="true">→</span></a>{{else}}<div class="empty-state"><h3>{{if .BookingCount}}No upcoming visits{{else}}Plan your first visit{{end}}</h3><p>{{if .BookingCount}}Review your saved requests or plan a new visit.{{else}}Choose a lake and visit date to create a booking request.{{end}}</p><a class="text-link" href="/bookings/new">Create a booking →</a></div>{{end}}</div>
   </section>
-  <section class="dashboard-panel dashboard-sign-in" id="yodel-sign-in" aria-labelledby="yodel-sign-in-heading">
-    <div class="panel-heading"><div><h2 id="yodel-sign-in-heading">Yodel sign-in</h2><p>Shared across your lakes</p></div>{{if .DefaultSourceName}}<a class="text-link" href="/profiles/new">Add sign-in</a>{{else}}<a class="text-link" href="/sources">Choose default OTP source</a>{{end}}</div>
-    <div class="sign-in-list">{{range .Profiles}}{{template "resource-card" .}}{{else}}<div class="empty-state"><h3>Connect your Yodel account</h3><p>{{if .DefaultSourceName}}Add your Yodel mobile number to prepare a sign-in.{{else}}Configure BlueBubbles or Twilio, then add your Yodel sign-in.{{end}}</p></div>{{end}}</div>
-    <p class="panel-note">Signing in does not book a pass.{{if .DefaultSourceName}} Codes use {{.DefaultSourceName}}.{{end}} <a class="text-link" href="/sources">Manage OTP sources</a></p>
+  <section class="dashboard-panel" aria-labelledby="home-lakes">
+    <div class="panel-heading"><div><h2 id="home-lakes">Your lakes</h2><p>Connection status for your accounts</p></div><a class="text-link" href="/lakes">Manage lakes</a></div>
+    <div class="lake-status-list">{{range .Connections}}
+      <a class="lake-status-row" href="{{.ActionURL}}" aria-label="{{.Lake.Name}}: {{.Status}}. Manage connection">
+        {{template "lake-icon" .}}
+        <div class="lake-status-copy"><strong>{{.Lake.Name}}</strong><span class="pill {{.StatusClass}}">{{.Status}}</span><p>{{.Description}}</p><span class="text-link">{{.ActionLabel}} →</span></div>
+      </a>
+    {{end}}</div>
   </section>
 </div>
 <section class="section-head"><div><h2>Recent jobs</h2><p>Follow booking attempts and sign-in checks.</p></div><a class="text-link" href="/jobs">View all jobs →</a></section>
 {{template "jobs_table" .}}
-<details class="getting-started"{{if not .Profiles}} open{{end}}><summary>Getting started</summary>
-<ol class="setup-order" aria-label="Setup order">
- <li><a href="/sources"><strong>1. Connect an inbox</strong><span>Configure a source for login codes.</span></a></li>
- <li><a href="#yodel-sign-in"><strong>2. Sign in to Yodel</strong><span>Prepare your booking account.</span></a></li>
- <li><a href="/lakes"><strong>3. Set lake defaults</strong><span>Choose your vehicle and pass preferences.</span></a></li>
- <li><a href="/bookings/new"><strong>4. Plan a visit</strong><span>Create a request and follow it in Jobs.</span></a></li>
-</ol></details>
 {{end}}
 {{template "base" .}}

@@ -1,7 +1,6 @@
 package web
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -9,18 +8,16 @@ import (
 
 	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
 	"github.com/jaysqvl/lake-pass-bot/internal/model"
-	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 type dashboardData struct {
 	BaseData
-	BookingCount      int
-	SchedulesEnabled  bool
-	AutoQueueNotice   string
-	Jobs              []jobRow
-	Profiles          []dashboardCard
-	DefaultSourceName string
-	Bookings          []dashboardBooking
+	BookingCount     int
+	SchedulesEnabled bool
+	AutoQueueNotice  string
+	Jobs             []jobRow
+	Connections      []lakeConnection
+	Bookings         []dashboardBooking
 }
 
 type dashboardBooking struct{ Name, URL, Date, Lake string }
@@ -35,6 +32,19 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, problem string) {
+	connections, err := s.lakeConnections(r)
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	configured := false
+	for _, connection := range connections {
+		configured = configured || connection.Configured
+	}
+	if !configured {
+		http.Redirect(w, r, "/lakes", http.StatusSeeOther)
+		return
+	}
 	userStore := s.userStore(r)
 	bookings, err := userStore.ListBookingRequests(r.Context())
 	if err != nil {
@@ -46,24 +56,10 @@ func (s *Server) renderDashboard(w http.ResponseWriter, r *http.Request, problem
 		s.internal(w)
 		return
 	}
-	data := dashboardData{BaseData: base(r, "Home"), SchedulesEnabled: s.config.SchedulesEnabled, BookingCount: len(bookings), AutoQueueNotice: autoQueueOffNotice, Jobs: s.jobRows(r.Context(), userStore, jobs)}
+	data := dashboardData{BaseData: base(r, "Home"), SchedulesEnabled: s.config.SchedulesEnabled, BookingCount: len(bookings), AutoQueueNotice: autoQueueOffNotice, Jobs: s.jobRows(r.Context(), userStore, jobs), Connections: connections}
 	for _, booking := range upcomingBookings(bookings, time.Now()) {
 		lake, _ := destinations.Resolve(booking.EffectiveLakeID())
 		data.Bookings = append(data.Bookings, dashboardBooking{Name: booking.Name, URL: fmt.Sprintf("/bookings/%d", booking.ID), Date: booking.TargetDate, Lake: lake.Name})
-	}
-	profiles, err := userStore.ListProfiles(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	source, err := userStore.GetDefaultOTPSource(r.Context())
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		s.internal(w)
-		return
-	}
-	data.DefaultSourceName = source.Name
-	for _, profile := range profiles {
-		data.Profiles = append(data.Profiles, dashboardCard{listCard: profileCard(profile, source.Name), CSRFToken: data.CSRFToken})
 	}
 	if problem != "" {
 		data.Flash = &Flash{Kind: "error", Message: problem}

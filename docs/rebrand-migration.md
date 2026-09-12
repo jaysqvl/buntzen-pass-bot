@@ -24,6 +24,7 @@ Compatibility is intentional:
 | Database | New installs create `lake-pass-bot.db`. An existing `buntzen.db` is reused in place. Startup rejects ambiguous directories containing both database names. Keep the data directory together; do not create or rename a second database during the upgrade. |
 | Encryption and browser state | The existing key and profile marker formats are retained. The read-only key mount stays at `/run/buntzen-key` so explicit existing master-key paths continue to resolve. |
 | Bookings | The migration records the original lake on existing requests. Saved URLs, release timing, credentials, and duplicate-attempt safeguards are retained. |
+| Lake connections | Provider sign-in setup now lives under Lakes → the owning lake; Buntzen Lake contains Yodel. Existing profile IDs, encrypted credentials, browser sessions, and queued job snapshots are retained. OTP sources and their account default remain global. |
 | Sessions | New cookies use neutral names. Existing cookies are accepted within the same transport mode; public HTTPS still requires the hardened `__Host-` cookie mode. |
 | Python worker | The package becomes `lake-pass-actions` and its import/worker module is `lake_pass_actions`. Use the renamed package in source development and refresh the locked virtual environment. |
 

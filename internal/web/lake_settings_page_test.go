@@ -181,11 +181,11 @@ func TestSettingsAndLakePagesSavePersonalDefaultsAndResetOnlyTheirOwner(t *testi
 		}
 		page := serveForm(f, http.MethodGet, "/lakes/buntzen", owner.cookies, nil)
 		body := page.Body.String()
-		if page.Code != http.StatusOK || strings.Contains(body, owner.profile.Name) || strings.Contains(body, owner.otherProfileName) || !strings.Contains(body, `name="timezone" value="`+owner.timezone+`"`) || !strings.Contains(body, `name="vehicle_keyword" value="`+owner.user.Username+` vehicle"`) || !strings.Contains(body, "Personal defaults") {
-			t.Fatalf("lake page did not keep vehicle/defaults personal and sign-in management separate: %d %s", page.Code, body)
+		if page.Code != http.StatusOK || !strings.Contains(body, owner.profile.Name) || strings.Contains(body, owner.otherProfileName) || !strings.Contains(body, `name="timezone" value="`+owner.timezone+`"`) || !strings.Contains(body, `name="vehicle_keyword" value="`+owner.user.Username+` vehicle"`) || !strings.Contains(body, "Personal defaults") {
+			t.Fatalf("lake page did not keep connection and preferences personal: %d %s", page.Code, body)
 		}
-		if strings.Contains(body, "/profiles/") || strings.Contains(body, "Profiles &amp; vehicles") {
-			t.Fatal("lake settings still expose sign-in management")
+		if !strings.Contains(body, `id="connection"`) || !strings.Contains(body, fmt.Sprintf(`action="/profiles/%d/sign-in"`, owner.profile.ID)) {
+			t.Fatal("lake is missing its account connection controls")
 		}
 		for _, name := range []string{"prep_minutes_before", "auth_deadline_minutes_before", "poll_deadline_seconds", "poll_min_seconds", "poll_max_seconds"} {
 			if strings.Contains(body, `name="`+name+`"`) {

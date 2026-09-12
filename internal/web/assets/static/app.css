@@ -320,3 +320,25 @@ td a:not(.button) { color: var(--blue); text-decoration: underline; text-underli
 #job-attention { margin-block: 14px; color: var(--amber); }
 .settings-sections > form + form { border-top: 1px solid var(--line); }
 @media (max-width: 640px) { .users-table td:last-child { grid-column: 1 / -1; } }
+
+/* Lake status is the overview; provider setup lives within its lake. */
+.lake-icon { display: inline-flex; flex: 0 0 48px; width: 48px; height: 48px; align-items: center; justify-content: center; color: var(--blue); background: #20354e; border: 1px solid #354f6d; border-radius: 10px; }
+.lake-icon svg { width: 34px; height: 34px; }
+.lake-heading { display: flex; align-items: flex-start; gap: 16px; }
+.lake-status-row { display: flex; align-items: flex-start; gap: 16px; padding: 22px 20px; }
+.lake-status-row:hover { background: var(--panel2); }
+.lake-status-row + .lake-status-row { border-top: 1px solid var(--line); }
+.lake-status-copy { display: grid; justify-items: start; gap: 8px; min-width: 0; }
+.lake-status-copy strong { font-size: 15px; }
+.lake-status-copy p { margin: 0; color: var(--muted); font-size: 12px; }
+.lake-status-copy .text-link { font-size: 12px; }
+.lake-connection { max-width: 960px; margin-bottom: 30px; }
+.lake-connection .panel-heading { align-items: flex-start; flex-wrap: wrap; }
+.lake-connection .flash { margin: 20px; }
+.connection-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.connection-footer p { margin: 0; }
+.lake-preferences-heading { margin-bottom: 16px; }
+.setup-note p { margin: 6px 0 0; }
+#connection { scroll-margin-top: 24px; }
+@media (max-width: 880px) { #connection { scroll-margin-top: 88px; } }
+@media (max-width: 480px) { .lake-catalog dl { grid-template-columns: 1fr; } }

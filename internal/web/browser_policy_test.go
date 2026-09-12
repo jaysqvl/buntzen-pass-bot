@@ -111,7 +111,7 @@ func TestEditingLegacySignInClearsRetiredExecutableAndKeepsOtherSettings(t *test
 	}
 	form.Del("browser_executable")
 	updated := serveForm(f, http.MethodPost, path, cookies, form)
-	if updated.Code != http.StatusSeeOther || updated.Header().Get("Location") != "/?ok=updated#yodel-sign-in" {
+	if updated.Code != http.StatusSeeOther || updated.Header().Get("Location") != "/lakes/buntzen?ok=updated#connection" {
 		t.Fatalf("normal sign-in edit failed to clear retired override: %d %s", updated.Code, updated.Body.String())
 	}
 	retained, err := resources.GetProfile(ctx, profile.ID)

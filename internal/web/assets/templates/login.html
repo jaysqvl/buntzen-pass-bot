@@ -2,7 +2,7 @@
 <section class="login-card">
   <p class="eyebrow">Your app account</p>
   <h1>Lake Pass Bot</h1>
-  <p>Sign in to Lake Pass Bot to manage your visits. Yodel sign-in is available on Home.</p>
+  <p>Sign in to Lake Pass Bot to manage your visits. Connect your booking accounts from Lakes.</p>
   {{if .Message}}<div class="flash success" role="status">{{.Message}}</div>{{end}}
   {{if .Error}}<div id="form-error" class="flash error" role="alert" tabindex="-1">{{.Error}}</div>{{end}}
   <form method="post" action="/login" class="stack" autocomplete="on">

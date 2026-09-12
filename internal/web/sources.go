@@ -109,11 +109,11 @@ func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPS
 		action := cardAction{Class: "primary"}
 		switch {
 		case errors.Is(err, engine.ErrPairingProfileRequired), errors.Is(err, engine.ErrPairingProfileAmbiguous):
-			action.Label, action.URL = "Set up Yodel sign-in", "/#yodel-sign-in"
+			action.Label, action.URL = "Set up lake connection", "/lakes/"+destinations.DefaultLakeID+"#connection"
 		case errors.Is(err, engine.ErrPairingProfileDisabled):
-			action.Label, action.URL = "Enable sign-in", fmt.Sprintf("/profiles/%d", setup.ProfileID)
+			action.Label, action.URL = "Enable sign-in", "/lakes/"+destinations.DefaultLakeID+"#connection"
 		case errors.Is(err, engine.ErrPairingProfileInvalid):
-			action.Label, action.URL = "Review sign-in", fmt.Sprintf("/profiles/%d", setup.ProfileID)
+			action.Label, action.URL = "Review sign-in", "/lakes/"+destinations.DefaultLakeID+"#connection"
 		default:
 			return listCard{}, err
 		}

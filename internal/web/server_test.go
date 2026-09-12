@@ -163,8 +163,8 @@ func TestLoginCookiesCSRFOriginAndNoStore(t *testing.T) {
 	request := authenticatedRequest(http.MethodGet, "http://example.test/", cookies, nil)
 	recorder := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("dashboard = %d", recorder.Code)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/lakes" {
+		t.Fatalf("unconfigured dashboard = %d", recorder.Code)
 	}
 	if recorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("cache control = %q", recorder.Header().Get("Cache-Control"))
@@ -427,7 +427,7 @@ func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
 	}
 	cookies := loginCookies(t, fixture)
 	page := serveForm(fixture, http.MethodGet, "/sources", cookies, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `href="/#yodel-sign-in"`) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `href="/lakes/buntzen#connection"`) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
 		t.Fatalf("unassigned source guidance = %d body=%q", page.Code, page.Body.String())
 	}
 	form := url.Values{"csrf_token": {csrfFrom(cookies)}}

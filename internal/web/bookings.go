@@ -42,7 +42,7 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 		Description:  "Choose a lake and visit date, then queue your request for release or check passes that are already available.",
 		CreateURL:    "/bookings/new",
 		CreateLabel:  "New booking",
-		EmptyMessage: "Add a Yodel sign-in on Home, then create a booking request.",
+		EmptyMessage: "Connect your account from Lakes, then create a booking request.",
 	}
 	if data.Flash != nil {
 		switch r.URL.Query().Get("notice") {
@@ -141,7 +141,7 @@ func lakeSelectOption(lake destinations.Lake, settings model.LakeSettings, selec
 		defaults.PreferredPasses = append(defaults.PreferredPasses, string(pass))
 	}
 	for _, profile := range profiles {
-		if profile.EffectiveProviderID() == lake.ProviderID && (profile.Enabled || profile.ID == currentProfileID) {
+		if profile.EffectiveLakeID() == lake.ID && profile.EffectiveProviderID() == lake.ProviderID && (profile.Enabled || profile.ID == currentProfileID) {
 			defaults.Profiles = append(defaults.Profiles, lakePassOption{Value: strconv.FormatInt(profile.ID, 10), Label: bookingProfileLabel(profile)})
 		}
 	}
@@ -539,7 +539,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		value = accountSettings.ApplyToBooking(value)
 		selectedID := parseInt64(r.URL.Query().Get("profile_id"))
 		for _, profile := range profiles {
-			if profile.Enabled && profile.ID == selectedID && profile.EffectiveProviderID() == lake.ProviderID {
+			if profile.Enabled && profile.ID == selectedID && profile.EffectiveLakeID() == lake.ID && profile.EffectiveProviderID() == lake.ProviderID {
 				value.ProfileID = selectedID
 				break
 			}
@@ -586,7 +586,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	}
 	profileOptions := []selectOption{{Value: "", Label: "Choose a sign-in", Selected: selectedProfileID == 0}}
 	for _, profile := range profiles {
-		if profile.EffectiveProviderID() != lake.ProviderID || (!profile.Enabled && profile.ID != currentProfileID) {
+		if profile.EffectiveLakeID() != lake.ID || profile.EffectiveProviderID() != lake.ProviderID || (!profile.Enabled && profile.ID != currentProfileID) {
 			continue
 		}
 		profileOptions = append(profileOptions, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: bookingProfileLabel(profile), Selected: profile.ID == selectedProfileID})
@@ -627,16 +627,16 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		SubmitHelp:      "Save this request, then manage its jobs from Bookings.",
 	}
 	if len(profileOptions) == 1 {
-		data.Flash = &Flash{Kind: "info", Message: "Add or enable a Yodel sign-in on Home before saving a booking request.", ActionLabel: "Manage sign-ins", ActionURL: "/#yodel-sign-in"}
+		data.Flash = &Flash{Kind: "info", Message: "Connect an account for this lake before saving a booking request.", ActionLabel: "Manage lake connection", ActionURL: "/lakes/" + url.PathEscape(lake.ID) + "#connection"}
 	}
 	if creating {
 		hasEnabledSignIn := false
 		for _, profile := range profiles {
-			hasEnabledSignIn = hasEnabledSignIn || profile.Enabled
+			hasEnabledSignIn = hasEnabledSignIn || (profile.Enabled && profile.EffectiveLakeID() == lake.ID && profile.EffectiveProviderID() == lake.ProviderID)
 		}
 		data.SubmitDisabled = !hasEnabledSignIn
 		if data.SubmitDisabled {
-			data.SubmitHelp = "Add or enable a booking sign-in on Home, then return to create this request."
+			data.SubmitHelp = "Connect an account from this lake’s page, then return to create this request."
 		}
 	} else {
 		conflict, err := bookingPresentationConflict(r.Context(), s.userStore(r), booking.ID)
@@ -666,7 +666,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		{
 			Title:   "Booking account and vehicle",
 			Help:    "Choose the account to book with and a vehicle saved in that account.",
-			HelpURL: "/#yodel-sign-in", HelpLabel: "Manage Yodel sign-ins",
+			HelpURL: "/lakes/" + url.PathEscape(lake.ID) + "#connection", HelpLabel: "Manage lake connection",
 			Fields: []formField{
 				{Name: "profile_id", Label: "Booking sign-in", Type: "select", Required: true, Options: profileOptions},
 				{Name: "vehicle_keyword", Label: "Vehicle keyword", Type: "text", Value: value.VehicleKeyword, Required: true, Help: "Use a unique vehicle name or licence plate. Your lake default is filled in automatically."},
