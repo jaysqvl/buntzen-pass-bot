@@ -16,12 +16,10 @@ import (
 
 type lakePageData struct {
 	BaseData
-	Lake       destinations.Lake
-	Saved      bool
-	FormError  string
-	Sections   []formSection
-	Profiles   []dashboardCard
-	HasSources bool
+	Lake      destinations.Lake
+	Saved     bool
+	FormError string
+	Sections  []formSection
 }
 
 // The catalog owns identity/support; preferences belong only to this account.
@@ -37,29 +35,36 @@ func (s *Server) effectiveLakeSettings(r *http.Request, lakeID string) (destinat
 	lake = lake.WithOrigin(approvedOrigin)
 	settings, err := s.userStore(r).GetLakeSettings(r.Context(), lake.ID)
 	if errors.Is(err, store.ErrNotFound) {
-		return lake, model.DefaultLakeSettings(lake), false, nil
+		settings = model.DefaultLakeSettings(lake)
+		// Preserve an unambiguous legacy vehicle when no lake override exists.
+		// New global sign-ins have no vehicle, and multiple choices need input.
+		profiles, profileErr := s.userStore(r).ListProfiles(r.Context())
+		if profileErr != nil {
+			return lake, settings, false, profileErr
+		}
+		for _, profile := range profiles {
+			keyword := strings.TrimSpace(profile.DefaultVehicle)
+			if profile.EffectiveLakeID() != lake.ID || keyword == "" {
+				continue
+			}
+			if settings.VehicleKeyword != "" && settings.VehicleKeyword != keyword {
+				settings.VehicleKeyword = ""
+				break
+			}
+			settings.VehicleKeyword = keyword
+		}
+		return lake, settings, false, nil
 	}
 	return lake, settings, err == nil, err
 }
 
 func (s *Server) lakesPage(w http.ResponseWriter, r *http.Request) {
-	profiles, err := s.userStore(r).ListProfiles(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	data := listData{BaseData: base(r, "Lakes"), Eyebrow: "Your destinations", Heading: "Lakes", Description: "Manage each lake’s profiles, vehicles, and booking defaults. Your settings are personal to this account."}
+	data := listData{BaseData: base(r, "Lakes"), Eyebrow: "Your destinations", Heading: "Lakes", Description: "Manage vehicle selection and booking defaults for each lake. Your settings are personal to this account."}
 	for _, supported := range destinations.List() {
 		lake, settings, saved, err := s.effectiveLakeSettings(r, supported.ID)
 		if err != nil {
 			s.internal(w)
 			return
-		}
-		count := 0
-		for _, profile := range profiles {
-			if profile.EffectiveLakeID() == lake.ID {
-				count++
-			}
 		}
 		status := "Built-in defaults"
 		if saved {
@@ -68,7 +73,7 @@ func (s *Server) lakesPage(w http.ResponseWriter, r *http.Request) {
 		path := "/lakes/" + url.PathEscape(lake.ID)
 		data.Cards = append(data.Cards, listCard{
 			Title: lake.Name, Subtitle: "Booking provider: " + providerLabel(lake.ProviderID), Status: status, StatusClass: "active", URL: path,
-			Fields:  []labelValue{{"Release", releaseDaysLabel(settings.ReleaseDaysBefore) + " · " + settings.ReleaseTime}, {"Timezone", settings.Timezone}, {"Lake profiles", strconv.Itoa(count)}, {"Pass preferences", strings.Join(passNames(settings.PreferredPasses), " → ")}},
+			Fields:  []labelValue{{"Release", releaseDaysLabel(settings.ReleaseDaysBefore) + " · " + settings.ReleaseTime}, {"Timezone", settings.Timezone}, {"Vehicle keyword", vehicleKeywordLabel(settings.VehicleKeyword)}, {"Pass preferences", strings.Join(passNames(settings.PreferredPasses), " → ")}},
 			Actions: []cardAction{{"Manage lake", path, "primary"}, {"New booking", "/bookings/new?lake_id=" + url.QueryEscape(lake.ID), ""}},
 		})
 	}
@@ -108,26 +113,7 @@ func (s *Server) renderLakePage(w http.ResponseWriter, r *http.Request, submitte
 	if submitted != nil {
 		settings = *submitted
 	}
-	profiles, err := s.userStore(r).ListProfiles(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	sources, err := s.userStore(r).ListOTPSources(r.Context())
-	if err != nil {
-		s.internal(w)
-		return
-	}
-	data := lakePageData{BaseData: base(r, lake.Name), Lake: lake, Saved: saved, FormError: formError, HasSources: len(sources) > 0}
-	sourceNames := make(map[int64]string, len(sources))
-	for _, source := range sources {
-		sourceNames[source.ID] = source.Name
-	}
-	for _, profile := range profiles {
-		if profile.EffectiveLakeID() == lake.ID {
-			data.Profiles = append(data.Profiles, dashboardCard{listCard: profileCard(profile, sourceNames[profile.OTPSourceID]), CSRFToken: data.CSRFToken})
-		}
-	}
+	data := lakePageData{BaseData: base(r, lake.Name), Lake: lake, Saved: saved, FormError: formError}
 	data.Sections = lakeSettingsSections(lake, settings)
 	// Preserve submitted number text and pass slots, including None gaps.
 	if r.Method == http.MethodPost && submitted != nil {
@@ -188,37 +174,13 @@ func (s *Server) lakeReset(w http.ResponseWriter, r *http.Request) {
 }
 
 func lakeSettingsInput(r *http.Request, id string) (model.LakeSettings, error) {
-	value := model.LakeSettings{LakeID: id, Timezone: strings.TrimSpace(r.Form.Get("timezone")), ReleaseTime: r.Form.Get("release_time"), AllDayPassURL: strings.TrimSpace(r.Form.Get("all_day_pass_url")), HalfDayPassURL: strings.TrimSpace(r.Form.Get("half_day_pass_url")), PreferredPasses: []model.PassType{}}
+	value := model.LakeSettings{LakeID: id, VehicleKeyword: strings.TrimSpace(r.Form.Get("vehicle_keyword")), Timezone: strings.TrimSpace(r.Form.Get("timezone")), ReleaseTime: r.Form.Get("release_time"), AllDayPassURL: strings.TrimSpace(r.Form.Get("all_day_pass_url")), HalfDayPassURL: strings.TrimSpace(r.Form.Get("half_day_pass_url")), PreferredPasses: []model.PassType{}}
 	var problems []string
-	for _, field := range []struct {
-		name, label string
-		target      *int
-	}{
-		{"release_days_before", "Release days", &value.ReleaseDaysBefore},
-		{"prep_minutes_before", "Preparation time", &value.PrepMinutesBefore},
-		{"auth_deadline_minutes_before", "Sign-in deadline", &value.AuthDeadlineMinutesBefore},
-		{"poll_deadline_seconds", "Availability check window", &value.PollDeadlineSeconds},
-	} {
-		number, err := strconv.Atoi(strings.TrimSpace(r.Form.Get(field.name)))
-		if err != nil {
-			problems = append(problems, field.label+" must be a whole number")
-		} else {
-			*field.target = number
-		}
-	}
-	for _, field := range []struct {
-		name, label string
-		target      *float64
-	}{
-		{"poll_min_seconds", "Minimum retry delay", &value.PollMinSeconds},
-		{"poll_max_seconds", "Maximum retry delay", &value.PollMaxSeconds},
-	} {
-		number, err := strconv.ParseFloat(strings.TrimSpace(r.Form.Get(field.name)), 64)
-		if err != nil {
-			problems = append(problems, field.label+" must be a number")
-		} else {
-			*field.target = number
-		}
+	days, err := strconv.Atoi(strings.TrimSpace(r.Form.Get("release_days_before")))
+	if err != nil {
+		problems = append(problems, "Release days must be a whole number")
+	} else {
+		value.ReleaseDaysBefore = days
 	}
 	for i := 1; i <= 3; i++ {
 		if pass := r.Form.Get(fmt.Sprintf("pass_priority_%d", i)); pass != "" {
@@ -251,6 +213,9 @@ func lakeSettingsSections(lake destinations.Lake, value model.LakeSettings) []fo
 		passes = append(passes, formField{Name: fmt.Sprintf("pass_priority_%d", i+1), Label: label, Type: "select", Options: options})
 	}
 	return []formSection{
+		{Title: "Vehicle selection", Fields: []formField{
+			{Name: "vehicle_keyword", Label: "Vehicle keyword", Type: "text", Value: value.VehicleKeyword, Wide: true, Help: "A unique name or licence plate that matches a vehicle saved in your booking account."},
+		}},
 		{Title: "Release schedule", Help: "When passes become available for this lake. Existing booking requests keep their saved schedule.", Fields: []formField{
 			{Name: "timezone", Label: "Timezone", Type: "text", Value: value.Timezone, Required: true},
 			{Name: "release_time", Label: "Release time", Type: "time", Value: value.ReleaseTime, Required: true},
@@ -261,12 +226,12 @@ func lakeSettingsSections(lake destinations.Lake, value model.LakeSettings) []fo
 			{Name: "all_day_pass_url", Label: "All-day pass URL", Type: "url", Value: value.AllDayPassURL},
 			{Name: "half_day_pass_url", Label: "Half-day pass URL", Type: "url", Value: value.HalfDayPassURL},
 		}},
-		{Title: "Preparation and retry timing", Help: "Defaults for preparing a session and checking pass availability.", Fields: []formField{
-			{Name: "prep_minutes_before", Label: "Start preparation (minutes before release)", Type: "number", Value: strconv.Itoa(value.PrepMinutesBefore), Required: true, Min: "0", Max: "180", Step: "1"},
-			{Name: "auth_deadline_minutes_before", Label: "Sign-in deadline (minutes before release)", Type: "number", Value: strconv.Itoa(value.AuthDeadlineMinutesBefore), Required: true, Min: "0", Max: "180", Step: "1"},
-			{Name: "poll_deadline_seconds", Label: "Availability check window (seconds)", Type: "number", Value: strconv.Itoa(value.PollDeadlineSeconds), Required: true, Min: "1", Max: "900", Step: "1"},
-			{Name: "poll_min_seconds", Label: "Minimum retry delay (seconds)", Type: "number", Value: strconv.FormatFloat(value.PollMinSeconds, 'f', -1, 64), Required: true, Min: "0.05", Max: "60", Step: "0.05"},
-			{Name: "poll_max_seconds", Label: "Maximum retry delay (seconds)", Type: "number", Value: strconv.FormatFloat(value.PollMaxSeconds, 'f', -1, 64), Required: true, Min: "0.05", Max: "60", Step: "0.05"},
-		}},
 	}
+}
+
+func vehicleKeywordLabel(value string) string {
+	if value == "" {
+		return "Not set"
+	}
+	return value
 }

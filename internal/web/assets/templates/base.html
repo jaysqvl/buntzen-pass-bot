@@ -18,6 +18,7 @@
   <header class="topbar">
     <a class="brand" href="/">Lake Pass <span>Bot</span></a>
     <nav aria-label="Main navigation">
+      <a href="/"{{if navCurrent .CurrentPath "/"}} aria-current="page"{{end}}>Home</a>
       <a href="/lakes"{{if navCurrent .CurrentPath "/lakes"}} aria-current="page"{{end}}>Lakes</a>
       <a href="/bookings"{{if navCurrent .CurrentPath "/bookings"}} aria-current="page"{{end}}>Bookings</a>
       <a href="/jobs"{{if navCurrent .CurrentPath "/jobs"}} aria-current="page"{{end}}>Jobs</a>

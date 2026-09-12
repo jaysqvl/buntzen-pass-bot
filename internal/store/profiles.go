@@ -11,6 +11,7 @@ import (
 )
 
 type ProfileInput struct {
+	ProviderID        string
 	LakeID            string
 	Name              string
 	DefaultVehicle    string
@@ -38,6 +39,13 @@ func (s *Store) CreateProfile(ctx context.Context, userID int64, input ProfileIn
 	if userID <= 0 {
 		return model.Profile{}, ErrUserRequired
 	}
+	if input.OTPSourceID == 0 {
+		source, err := s.ForUser(userID).GetDefaultOTPSource(ctx)
+		if err != nil {
+			return model.Profile{}, err
+		}
+		input.OTPSourceID = source.ID
+	}
 	profile := profileFromInput(0, userID, input)
 	if err := profile.Validate(); err != nil {
 		return model.Profile{}, err
@@ -62,11 +70,11 @@ func (s *Store) CreateProfile(ctx context.Context, userID int64, input ProfileIn
 			user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			yodel_phone_ciphertext,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
-			created_at, updated_at, lake_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, updated_at, lake_id, provider_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, userID, profile.Name, profile.DefaultVehicle, profile.LoginProbeURL, profile.OTPSourceID,
 		encryptedPhone, profile.Headless, profile.BrowserChannel, profile.BrowserExecutable,
-		profile.DefaultTimeoutMS, profile.Enabled, formatTime(now), formatTime(now), profile.LakeID)
+		profile.DefaultTimeoutMS, profile.Enabled, formatTime(now), formatTime(now), profile.LakeID, profile.ProviderID)
 	if err != nil {
 		return model.Profile{}, mapWriteError(err)
 	}
@@ -102,10 +110,10 @@ func (s *Store) UpdateProfile(ctx context.Context, userID, id int64, input Profi
 	}
 	args := []any{profile.Name, profile.DefaultVehicle, profile.LoginProbeURL,
 		profile.OTPSourceID, profile.Headless, profile.BrowserChannel,
-		profile.BrowserExecutable, profile.DefaultTimeoutMS, profile.Enabled, profile.LakeID}
+		profile.BrowserExecutable, profile.DefaultTimeoutMS, profile.Enabled, profile.LakeID, profile.ProviderID}
 	query := `UPDATE profiles SET name = ?, default_vehicle = ?, login_probe_url = ?,
 		otp_source_id = ?, headless = ?, browser_channel = ?, browser_executable = ?,
-		default_timeout_ms = ?, enabled = ?, lake_id = ?`
+		default_timeout_ms = ?, enabled = ?, lake_id = ?, provider_id = ?`
 	if input.Credentials != nil {
 		phone, err := normalizeYodelPhone(input.Credentials.Phone)
 		if err != nil {
@@ -143,7 +151,7 @@ func (s *Store) GetProfile(ctx context.Context, userID, id int64) (model.Profile
 	return scanProfile(s.db.QueryRowContext(ctx, `
 		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
-			created_at, updated_at, lake_id
+			created_at, updated_at, lake_id, provider_id
 		FROM profiles WHERE id = ? AND user_id = ?
 	`, id, userID))
 }
@@ -155,7 +163,7 @@ func (s *Store) ListProfiles(ctx context.Context, userID int64) ([]model.Profile
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
-			created_at, updated_at, lake_id
+			created_at, updated_at, lake_id, provider_id
 		FROM profiles WHERE user_id = ? ORDER BY name, id
 	`, userID)
 	if err != nil {
@@ -179,7 +187,7 @@ func (s *Store) SystemGetProfile(ctx context.Context, id int64) (model.Profile, 
 	return scanProfile(s.db.QueryRowContext(ctx, `
 		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
-			created_at, updated_at, lake_id
+			created_at, updated_at, lake_id, provider_id
 		FROM profiles WHERE id = ?
 	`, id))
 }
@@ -188,7 +196,7 @@ func (s *Store) SystemListProfiles(ctx context.Context) ([]model.Profile, error)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, user_id, name, default_vehicle, login_probe_url, otp_source_id,
 			headless, browser_channel, browser_executable, default_timeout_ms, enabled,
-			created_at, updated_at, lake_id
+			created_at, updated_at, lake_id, provider_id
 		FROM profiles ORDER BY user_id, name, id
 	`)
 	if err != nil {
@@ -262,6 +270,7 @@ func profileFromInput(id, userID int64, input ProfileInput) model.Profile {
 	profile := model.Profile{
 		ID: id, UserID: userID, Name: strings.TrimSpace(input.Name),
 		LakeID:         strings.TrimSpace(input.LakeID),
+		ProviderID:     strings.TrimSpace(input.ProviderID),
 		DefaultVehicle: strings.TrimSpace(input.DefaultVehicle), OTPSourceID: input.OTPSourceID,
 		LoginProbeURL: strings.TrimSpace(input.LoginProbeURL),
 		Headless:      input.Headless, BrowserChannel: strings.TrimSpace(input.BrowserChannel),
@@ -269,6 +278,7 @@ func profileFromInput(id, userID int64, input ProfileInput) model.Profile {
 		Enabled: input.Enabled,
 	}
 	profile.LakeID = profile.EffectiveLakeID()
+	profile.ProviderID = profile.EffectiveProviderID()
 	return profile
 }
 
@@ -311,7 +321,7 @@ func scanProfile(scanner rowScanner) (model.Profile, error) {
 	if err := scanner.Scan(&profile.ID, &profile.UserID, &profile.Name,
 		&profile.DefaultVehicle, &profile.LoginProbeURL, &profile.OTPSourceID, &profile.Headless,
 		&profile.BrowserChannel, &profile.BrowserExecutable, &profile.DefaultTimeoutMS,
-		&profile.Enabled, &created, &updated, &profile.LakeID); errors.Is(err, sql.ErrNoRows) {
+		&profile.Enabled, &created, &updated, &profile.LakeID, &profile.ProviderID); errors.Is(err, sql.ErrNoRows) {
 		return model.Profile{}, ErrNotFound
 	} else if err != nil {
 		return model.Profile{}, fmt.Errorf("scan profile: %w", err)

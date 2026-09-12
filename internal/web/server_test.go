@@ -427,7 +427,7 @@ func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
 	}
 	cookies := loginCookies(t, fixture)
 	page := serveForm(fixture, http.MethodGet, "/sources", cookies, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), fmt.Sprintf(`href="/profiles/new?source_id=%d"`, source.ID)) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `href="/#yodel-sign-in"`) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
 		t.Fatalf("unassigned source guidance = %d body=%q", page.Code, page.Body.String())
 	}
 	form := url.Values{"csrf_token": {csrfFrom(cookies)}}

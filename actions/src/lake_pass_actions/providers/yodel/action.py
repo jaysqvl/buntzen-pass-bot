@@ -17,7 +17,7 @@ from ...diagnostics import SafeDiagnostics
 from ...errors import ActionError, OutcomeUnknown
 from ...lakes import LEGACY_LAKE_ID, LEGACY_PROVIDER_ID, resolve_lake
 from ...pass_types import PassPreference
-from .. import resolve_provider
+from .. import resolve_action_provider
 from .vehicle_selection import VehicleSelectionResult, select_vehicle
 
 
@@ -80,7 +80,7 @@ VEHICLE_FAILURE_MESSAGES = {
     "selector_missing": "the vehicle selector was not found",
     "selector_ambiguous": "more than one vehicle selector was found",
     "popup_unavailable": "the vehicle selector did not open",
-    "vehicle_missing": "no visible saved vehicle matched the profile's vehicle keyword",
+    "vehicle_missing": "no visible saved vehicle matched the booking's vehicle keyword",
     "vehicle_ambiguous": "multiple saved vehicles matched; use a more specific vehicle keyword",
     "selection_unconfirmed": "Yodel did not mark the matching vehicle as selected",
     "save_unavailable": "the vehicle Save button was not enabled",
@@ -128,10 +128,10 @@ class YodelAction:
         # worker; older constructed configurations retain their legacy lake.
         lake_id = getattr(config, "lake_id", LEGACY_LAKE_ID)
         provider_id = getattr(config, "provider_id", LEGACY_PROVIDER_ID)
-        provider = resolve_provider(lake_id, provider_id)
+        provider = resolve_action_provider(config.command, lake_id, provider_id)
         if provider.id != "yodel":
             raise ActionError("Yodel adapter requires the Yodel provider")
-        self.lake = resolve_lake(lake_id)
+        self.lake = resolve_lake(lake_id) if lake_id is not None else None
         self.page = page
         self.config = config
         self.control = control

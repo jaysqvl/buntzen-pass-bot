@@ -135,7 +135,7 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		location = pendingJobLocation(job, booking)
 		bookingReview = []labelValue{
 			{"Target date", booking.TargetDate + " · " + booking.Timezone},
-			{"Vehicle", profile.DefaultVehicle},
+			{"Vehicle keyword", booking.VehicleKeyword},
 			{"Pass preference order", strings.Join(passNames(booking.PassOrder()), " → ")},
 		}
 	}

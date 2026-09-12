@@ -24,48 +24,77 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
 		s.internal(w)
 		return
 	}
-	data := listData{BaseData: base(r, "OTP sources"), Eyebrow: "Your connections", Heading: "OTP sources", Description: "Manage the inboxes that receive your sign-in codes. Connect them to profiles inside each lake.", CreateURL: "/sources/new", CreateLabel: "New OTP source", EmptyMessage: "Add a BlueBubbles or Twilio inbox, then link it to a lake profile."}
+	defaultSource, err := s.userStore(r).GetDefaultOTPSource(r.Context())
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.internal(w)
+		return
+	}
+	data := listData{BaseData: base(r, "OTP sources"), Eyebrow: "Your connections", Heading: "OTP sources", Description: "Configure BlueBubbles or Twilio and choose the default inbox for your sign-in codes. Newly queued jobs use your default source.", CreateURL: "/sources/new", CreateLabel: "New OTP source", EmptyMessage: "Add a BlueBubbles or Twilio source. Your first source becomes the default."}
 	for _, source := range sources {
 		card, err := s.sourceCard(r.Context(), s.userStore(r).UserID(), source)
 		if err != nil {
 			s.internal(w)
 			return
 		}
+		if source.ID == defaultSource.ID {
+			card.Status = "Default · " + card.Status
+		} else {
+			card.PostActions = append(card.PostActions, postAction{Label: "Make default", URL: fmt.Sprintf("/sources/%d/default", source.ID)})
+		}
 		data.Cards = append(data.Cards, card)
 	}
 	s.render(w, http.StatusOK, "list", data)
 }
 
+func (s *Server) sourceDefault(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := s.userStore(r).SetDefaultOTPSource(r.Context(), id); err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	redirectNotice(w, r, "/sources", "otp-default-updated")
+}
+
 func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPSource) (listCard, error) {
+	providerName := string(source.Provider)
+	switch source.Provider {
+	case model.OTPProviderBlueBubbles:
+		providerName = "BlueBubbles"
+	case model.OTPProviderTwilio:
+		providerName = "Twilio"
+	}
 	card := listCard{
-		Title: source.Name, Subtitle: string(source.Provider), Status: "Ready", StatusClass: "ok", URL: fmt.Sprintf("/sources/%d", source.ID),
-		Fields:      []labelValue{{"Inbox identity", source.Identity}, {"Paired sender", maskStoredSender(source.PairingSender)}},
+		Title: source.Name, Subtitle: providerName, Status: "Ready", StatusClass: "ok", URL: fmt.Sprintf("/sources/%d", source.ID),
 		Actions:     []cardAction{{"Edit", fmt.Sprintf("/sources/%d", source.ID), ""}},
 		PostActions: []postAction{{Label: "Test connection", URL: fmt.Sprintf("/sources/%d/health", source.ID)}},
 	}
 	if source.Provider != model.OTPProviderBlueBubbles {
 		return card, nil
 	}
+	card.Fields = append(card.Fields, labelValue{"Paired sender", maskStoredSender(source.PairingSender)})
 	if source.PairingChatGUID == "" || source.PairingSender == "" || source.PairingService == "" {
 		card.Status, card.StatusClass = "Needs pairing", "warn"
 	}
 	setup, err := s.engine.CheckPairingSetup(ctx, userID, source.ID)
 	if setup.ProfileID != 0 {
-		card.Fields = append(card.Fields, labelValue{"Linked profile", setup.ProfileName})
+		card.Fields = append(card.Fields, labelValue{"Yodel sign-in", setup.ProfileName})
 	}
 	if err != nil {
 		action := cardAction{Class: "primary"}
 		switch {
-		case errors.Is(err, engine.ErrPairingProfileRequired):
-			action.Label, action.URL = "Create profile", fmt.Sprintf("/profiles/new?source_id=%d", source.ID)
+		case errors.Is(err, engine.ErrPairingProfileRequired), errors.Is(err, engine.ErrPairingProfileAmbiguous):
+			action.Label, action.URL = "Set up Yodel sign-in", "/#yodel-sign-in"
 		case errors.Is(err, engine.ErrPairingProfileDisabled):
-			action.Label, action.URL = "Enable profile", fmt.Sprintf("/profiles/%d", setup.ProfileID)
+			action.Label, action.URL = "Enable sign-in", fmt.Sprintf("/profiles/%d", setup.ProfileID)
 		case errors.Is(err, engine.ErrPairingProfileInvalid):
-			action.Label, action.URL = "Review profile", fmt.Sprintf("/profiles/%d", setup.ProfileID)
+			action.Label, action.URL = "Review sign-in", fmt.Sprintf("/profiles/%d", setup.ProfileID)
 		default:
 			return listCard{}, err
 		}
-		card.Description = "Pairing uses the linked profile's Yodel mobile number and login page. To continue, " + safeFormError(err) + "."
+		card.Description = "Pairing uses your saved Yodel sign-in. To continue, " + safeFormError(err) + "."
 		card.Actions = append(card.Actions, action)
 		if card.Status == "Needs pairing" {
 			card.Status = "Setup needed"

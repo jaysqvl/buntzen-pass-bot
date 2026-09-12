@@ -1,23 +1,15 @@
 {{define "content"}}
 <section class="section-head">
-  <div><p class="eyebrow">Lake settings</p><h1>{{.Lake.Name}}</h1><p>Profiles, vehicles, and booking defaults for this lake. These settings belong to your account.</p></div>
+  <div><p class="eyebrow">Lake settings</p><h1>{{.Lake.Name}}</h1><p>Vehicle selection, release rules, and pass preferences for this lake.</p></div>
   <a class="button" href="/lakes">All lakes</a>
 </section>
-<nav class="page-links" aria-label="Lake sections"><a href="#profiles">Profiles &amp; vehicles</a><a href="#defaults">Booking defaults</a><a href="/bookings/new?lake_id={{.Lake.ID}}">New booking</a></nav>
-<section class="section-head" id="profiles">
-  <div><h2>Profiles &amp; vehicles</h2><p>Your {{.Lake.Name}} profiles hold the vehicle choice and sign-in details used for this lake.</p></div>
-  {{if .HasSources}}<a class="button primary" href="/profiles/new?lake_id={{.Lake.ID}}">New lake profile</a>{{else}}<a class="button" href="/sources">Set up an OTP source</a>{{end}}
-</section>
-<div class="card-grid">
-  {{range .Profiles}}{{template "resource-card" .}}{{else}}<section class="empty-card"><h3>No profiles for this lake yet</h3><p>{{if .HasSources}}Create a profile to choose your vehicle and connect your sign-in details.{{else}}Add an OTP source first, then link it to a profile for this lake.{{end}}</p></section>{{end}}
-</div>
-<section class="section-head" id="defaults"><div><h2>Booking defaults</h2><p>Used by new requests or when you choose “Use lake defaults.” Saving here does not update existing requests or queued jobs.</p></div><span class="pill {{if .Saved}}active{{end}}">{{if .Saved}}Personal defaults{{else}}Built-in defaults{{end}}</span></section>
+<section class="section-head" id="defaults"><div><h2>Your lake defaults</h2><p>Copied into new requests. Saving here leaves existing requests and queued jobs unchanged.</p></div><span class="pill {{if .Saved}}active{{end}}">{{if .Saved}}Personal defaults{{else}}Built-in defaults{{end}}</span></section>
 {{if .FormError}}<div class="flash error" role="alert">{{.FormError}}</div>{{end}}
 <form action="/lakes/{{.Lake.ID}}" method="post" class="form-card" autocomplete="off">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   {{range .Sections}}{{template "form-section" .}}{{end}}
-  <div class="actions"><button type="submit" class="primary">Save lake defaults</button><a class="button" href="/lakes">Cancel</a></div>
+  <div class="actions"><button type="submit" class="primary">Save lake defaults</button><a class="button" href="/bookings/new?lake_id={{.Lake.ID}}">New booking</a></div>
 </form>
-{{if .Saved}}<form action="/lakes/{{.Lake.ID}}/reset" method="post" class="reset-defaults"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="ghost">Reset to built-in defaults</button><p class="field-help">Your profiles, vehicles, and existing requests stay as they are.</p></form>{{end}}
+{{if .Saved}}<form action="/lakes/{{.Lake.ID}}/reset" method="post" class="reset-defaults"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button type="submit" class="ghost">Reset to built-in defaults</button><p class="field-help">Existing requests keep their saved values.</p></form>{{end}}
 {{end}}
 {{template "base" .}}

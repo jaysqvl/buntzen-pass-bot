@@ -27,12 +27,16 @@ func TestLakeMigrationPreservesBookingsCredentialsAndReservation(t *testing.T) {
 	// Reconstruct the pre-selection schema from populated state. Remove only
 	// the newer additions so all v6 constraints and execution records remain.
 	if _, err := database.db.ExecContext(ctx, `
-		DROP TRIGGER booking_profile_lake_insert;
-		DROP TRIGGER booking_profile_lake_update;
-		DROP TRIGGER profiles_lake_immutable;
+		DROP TRIGGER IF EXISTS booking_profile_lake_insert;
+		DROP TRIGGER IF EXISTS booking_profile_lake_update;
+		DROP TRIGGER IF EXISTS profiles_lake_immutable;
+		DROP TRIGGER otp_sources_default_for_owner;
+		DROP TABLE user_otp_preferences;
 		DROP TABLE lake_settings;
 		DROP TABLE account_settings;
+		ALTER TABLE profiles DROP COLUMN provider_id;
 		ALTER TABLE profiles DROP COLUMN lake_id;
+		ALTER TABLE booking_requests DROP COLUMN vehicle_keyword;
 		ALTER TABLE booking_requests DROP COLUMN release_days_before;
 		ALTER TABLE booking_requests DROP COLUMN lake_id;
 		DELETE FROM schema_migrations WHERE version >= 7;

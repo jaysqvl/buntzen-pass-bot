@@ -62,10 +62,7 @@
         timezone: defaults.timezone, release_time: defaults.releaseTime,
         release_days_before: defaults.releaseDaysBefore,
         all_day_pass_url: defaults.allDayPassURL, half_day_pass_url: defaults.halfDayPassURL,
-        prep_minutes_before: defaults.prepMinutesBefore,
-        auth_deadline_minutes_before: defaults.authDeadlineMinutesBefore,
-        poll_deadline_seconds: defaults.pollDeadlineSeconds,
-        poll_min_seconds: defaults.pollMinSeconds, poll_max_seconds: defaults.pollMaxSeconds,
+        vehicle_keyword: defaults.vehicleKeyword,
       })) {
         bookingForm.elements.namedItem(name).value = String(value);
       }
@@ -75,7 +72,7 @@
       }
       const profile = bookingForm.elements.namedItem('profile_id');
       const profileID = defaults.profiles.some(option => option.value === profile.value) ? profile.value : '';
-      replaceOptions(profile, [{value: '', label: 'Choose a lake profile'}, ...defaults.profiles], profileID);
+      replaceOptions(profile, [{value: '', label: 'Choose a sign-in'}, ...defaults.profiles], profileID);
       releasePolicy.textContent = defaults.releasePolicy;
       if (lakeSettingsLink) lakeSettingsLink.setAttribute('href', defaults.settingsURL);
       selectedLake = lakeSelector.value;

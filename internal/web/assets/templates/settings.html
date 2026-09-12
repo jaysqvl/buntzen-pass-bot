@@ -1,7 +1,6 @@
 {{define "content"}}
-<section class="section-head"><div><p class="eyebrow">Your account</p><h1>Settings</h1><p>General defaults shared across your lakes. Manage each lake’s profiles, vehicles, and release rules in Lakes.</p></div><a class="button" href="/lakes">Lake settings</a></section>
+<section class="section-head"><div><p class="eyebrow">Your account</p><h1>Settings</h1><p>Preparation, retry, and browser defaults shared across your lakes.</p></div></section>
 <div class="card-grid settings-links">
-  <article class="card"><h2>OTP sources</h2><p>Manage the inbox connections that receive your sign-in codes.</p><div class="actions"><a class="button" href="/sources">Manage OTP sources</a></div></article>
   <article class="card"><h2>Account &amp; access</h2><p>Update your username and password.{{if .IsAdmin}} Manage member access to this app.{{end}}</p><div class="actions"><a class="button" href="/account">Account security</a>{{if .IsAdmin}}<a class="button" href="/admin/users">Manage users</a>{{end}}</div></article>
 </div>
 {{if .FormError}}<div class="flash error" role="alert">{{.FormError}}</div>{{end}}

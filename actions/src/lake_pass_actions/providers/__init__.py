@@ -28,3 +28,12 @@ def resolve_provider(lake_id: str, provider_id: str) -> Provider:
     if provider_id != lake.provider_id:
         raise ProtocolError("provider_id does not support the selected lake")
     return PROVIDERS[provider_id]
+
+
+def resolve_action_provider(command: str, lake_id: str | None, provider_id: str) -> Provider:
+    """Provider-only authentication needs no booking destination."""
+    if command == "auth-check" and lake_id is None:
+        if not isinstance(provider_id, str) or provider_id not in PROVIDERS:
+            raise ProtocolError("unsupported provider_id")
+        return PROVIDERS[provider_id]
+    return resolve_provider(lake_id, provider_id)

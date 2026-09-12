@@ -15,6 +15,11 @@ func TestApprovalPageShowsRequestedDateVehicleAndSelectedPass(t *testing.T) {
 	fixture := newWebFixture(t)
 	profile, booking := createImmediateWebBooking(t, fixture, fixture.admin.ID, "approval-review", true)
 	ctx := context.Background()
+	booking.VehicleKeyword = "Request-specific vehicle"
+	booking, err := fixture.store.ForUser(fixture.admin.ID).UpdateBookingRequest(ctx, booking)
+	if err != nil {
+		t.Fatal(err)
+	}
 	job, err := fixture.server.engine.QueueBookingNow(ctx, fixture.admin.ID, booking.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -28,12 +33,15 @@ func TestApprovalPageShowsRequestedDateVehicleAndSelectedPass(t *testing.T) {
 	cookies := loginCookies(t, fixture)
 	page := serveForm(fixture, http.MethodGet, fmt.Sprintf("/jobs/%d", job.ID), cookies, nil)
 	for _, want := range []string{
-		"Waiting for approval: all-day pass.", booking.TargetDate + " · UTC", profile.DefaultVehicle,
+		"Waiting for approval: all-day pass.", booking.TargetDate + " · UTC", "Vehicle keyword", booking.VehicleKeyword,
 		"Pass preference order", "Book now · manual approval", "Expires", `id="approval-panel" class="approval" >`,
 	} {
 		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), want) {
 			t.Fatalf("approval page missing %q: status=%d body=%q", want, page.Code, page.Body.String())
 		}
+	}
+	if strings.Contains(page.Body.String(), profile.DefaultVehicle) {
+		t.Fatal("approval must show the requested vehicle, not the legacy sign-in vehicle")
 	}
 	if strings.Contains(page.Body.String(), "5559876543") || strings.Contains(page.Body.String(), "synthetic-secret") {
 		t.Fatal("approval details exposed credentials")
@@ -42,7 +50,7 @@ func TestApprovalPageShowsRequestedDateVehicleAndSelectedPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	page = serveForm(fixture, http.MethodGet, fmt.Sprintf("/jobs/%d", job.ID), cookies, nil)
-	if page.Code != http.StatusOK || strings.Contains(page.Body.String(), booking.TargetDate+" · UTC") {
+	if page.Code != http.StatusOK || strings.Contains(page.Body.String(), booking.TargetDate+" · UTC") || strings.Contains(page.Body.String(), booking.VehicleKeyword) {
 		t.Fatal("terminal history must not present current editable booking settings as an issued receipt")
 	}
 }

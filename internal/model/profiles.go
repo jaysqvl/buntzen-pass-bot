@@ -9,8 +9,11 @@ import (
 )
 
 type Profile struct {
-	ID                int64
-	UserID            int64
+	ID         int64
+	UserID     int64
+	ProviderID string
+	// LakeID and DefaultVehicle retain pre-shared-sign-in data for migration
+	// and compatibility. Active booking policy belongs to the request.
 	LakeID            string
 	Name              string
 	DefaultVehicle    string
@@ -39,18 +42,22 @@ func (p Profile) EffectiveLakeID() string {
 	return p.LakeID
 }
 
+func (p Profile) EffectiveProviderID() string {
+	if p.ProviderID == "" {
+		return destinations.ProviderYodel
+	}
+	return p.ProviderID
+}
+
 func (p Profile) Validate() error {
-	if _, err := destinations.Resolve(p.LakeID); err != nil {
-		return err
+	if p.EffectiveProviderID() != destinations.ProviderYodel {
+		return errors.New("unsupported sign-in provider")
 	}
 	if strings.TrimSpace(p.Name) == "" {
 		return errors.New("profile name is required")
 	}
 	if len(p.Name) > MaxResourceNameBytes {
 		return errors.New("profile name is too long")
-	}
-	if strings.TrimSpace(p.DefaultVehicle) == "" {
-		return errors.New("default vehicle is required")
 	}
 	if len(p.DefaultVehicle) > MaxDefaultVehicleBytes {
 		return errors.New("default vehicle is too long")

@@ -510,6 +510,9 @@ func TestTerminalTransitionsAtomicallyRespectCommittedRevocation(t *testing.T) {
 			t.Fatal(err)
 		}
 		bookingID := booking.ID
+		if err := resources.SetDefaultOTPSource(ctx, profile.OTPSourceID); err != nil {
+			t.Fatal(err)
+		}
 		job, err := resources.EnqueueJob(ctx, EnqueueJobParams{
 			BookingRequestID: &bookingID, Command: command, RunMode: mode,
 		})

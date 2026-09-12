@@ -35,6 +35,14 @@ func TestPairingPrerequisitesIdentifyTheProfileToCorrect(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newEngineTestFixture(t)
 			ctx := context.Background()
+			if !test.profile {
+				if err := fixture.resources.DeleteBookingRequest(ctx, fixture.booking.ID); err != nil {
+					t.Fatal(err)
+				}
+				if err := fixture.resources.DeleteProfile(ctx, fixture.booking.ProfileID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			source := createPairingTestSource(t, fixture.resources, "http://127.0.0.1:2234")
 			var want PairingSetup
 			if test.profile {
@@ -171,19 +179,19 @@ emit("worker.ready", action="yodel", protocol=2)
 start = json.loads(sys.stdin.readline())
 assert start["type"] == "run.start"
 config = start["config"]
-assert config["lake_id"] == "buntzen"
 assert config["provider_id"] == "yodel"
 assert config["login_probe_url"] == "https://example.test/profile-login"
 if start["command"] == "auth-check":
-    assert not ({"target_date", "timezone", "all_day_pass_url", "half_day_pass_url", "pass_order", "release_at", "auth_deadline_at"} & config.keys())
+    assert not ({"lake_id", "vehicle_keyword", "target_date", "timezone", "all_day_pass_url", "half_day_pass_url", "pass_order", "release_at", "auth_deadline_at"} & config.keys())
 else:
+    assert config["lake_id"] == "buntzen"
+    assert config["vehicle_keyword"] == "Request vehicle snapshot"
     assert start["command"] in {"dry-run", "book"}
     if start["command"] == "dry-run":
         assert config["target_date"] == "2031-01-15"
     else:
         assert start["mode"] == "manual" and "release_at" not in config
         assert config["target_date"] == datetime.now(timezone.utc).date().isoformat()
-        assert datetime.fromisoformat(config["auth_deadline_at"].replace("Z", "+00:00")) > datetime.now(timezone.utc)
         Path(__file__).with_suffix(".json").write_text(json.dumps(config))
     assert config["pass_order"] == ["morning", "all_day", "afternoon"]
     assert config["all_day_pass_url"] == "https://example.test/all-day"
@@ -230,12 +238,16 @@ emit("run.complete", status="cancelled" if start["command"] == "book" else "succ
 			}
 			source := createPairingTestSource(t, fixture.resources, provider.URL)
 			profile := createPairingTestProfile(t, fixture.resources, source.ID, "https://example.test/profile-login", true)
+			if err := fixture.resources.SetDefaultOTPSource(ctx, source.ID); err != nil {
+				t.Fatal(err)
+			}
 			fixture.engine.config.PythonExecutable, fixture.engine.config.PythonModule = launcher, "profile_auth_probe"
 			var job model.Job
 			if test.pairing {
 				job, err = fixture.engine.QueuePairing(ctx, fixture.user.ID, source.ID)
 			} else if test.booking {
 				booking := fixture.booking
+				booking.VehicleKeyword = "Request vehicle snapshot"
 				booking.ProfileID = profile.ID
 				booking.LoginProbeURL = "https://unapproved.example/legacy-login"
 				booking.HalfDayPassURL = "https://example.test/half-day"
@@ -281,9 +293,11 @@ emit("run.complete", status="cancelled" if start["command"] == "book" else "succ
 				if err := json.Unmarshal(raw, &config); err != nil {
 					t.Fatal(err)
 				}
+				// Parse the wire timestamp here: the transport-only probe can use
+				// system Python versions that cannot parse RFC3339 nanoseconds.
 				deadline, err := time.Parse(time.RFC3339Nano, config["auth_deadline_at"].(string))
-				if err != nil || job.ExpiresAt == nil || !deadline.Equal(*job.ExpiresAt) {
-					t.Fatalf("worker deadline %v differs from original expiry %v: %v", deadline, job.ExpiresAt, err)
+				if err != nil || job.ExpiresAt == nil || !deadline.Equal(*job.ExpiresAt) || !deadline.After(time.Now()) {
+					t.Fatalf("worker deadline %v must match the future original expiry %v: %v", deadline, job.ExpiresAt, err)
 				}
 			}
 			if test.pairing && (result.Status != model.JobFailed || !strings.Contains(result.Message, "no new verification message was selected")) {

@@ -85,7 +85,8 @@ func TestWindowUsesSelectedDestinationAndRejectsUnknown(t *testing.T) {
 
 func validRequest() model.BookingRequest {
 	return model.BookingRequest{
-		Name: "test", ProfileID: 1, Enabled: true, TargetDate: "2030-01-15",
+		VehicleKeyword: "Example vehicle",
+		Name:           "test", ProfileID: 1, Enabled: true, TargetDate: "2030-01-15",
 		Timezone: "UTC", ReleaseTime: "07:00", PrepMinutesBefore: 30,
 		AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120, PollMinSeconds: 1,
 		PollMaxSeconds: 2, ConfirmationMode: model.RunModeManual,

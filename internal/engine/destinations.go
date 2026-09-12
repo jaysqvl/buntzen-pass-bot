@@ -21,9 +21,20 @@ func executionDestination(lakeID string) (destinations.Lake, error) {
 	return lake, nil
 }
 
-func validateProfileBookingLake(profile model.Profile, booking model.BookingRequest) error {
-	if profile.EffectiveLakeID() != booking.EffectiveLakeID() {
-		return fmt.Errorf("booking lake must match the selected profile's lake")
+func executionProvider(providerID string) error {
+	if providerID != destinations.ProviderYodel {
+		return fmt.Errorf("unsupported sign-in provider %q", providerID)
+	}
+	return nil
+}
+
+func validateProfileBookingProvider(profile model.Profile, booking model.BookingRequest) error {
+	lake, err := executionDestination(booking.EffectiveLakeID())
+	if err != nil {
+		return err
+	}
+	if profile.EffectiveProviderID() != lake.ProviderID {
+		return fmt.Errorf("booking provider must match the selected sign-in provider")
 	}
 	return nil
 }

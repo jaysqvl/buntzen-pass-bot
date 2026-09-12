@@ -41,7 +41,7 @@
   </form>
   <form method="post" action="/admin/users/{{.UserID}}/delete" class="form-card" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <fieldset><legend>Delete member</legend><p class="field-help">Permanently deletes this member and all of their profiles, OTP sources, bookings, and job history from the database. Managed browser and artifact files are removed immediately when possible and retried by maintenance. Disable the account first and wait for active jobs to finish cancellation.</p>
+    <fieldset><legend>Delete member</legend><p class="field-help">Permanently deletes this member and all of their Yodel sign-ins, OTP sources, bookings, and job history from the database. Managed browser and artifact files are removed immediately when possible and retried by maintenance. Disable the account first and wait for active jobs to finish cancellation.</p>
       <div class="form-grid single-column">
         <label><span>Type {{.FormUsername}} to confirm</span><input type="text" name="confirm_username" required autocomplete="off" autocapitalize="none" spellcheck="false"></label>
       </div>

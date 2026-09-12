@@ -4,220 +4,181 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
 	"github.com/jaysqvl/lake-pass-bot/internal/model"
 	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
-func TestLakeProfileCreationAndEditingStayWithinTheirLake(t *testing.T) {
-	f := newWebFixture(t)
-	ctx := context.Background()
-	resources := f.store.ForUser(f.admin.ID)
-	source, err := resources.CreateOTPSource(ctx, store.OTPSourceInput{
-		Name: "Global OTP source", Provider: model.OTPProviderTwilio, Identity: "twilio:lake-profile",
-		ProviderConfig: map[string]string{"auth_token": "synthetic"},
-	})
+func createDefaultSignInSource(t *testing.T, f webFixture, userID int64, name string) model.OTPSource {
+	t.Helper()
+	resources := f.store.ForUser(userID)
+	source, err := resources.CreateOTPSource(context.Background(), store.OTPSourceInput{Name: name, Provider: model.OTPProviderTwilio, Identity: "twilio:" + name, ProviderConfig: map[string]string{"auth_token": "synthetic"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := resources.SetDefaultOTPSource(context.Background(), source.ID); err != nil {
+		t.Fatal(err)
+	}
+	return source
+}
+
+func assertGlobalSignInFields(t *testing.T, body string) {
+	t.Helper()
+	for _, name := range []string{"name", "yodel_phone", "enabled"} {
+		if !strings.Contains(body, `name="`+name+`"`) {
+			t.Errorf("sign-in form missing %s", name)
+		}
+	}
+	for _, name := range []string{"lake_id", "provider_id", "default_vehicle", "otp_source_id", "login_probe_url", "headless", "browser_channel", "browser_executable", "default_timeout_ms"} {
+		if strings.Contains(body, `name="`+name+`"`) {
+			t.Errorf("sign-in form exposes non-sign-in field %s", name)
+		}
+	}
+}
+
+func TestGlobalYodelSignInUsesAccountDefaultsAndRetainsExistingSnapshot(t *testing.T) {
+	f := newWebFixture(t)
+	ctx := context.Background()
+	resources := f.store.ForUser(f.admin.ID)
+	source := createDefaultSignInSource(t, f, f.admin.ID, "Default sign-in inbox")
+	settings := model.DefaultAccountSettings()
+	settings.Headless, settings.BrowserChannel, settings.DefaultTimeoutMS = false, "chrome", 29000
+	if _, err := resources.SaveAccountSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
 	cookies := loginCookies(t, f)
-	form := url.Values{
-		"csrf_token": {csrfFrom(cookies)}, "lake_id": {"buntzen"}, "name": {"Lake vehicle"},
-		"default_vehicle": {"Saved car"}, "otp_source_id": {strconv.FormatInt(source.ID, 10)},
-		"login_probe_url": {"https://example.test/buntzen-lake"}, "default_timeout_ms": {"25000"},
-		"browser_channel": {"chrome"}, "yodel_phone": {"5559876543"}, "enabled": {"1"},
+	page := serveForm(f, http.MethodGet, "/profiles/new?lake_id=irrelevant&source_id=99999", cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Add Yodel sign-in") || !strings.Contains(page.Body.String(), source.Name) || !strings.Contains(page.Body.String(), `href="/sources"`) {
+		t.Fatalf("global sign-in form=%d %s", page.Code, page.Body.String())
 	}
-	request := func(method, path string, values url.Values) *httptest.ResponseRecorder {
-		t.Helper()
-		r := authenticatedRequest(method, "http://example.test"+path, cookies, values)
-		if method == http.MethodPost {
-			r.Header.Set("Origin", "http://example.test")
-		}
-		w := httptest.NewRecorder()
-		f.handler.ServeHTTP(w, r)
-		return w
-	}
-	page := request(http.MethodGet, "/profiles/new?lake_id=buntzen", nil)
-	for _, text := range []string{
-		"New Buntzen Lake profile", "Buntzen Lake vehicle", `name="lake_id" value="buntzen"`,
-		`href="/lakes/buntzen#profiles"`, "Global OTP source",
-	} {
-		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), text) {
-			t.Fatalf("new lake profile missing %q: %d %s", text, page.Code, page.Body.String())
-		}
-	}
-	created := request(http.MethodPost, "/profiles/new", form)
-	if created.Code != http.StatusSeeOther || created.Header().Get("Location") != "/lakes/buntzen?ok=created#profiles" {
-		t.Fatalf("create redirect = %d %q %s", created.Code, created.Header().Get("Location"), created.Body.String())
+	assertGlobalSignInFields(t, page.Body.String())
+	form := url.Values{"csrf_token": {csrfFrom(cookies)}, "name": {"My Yodel account"}, "yodel_phone": {"5559876543"}, "enabled": {"1"}, "default_vehicle": {"Ignored vehicle"}, "otp_source_id": {"99999"}, "login_probe_url": {"https://unapproved.example/login"}, "browser_channel": {"chrome-beta"}, "default_timeout_ms": {"5000"}, "lake_id": {"ignored-lake"}}
+	created := serveForm(f, http.MethodPost, "/profiles/new", cookies, form)
+	if created.Code != http.StatusSeeOther || created.Header().Get("Location") != "/?ok=created#yodel-sign-in" {
+		t.Fatalf("create=%d %s", created.Code, created.Body.String())
 	}
 	profiles, err := resources.ListProfiles(ctx)
-	if err != nil || len(profiles) != 1 || profiles[0].LakeID != "buntzen" || profiles[0].OTPSourceID != source.ID {
-		t.Fatalf("saved lake profile = %+v, %v", profiles, err)
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("profiles=%+v %v", profiles, err)
 	}
 	profile := profiles[0]
-	path := fmt.Sprintf("/profiles/%d", profile.ID)
-	form.Set("lake_id", "unknown-lake")
-	form.Set("name", "Changed by invalid submission")
+	lake, _ := destinations.Resolve(destinations.DefaultLakeID)
+	if profile.EffectiveProviderID() != "yodel" || profile.OTPSourceID != source.ID || profile.BrowserChannel != "chrome" || profile.Headless || profile.DefaultTimeoutMS != 29000 || profile.DefaultVehicle != "" || profile.LoginProbeURL != lake.WithOrigin(f.cfg.YodelOrigins[0]).LoginURL {
+		t.Fatalf("new sign-in did not inherit trusted defaults: %+v", profile)
+	}
+	otherDefault := createDefaultSignInSource(t, f, f.admin.ID, "New default inbox")
+	settings.Headless, settings.BrowserChannel, settings.DefaultTimeoutMS = true, "chrome-beta", 17000
+	if _, err := resources.SaveAccountSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	form.Set("name", "Renamed Yodel account")
 	form.Del("yodel_phone")
-	rejected := request(http.MethodPost, path, form)
-	if rejected.Code != http.StatusUnprocessableEntity || !strings.Contains(rejected.Body.String(), "Edit Buntzen Lake profile") || !strings.Contains(rejected.Body.String(), `name="lake_id" value="buntzen"`) {
-		t.Fatalf("lake change did not preserve saved lake form: %d %s", rejected.Code, rejected.Body.String())
+	edited := serveForm(f, http.MethodPost, fmt.Sprintf("/profiles/%d", profile.ID), cookies, form)
+	if edited.Code != http.StatusSeeOther || edited.Header().Get("Location") != "/?ok=updated#yodel-sign-in" {
+		t.Fatalf("edit=%d %s", edited.Code, edited.Body.String())
 	}
 	retained, err := resources.GetProfile(ctx, profile.ID)
-	if err != nil || retained.LakeID != "buntzen" || retained.Name != profile.Name {
-		t.Fatalf("invalid lake edit changed profile: %+v %v", retained, err)
-	}
-	// Existing clients without a lake field continue editing the saved lake.
-	form.Del("lake_id")
-	form.Set("name", "Renamed lake vehicle")
-	updated := request(http.MethodPost, path, form)
-	if updated.Code != http.StatusSeeOther || updated.Header().Get("Location") != "/lakes/buntzen?ok=updated#profiles" {
-		t.Fatalf("legacy update = %d %s", updated.Code, updated.Body.String())
+	if err != nil || retained.Name != "Renamed Yodel account" || retained.OTPSourceID != source.ID || retained.BrowserChannel != profile.BrowserChannel || retained.Headless != profile.Headless || retained.DefaultTimeoutMS != profile.DefaultTimeoutMS || retained.LoginProbeURL != profile.LoginProbeURL || retained.DefaultVehicle != profile.DefaultVehicle {
+		t.Fatalf("edit changed saved private settings: %+v %v", retained, err)
 	}
 	credentials, err := f.store.SystemGetProfileCredentials(ctx, profile.ID)
 	if err != nil || credentials.Phone != "5559876543" {
-		t.Fatalf("editing lake profile lost saved credentials: %+v %v", credentials, err)
+		t.Fatalf("edit lost saved credentials: %v", err)
 	}
-	card := profileCard(profile, source.Name)
-	if !strings.Contains(card.Subtitle, "Buntzen Lake") || card.Actions[len(card.Actions)-1].URL != fmt.Sprintf("/bookings/new?lake_id=buntzen&profile_id=%d", profile.ID) {
-		t.Fatalf("profile card loses lake context: %+v", card)
+	page = serveForm(f, http.MethodGet, fmt.Sprintf("/profiles/%d", profile.ID), cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), otherDefault.Name) || strings.Contains(page.Body.String(), credentials.Phone) {
+		t.Fatalf("edit default summary or credential privacy failed: %d %s", page.Code, page.Body.String())
 	}
-	index := request(http.MethodGet, "/profiles", nil)
-	if index.Code != http.StatusSeeOther || index.Header().Get("Location") != "/lakes" {
-		t.Fatalf("legacy index = %d %q", index.Code, index.Header().Get("Location"))
+	assertGlobalSignInFields(t, page.Body.String())
+	// Two existing identities may intentionally share the selected inbox.
+	form.Set("name", "Second Yodel account")
+	form.Set("yodel_phone", "5559876543")
+	created = serveForm(f, http.MethodPost, "/profiles/new", cookies, form)
+	if created.Code != http.StatusSeeOther {
+		t.Fatalf("shared source rejected second identity: %d %s", created.Code, created.Body.String())
 	}
-	unknown := request(http.MethodGet, "/profiles/new?lake_id=unknown-lake", nil)
-	if unknown.Code != http.StatusNotFound {
-		t.Fatalf("unknown lake create form = %d", unknown.Code)
+	form.Set("name", "Third Yodel account")
+	created = serveForm(f, http.MethodPost, "/profiles/new", cookies, form)
+	profiles, err = resources.ListProfiles(ctx)
+	if created.Code != http.StatusSeeOther || err != nil || len(profiles) != 3 {
+		t.Fatalf("shared source identities lost: %d %+v %v", created.Code, profiles, err)
 	}
-}
-
-func TestNewLakeProfilesUsePersonalBrowserDefaultsAndKeepExistingOverrides(t *testing.T) {
-	f := newWebFixture(t)
-	ctx := context.Background()
-	resources := f.store.ForUser(f.admin.ID)
-	source, err := resources.CreateOTPSource(ctx, store.OTPSourceInput{
-		Name: "Browser defaults source", Provider: model.OTPProviderTwilio, Identity: "twilio:browser-defaults",
-		ProviderConfig: map[string]string{"auth_token": "synthetic"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, err := resources.CreateProfile(ctx, store.ProfileInput{
-		LakeID: "buntzen", Name: "Existing snapshot", DefaultVehicle: "Saved car", LoginProbeURL: "https://example.test/buntzen-lake",
-		OTPSourceID: source.ID, Headless: true, BrowserChannel: "chrome-beta", DefaultTimeoutMS: 18000,
-		Credentials: &model.ProfileCredentials{Phone: "5559876543"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := resources.SaveAccountSettings(ctx, model.AccountSettings{Headless: false, BrowserChannel: "chrome", DefaultTimeoutMS: 29000}); err != nil {
-		t.Fatal(err)
-	}
-	cookies := loginCookies(t, f)
-	for _, test := range []struct {
-		path, channel, timeout string
-		headless               bool
-	}{
-		{path: "/profiles/new?lake_id=buntzen", channel: "chrome", timeout: "29000"},
-		{path: fmt.Sprintf("/profiles/%d", profile.ID), channel: "chrome-beta", timeout: "18000", headless: true},
-	} {
-		w := httptest.NewRecorder()
-		f.handler.ServeHTTP(w, authenticatedRequest(http.MethodGet, "http://example.test"+test.path, cookies, nil))
-		body := w.Body.String()
-		if w.Code != http.StatusOK || !strings.Contains(body, `value="`+test.channel+`" selected`) || !strings.Contains(body, `name="default_timeout_ms" value="`+test.timeout+`"`) {
-			t.Fatalf("browser defaults or saved snapshot changed: %d %s", w.Code, body)
-		}
-		headlessStart := strings.Index(body, `name="headless"`)
-		if headlessStart < 0 {
-			t.Fatal("headless checkbox missing")
-		}
-		headlessEnd := strings.Index(body[headlessStart:], ">")
-		if headlessEnd < 0 || strings.Contains(body[headlessStart:headlessStart+headlessEnd], "checked") != test.headless {
-			t.Fatalf("headless state does not match snapshot for %s", test.path)
-		}
-		if !strings.Contains(body, "Browser options are copied from Settings") || strings.Contains(body, "Booking site URLs and preparation timing") {
-			t.Fatalf("browser overrides have misleading booking help: %s", body)
-		}
+	index := serveForm(f, http.MethodGet, "/profiles", cookies, nil)
+	if index.Code != http.StatusSeeOther || index.Header().Get("Location") != "/#yodel-sign-in" {
+		t.Fatalf("legacy profile index=%d %q", index.Code, index.Header().Get("Location"))
 	}
 }
 
-func TestLakeProfileSourceChoicesOnlyOfferAvailableOwnedSources(t *testing.T) {
+func TestYodelSignInRequiresDefaultSourceAndPreservesInvalidDraft(t *testing.T) {
+	f := newWebFixture(t)
+	cookies := loginCookies(t, f)
+	form := url.Values{"csrf_token": {csrfFrom(cookies)}, "name": {"Draft Yodel account"}, "yodel_phone": {"5559876543"}, "enabled": {"1"}}
+	response := serveForm(f, http.MethodPost, "/profiles/new", cookies, form)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "choose a default OTP source") || !strings.Contains(response.Body.String(), `href="/sources"`) || !strings.Contains(response.Body.String(), `name="name" value="Draft Yodel account"`) {
+		t.Fatalf("missing OTP default handling=%d %s", response.Code, response.Body.String())
+	}
+	createDefaultSignInSource(t, f, f.admin.ID, "Draft default source")
+	form.Set("yodel_phone", "not-a-phone")
+	response = serveForm(f, http.MethodPost, "/profiles/new", cookies, form)
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `name="name" value="Draft Yodel account"`) || strings.Contains(response.Body.String(), "not-a-phone") {
+		t.Fatalf("invalid sign-in draft handling=%d %s", response.Code, response.Body.String())
+	}
+	assertGlobalSignInFields(t, response.Body.String())
+	profiles, err := f.store.ForUser(f.admin.ID).ListProfiles(context.Background())
+	if err != nil || len(profiles) != 0 {
+		t.Fatalf("invalid sign-in persisted: %+v %v", profiles, err)
+	}
+}
+
+func TestHomeYodelSignInQueuesOwnedProfileOnlyAuthWithDefaultSource(t *testing.T) {
 	f := newWebFixture(t)
 	ctx := context.Background()
-	cookies := loginCookies(t, f)
-	page := serveForm(f, http.MethodGet, "/profiles/new?lake_id=buntzen", cookies, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Add an OTP source before creating a lake profile") || !strings.Contains(page.Body.String(), `href="/sources/new"`) {
-		t.Fatalf("no-source setup lacks a useful next step: %d %s", page.Code, page.Body.String())
-	}
-	current, _ := createImmediateWebBooking(t, f, f.admin.ID, "Current linked", true)
-	other, _ := createImmediateWebBooking(t, f, f.admin.ID, "Other linked", true)
-	member, err := f.store.CreateMember(ctx, store.CreateUserInput{Username: "source-choice-member", Password: "other source choice password"})
+	resources := f.store.ForUser(f.admin.ID)
+	first := createDefaultSignInSource(t, f, f.admin.ID, "Original sign-in source")
+	profile, err := resources.CreateProfile(ctx, store.ProfileInput{ProviderID: "yodel", Name: "Ready Yodel", LoginProbeURL: "https://example.test/login", OTPSourceID: first.ID, Headless: true, DefaultTimeoutMS: 15000, Enabled: true, Credentials: &model.ProfileCredentials{Phone: "5559876543"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreign, _ := createImmediateWebBooking(t, f, member.ID, "Private source", true)
-	page = serveForm(f, http.MethodGet, "/profiles/new?lake_id=buntzen", cookies, nil)
-	body := page.Body.String()
-	if page.Code != http.StatusOK || !strings.Contains(body, "All your OTP sources are already linked to profiles") || !strings.Contains(body, "No available OTP sources") || !strings.Contains(body, `href="/sources/new"`) {
-		t.Fatalf("assigned sources still offered without a next step: %d %s", page.Code, body)
+	selected := createDefaultSignInSource(t, f, f.admin.ID, "Current sign-in source")
+	cookies := loginCookies(t, f)
+	path := fmt.Sprintf("/profiles/%d/sign-in", profile.ID)
+	denied := serveForm(f, http.MethodPost, path, cookies, url.Values{})
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("sign-in accepted missing CSRF: %d", denied.Code)
 	}
-	for _, name := range []string{"Current linked inbox", "Other linked inbox", "Private source inbox"} {
-		if strings.Contains(body, name) {
-			t.Fatalf("new profile offered assigned or foreign source %q", name)
+	response := serveForm(f, http.MethodPost, path, cookies, url.Values{"csrf_token": {csrfFrom(cookies)}})
+	if response.Code != http.StatusSeeOther || !strings.HasPrefix(response.Header().Get("Location"), "/jobs/") {
+		t.Fatalf("sign-in queue=%d %s", response.Code, response.Body.String())
+	}
+	jobs, err := resources.ListJobs(ctx, 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("sign-in jobs=%+v %v", jobs, err)
+	}
+	job := jobs[0]
+	if job.ProfileID != profile.ID || job.OTPSourceID != selected.ID || job.BookingRequestID != nil || job.Command != model.CommandAuthCheck || job.RunMode != model.RunModeManual {
+		t.Fatalf("sign-in job became booking or used wrong source: %+v", job)
+	}
+	response = serveForm(f, http.MethodPost, path, cookies, url.Values{"csrf_token": {csrfFrom(cookies)}})
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "Check Jobs before trying again") {
+		t.Fatalf("duplicate sign-in=%d %s", response.Code, response.Body.String())
+	}
+	member, err := f.store.CreateMember(ctx, store.CreateUserInput{Username: "foreign-sign-in", Password: "foreign sign in password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignCookies := loginCookiesAs(t, f, member.Username, "foreign sign in password")
+	for _, target := range []string{fmt.Sprintf("/profiles/%d", profile.ID), path} {
+		response = serveForm(f, http.MethodPost, target, foreignCookies, url.Values{"csrf_token": {csrfFrom(foreignCookies)}, "name": {"Cannot edit"}})
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("foreign profile access %s=%d", target, response.Code)
 		}
 	}
-	page = serveForm(f, http.MethodGet, fmt.Sprintf("/profiles/%d", current.ID), cookies, nil)
-	body = page.Body.String()
-	if page.Code != http.StatusOK || !strings.Contains(body, fmt.Sprintf(`value="%d" selected`, current.OTPSourceID)) || strings.Contains(body, "Other linked inbox") || strings.Contains(body, "Private source inbox") || strings.Contains(body, "No available OTP sources") {
-		t.Fatalf("editing did not retain only its current source: %d %s", page.Code, body)
-	}
-	resources := f.store.ForUser(f.admin.ID)
-	var available []model.OTPSource
-	for _, name := range []string{"Available first", "Available second"} {
-		source, err := resources.CreateOTPSource(ctx, store.OTPSourceInput{Name: name, Provider: model.OTPProviderTwilio, Identity: "twilio:" + name, ProviderConfig: map[string]string{"auth_token": "synthetic"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		available = append(available, source)
-	}
-	selectedID := strconv.FormatInt(available[1].ID, 10)
-	page = serveForm(f, http.MethodGet, "/profiles/new?lake_id=buntzen&source_id="+selectedID, cookies, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `value="`+selectedID+`" selected`) || !strings.Contains(page.Body.String(), available[0].Name) || !strings.Contains(page.Body.String(), available[1].Name) {
-		t.Fatalf("available source selection lost: %d %s", page.Code, page.Body.String())
-	}
-	for _, unavailable := range []int64{other.OTPSourceID, foreign.OTPSourceID} {
-		page = serveForm(f, http.MethodGet, fmt.Sprintf("/profiles/new?lake_id=buntzen&source_id=%d", unavailable), cookies, nil)
-		if page.Code != http.StatusOK || strings.Contains(page.Body.String(), fmt.Sprintf(`<option value="%d"`, unavailable)) {
-			t.Fatalf("query offered unavailable or foreign source %d", unavailable)
-		}
-	}
-	values := url.Values{
-		"csrf_token": {csrfFrom(cookies)}, "lake_id": {"buntzen"}, "name": {"Draft profile"},
-		"default_vehicle": {"Draft vehicle"}, "otp_source_id": {selectedID}, "yodel_phone": {"5559876543"},
-		"login_probe_url": {"https://example.test/login"}, "default_timeout_ms": {"not-a-number"},
-	}
-	page = serveForm(f, http.MethodPost, "/profiles/new", cookies, values)
-	body = page.Body.String()
-	if page.Code != http.StatusUnprocessableEntity || !strings.Contains(body, `value="`+selectedID+`" selected`) || !strings.Contains(body, `name="name" value="Draft profile"`) || !strings.Contains(body, `name="default_timeout_ms" value="not-a-number"`) || !strings.Contains(body, `min="1000" max="120000"`) {
-		t.Fatalf("invalid form lost available selection or browser limits: %d %s", page.Code, body)
-	}
-	// The store remains authoritative when an old page posts a source that is
-	// already assigned. The corrected form must not keep offering that source.
-	values.Set("default_timeout_ms", "15000")
-	values.Set("otp_source_id", strconv.FormatInt(other.OTPSourceID, 10))
-	page = serveForm(f, http.MethodPost, "/profiles/new", cookies, values)
-	body = page.Body.String()
-	if page.Code != http.StatusUnprocessableEntity || strings.Contains(body, fmt.Sprintf(`<option value="%d"`, other.OTPSourceID)) || !strings.Contains(body, "The selected OTP source is unavailable") {
-		t.Fatalf("assigned source submission bypassed exclusivity or remained offered: %d %s", page.Code, body)
-	}
-	profiles, err := resources.ListProfiles(ctx)
-	if err != nil || len(profiles) != 2 {
-		t.Fatalf("rejected source submission created a profile: %+v %v", profiles, err)
+	jobs, err = resources.ListJobs(ctx, 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("rejected calls queued more jobs: %+v %v", jobs, err)
 	}
 }

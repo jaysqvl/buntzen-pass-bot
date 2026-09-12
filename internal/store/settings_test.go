@@ -59,12 +59,18 @@ func TestPersonalSettingsOwnershipResetAndCascade(t *testing.T) {
 		t.Fatalf("absent account defaults: %+v, %v", account, err)
 	}
 	account.UserID, account.Headless, account.BrowserChannel, account.DefaultTimeoutMS = secondID, false, " Chrome ", 20000
+	account.PrepMinutesBefore, account.AuthDeadlineMinutesBefore = 45, 10
+	account.PollDeadlineSeconds, account.PollMinSeconds, account.PollMaxSeconds = 240, 2.2, 4.4
 	account, err = first.SaveAccountSettings(ctx, account)
-	if err != nil || account.UserID != firstID || account.Headless || account.BrowserChannel != "chrome" || account.UpdatedAt.IsZero() {
+	if err != nil || account.UserID != firstID || account.Headless || account.BrowserChannel != "chrome" || account.UpdatedAt.IsZero() ||
+		account.PrepMinutesBefore != 45 || account.AuthDeadlineMinutesBefore != 10 || account.PollDeadlineSeconds != 240 ||
+		account.PollMinSeconds != 2.2 || account.PollMaxSeconds != 4.4 {
 		t.Fatalf("save account settings: %+v, %v", account, err)
 	}
 	other, err := second.GetAccountSettings(ctx)
-	if err != nil || !other.Headless || other.BrowserChannel != "" || other.DefaultTimeoutMS != 15000 {
+	if err != nil || !other.Headless || other.BrowserChannel != "" || other.DefaultTimeoutMS != 15000 ||
+		other.PrepMinutesBefore != 30 || other.AuthDeadlineMinutesBefore != 5 || other.PollDeadlineSeconds != 120 ||
+		other.PollMinSeconds != 1.4 || other.PollMaxSeconds != 3.6 {
 		t.Fatalf("another account inherited defaults: %+v, %v", other, err)
 	}
 	if _, err := second.SaveAccountSettings(ctx, other); err != nil {
@@ -112,6 +118,8 @@ func TestSettingsDoNotChangeSavedBookingsProfilesOrJobs(t *testing.T) {
 	}
 	account := model.DefaultAccountSettings()
 	account.Headless, account.DefaultTimeoutMS = !profile.Headless, 30000
+	account.PrepMinutesBefore, account.AuthDeadlineMinutesBefore = 45, 10
+	account.PollDeadlineSeconds, account.PollMinSeconds, account.PollMaxSeconds = 240, 2.2, 4.4
 	if _, err := resources.SaveAccountSettings(ctx, account); err != nil {
 		t.Fatal(err)
 	}
@@ -131,13 +139,15 @@ func TestSettingsDoNotChangeSavedBookingsProfilesOrJobs(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(gotProfile, profile) {
 		t.Fatalf("changing account defaults changed profile: %+v, %v", gotProfile, err)
 	}
-	updated := settings.ApplyTo(booking)
+	updated := account.ApplyToBooking(settings.ApplyTo(booking))
 	if _, err := resources.UpdateBookingRequest(ctx, updated); !errors.Is(err, ErrConflict) {
 		t.Fatalf("active job guard was bypassed: %v", err)
 	}
 	updated.ID, updated.Name = 0, "new visit with lake defaults"
 	created, err := resources.CreateBookingRequest(ctx, updated)
-	if err != nil || created.ReleaseDaysBefore == nil || created.EffectiveReleaseDaysBefore() != 0 || created.ReleaseTime != "09:15" {
+	if err != nil || created.ReleaseDaysBefore == nil || created.EffectiveReleaseDaysBefore() != 0 || created.ReleaseTime != "09:15" ||
+		created.PrepMinutesBefore != 45 || created.AuthDeadlineMinutesBefore != 10 || created.PollDeadlineSeconds != 240 ||
+		created.PollMinSeconds != 2.2 || created.PollMaxSeconds != 4.4 {
 		t.Fatalf("new booking did not snapshot explicit same-day release: %+v, %v", created, err)
 	}
 	settings.ReleaseDaysBefore = 3
@@ -148,6 +158,13 @@ func TestSettingsDoNotChangeSavedBookingsProfilesOrJobs(t *testing.T) {
 		t.Fatalf("updating defaults changed the booking snapshot: %+v, %v", savedBooking, err)
 	}
 	if err := resources.ResetLakeSettings(ctx, lake.ID); err != nil {
+		t.Fatal(err)
+	}
+	if global, err := resources.GetAccountSettings(ctx); err != nil || global.PrepMinutesBefore != 45 || global.PollDeadlineSeconds != 240 {
+		t.Fatalf("resetting lake defaults changed global timing: %+v, %v", global, err)
+	}
+	account.PrepMinutesBefore, account.PollDeadlineSeconds = 90, 600
+	if _, err := resources.SaveAccountSettings(ctx, account); err != nil {
 		t.Fatal(err)
 	}
 	createdAgain, err := resources.GetBookingRequest(ctx, created.ID)
@@ -182,23 +199,29 @@ func TestLakeSettingsInvalidInputsAndUserScope(t *testing.T) {
 	}
 }
 
-func TestProfileLakeIsImmutableAndBookingAssociationIsEnforced(t *testing.T) {
+func TestSharedProfileUsesProviderCompatibilityAndOwnerScope(t *testing.T) {
 	ctx := context.Background()
 	database, firstID, secondID := ownershipStore(t)
 	_, profile, booking := createOwnedResources(t, database, firstID, "lake-owner")
 	_, otherProfile, _ := createOwnedResources(t, database, secondID, "lake-other")
-	if _, err := database.db.ExecContext(ctx, `UPDATE profiles SET lake_id = 'future-lake' WHERE id = ?`, profile.ID); err == nil {
-		t.Fatal("raw profile write changed its lake")
+	if _, err := database.db.ExecContext(ctx, `UPDATE profiles SET lake_id = 'previous-lake' WHERE id = ?`, profile.ID); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := database.db.ExecContext(ctx, `UPDATE booking_requests SET lake_id = 'future-lake' WHERE id = ?`, booking.ID); err == nil {
-		t.Fatal("raw booking write allowed a profile from another lake")
+	if _, err := database.ForUser(firstID).UpdateBookingRequest(ctx, booking); err != nil {
+		t.Fatalf("deprecated lake metadata blocked a shared provider identity: %v", err)
+	}
+	if _, err := database.db.ExecContext(ctx, `UPDATE profiles SET provider_id = 'unsupported-provider' WHERE id = ?`, profile.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ForUser(firstID).UpdateBookingRequest(ctx, booking); !errors.Is(err, ErrConflict) {
+		t.Fatalf("incompatible provider accepted: %v", err)
 	}
 	booking.ProfileID = otherProfile.ID
-	if _, err := database.ForUser(firstID).UpdateBookingRequest(ctx, booking); !errors.Is(err, ErrConflict) {
+	if _, err := database.ForUser(firstID).UpdateBookingRequest(ctx, booking); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-owner profile update was accepted: %v", err)
 	}
 	booking.ID, booking.Name = 0, "cross-owner profile"
-	if _, err := database.ForUser(firstID).CreateBookingRequest(ctx, booking); !errors.Is(err, ErrConflict) {
+	if _, err := database.ForUser(firstID).CreateBookingRequest(ctx, booking); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-owner profile creation was accepted: %v", err)
 	}
 }

@@ -49,7 +49,7 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 		Description:  "Queue for release creates a job that waits until preparation starts. Book now checks already released passes and requires your approval; it expires after 15 minutes.",
 		CreateURL:    "/bookings/new",
 		CreateLabel:  "New booking",
-		EmptyMessage: "Create a profile, then add a booking request.",
+		EmptyMessage: "Add a Yodel sign-in on Home, then create a booking request.",
 	}
 	if data.Flash != nil {
 		switch r.URL.Query().Get("notice") {
@@ -112,22 +112,18 @@ type lakePassOption struct {
 }
 
 type lakeFormDefaults struct {
-	ID                        string           `json:"id"`
-	Timezone                  string           `json:"timezone"`
-	ReleaseTime               string           `json:"releaseTime"`
-	ReleaseDaysBefore         int              `json:"releaseDaysBefore"`
-	AllDayPassURL             string           `json:"allDayPassURL"`
-	HalfDayPassURL            string           `json:"halfDayPassURL"`
-	ReleasePolicy             string           `json:"releasePolicy"`
-	Passes                    []lakePassOption `json:"passes"`
-	PreferredPasses           []string         `json:"preferredPasses"`
-	PrepMinutesBefore         int              `json:"prepMinutesBefore"`
-	AuthDeadlineMinutesBefore int              `json:"authDeadlineMinutesBefore"`
-	PollDeadlineSeconds       int              `json:"pollDeadlineSeconds"`
-	PollMinSeconds            float64          `json:"pollMinSeconds"`
-	PollMaxSeconds            float64          `json:"pollMaxSeconds"`
-	Profiles                  []lakePassOption `json:"profiles"`
-	SettingsURL               string           `json:"settingsURL"`
+	ID                string           `json:"id"`
+	Timezone          string           `json:"timezone"`
+	ReleaseTime       string           `json:"releaseTime"`
+	ReleaseDaysBefore int              `json:"releaseDaysBefore"`
+	AllDayPassURL     string           `json:"allDayPassURL"`
+	HalfDayPassURL    string           `json:"halfDayPassURL"`
+	ReleasePolicy     string           `json:"releasePolicy"`
+	Passes            []lakePassOption `json:"passes"`
+	PreferredPasses   []string         `json:"preferredPasses"`
+	VehicleKeyword    string           `json:"vehicleKeyword"`
+	Profiles          []lakePassOption `json:"profiles"`
+	SettingsURL       string           `json:"settingsURL"`
 }
 
 func lakeSelectOption(lake destinations.Lake, settings model.LakeSettings, selectedID string, profiles []model.Profile, currentProfileID int64) selectOption {
@@ -135,10 +131,9 @@ func lakeSelectOption(lake destinations.Lake, settings model.LakeSettings, selec
 		ID: lake.ID, Timezone: settings.Timezone, ReleaseTime: settings.ReleaseTime,
 		ReleaseDaysBefore: settings.ReleaseDaysBefore,
 		AllDayPassURL:     settings.AllDayPassURL, HalfDayPassURL: settings.HalfDayPassURL,
-		ReleasePolicy:     releaseDaysPolicy(settings.ReleaseDaysBefore),
-		PrepMinutesBefore: settings.PrepMinutesBefore, AuthDeadlineMinutesBefore: settings.AuthDeadlineMinutesBefore,
-		PollDeadlineSeconds: settings.PollDeadlineSeconds, PollMinSeconds: settings.PollMinSeconds, PollMaxSeconds: settings.PollMaxSeconds,
-		Profiles: []lakePassOption{}, SettingsURL: "/lakes/" + url.PathEscape(lake.ID),
+		ReleasePolicy:  releaseDaysPolicy(settings.ReleaseDaysBefore),
+		VehicleKeyword: settings.VehicleKeyword,
+		Profiles:       []lakePassOption{}, SettingsURL: "/lakes/" + url.PathEscape(lake.ID),
 	}
 	for _, pass := range lake.SupportedPasses {
 		defaults.Passes = append(defaults.Passes, lakePassOption{Value: pass, Label: passOptionLabel(pass)})
@@ -147,7 +142,7 @@ func lakeSelectOption(lake destinations.Lake, settings model.LakeSettings, selec
 		defaults.PreferredPasses = append(defaults.PreferredPasses, string(pass))
 	}
 	for _, profile := range profiles {
-		if profile.EffectiveLakeID() == lake.ID && (profile.Enabled || profile.ID == currentProfileID) {
+		if profile.EffectiveProviderID() == lake.ProviderID && (profile.Enabled || profile.ID == currentProfileID) {
 			defaults.Profiles = append(defaults.Profiles, lakePassOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name})
 		}
 	}
@@ -399,9 +394,22 @@ func (s *Server) bookingInput(r *http.Request, id int64) (model.BookingRequest, 
 		ConfirmationMode:          model.RunMode(r.Form.Get("confirmation_mode")),
 		AllDayPassURL:             r.Form.Get("all_day_pass_url"),
 		HalfDayPassURL:            r.Form.Get("half_day_pass_url"),
+		VehicleKeyword:            r.Form.Get("vehicle_keyword"),
 		CheckAllDay:               checked(r, "check_all_day"),
 		CheckAfternoon:            checked(r, "check_afternoon"),
 		CheckMorning:              checked(r, "check_morning"),
+	}
+	if !r.Form.Has("vehicle_keyword") {
+		if id > 0 {
+			current, err := s.userStore(r).GetBookingRequest(r.Context(), id)
+			if err != nil {
+				return request, err
+			}
+			request.VehicleKeyword = current.VehicleKeyword
+		} else if profile, err := s.userStore(r).GetProfile(r.Context(), request.ProfileID); err == nil {
+			// Older clients carried the vehicle only on their sign-in profile.
+			request.VehicleKeyword = profile.DefaultVehicle
+		}
 	}
 	for slot := 1; slot <= 3; slot++ {
 		if r.Form.Has(fmt.Sprintf("pass_priority_%d", slot)) {
@@ -459,9 +467,15 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	if booking != nil {
 		value = *booking
 	} else if r.Method == http.MethodGet {
+		accountSettings, err := s.userStore(r).GetAccountSettings(r.Context())
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		value = accountSettings.ApplyToBooking(value)
 		selectedID := parseInt64(r.URL.Query().Get("profile_id"))
 		for _, profile := range profiles {
-			if profile.Enabled && profile.ID == selectedID && profile.EffectiveLakeID() == lake.ID {
+			if profile.Enabled && profile.ID == selectedID && profile.EffectiveProviderID() == lake.ProviderID {
 				value.ProfileID = selectedID
 				break
 			}
@@ -470,6 +484,9 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	if r.Method == http.MethodPost {
 		parsed, _ := s.bookingInput(r, value.ID)
 		value = parsed
+		if booking != nil && !r.Form.Has("vehicle_keyword") {
+			value.VehicleKeyword = booking.VehicleKeyword
+		}
 		// The full parser can stop at an earlier invalid field. Keep the
 		// visible policy in sync with a valid submitted day offset regardless.
 		if r.Form.Has("release_days_before") {
@@ -503,9 +520,9 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	if _, err := destinations.Resolve(selectedLakeID); err != nil {
 		lakeOptions = append(lakeOptions, selectOption{Value: selectedLakeID, Label: "Unsupported lake — choose a supported lake", Selected: true})
 	}
-	profileOptions := []selectOption{{Value: "", Label: "Choose a lake profile", Selected: selectedProfileID == 0}}
+	profileOptions := []selectOption{{Value: "", Label: "Choose a sign-in", Selected: selectedProfileID == 0}}
 	for _, profile := range profiles {
-		if profile.EffectiveLakeID() != selectedLakeID || (!profile.Enabled && profile.ID != currentProfileID) {
+		if profile.EffectiveProviderID() != lake.ProviderID || (!profile.Enabled && profile.ID != currentProfileID) {
 			continue
 		}
 		profileOptions = append(profileOptions, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name, Selected: profile.ID == selectedProfileID})
@@ -553,8 +570,9 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 			Fields: []formField{
 				{Name: "lake_id", Label: "Lake", Type: "select", Required: true, Options: lakeOptions, Help: "Choose where you want to book a pass."},
 				{Name: "name", Label: "Request name", Type: "text", Value: value.Name, Required: true},
-				{Name: "profile_id", Label: "Lake profile", Type: "select", Required: true, Options: profileOptions, Help: "Manage sign-in and vehicle details in Lake settings."},
+				{Name: "profile_id", Label: "Booking sign-in", Type: "select", Required: true, Options: profileOptions, Help: "Manage your Yodel sign-in on Home."},
 				{Name: "target_date", Label: "Visit date", Type: "date", Value: value.TargetDate, Required: true},
+				{Name: "vehicle_keyword", Label: "Vehicle keyword", Type: "text", Value: value.VehicleKeyword, Required: true, Help: "Copied from this lake’s settings. Use a unique vehicle name or licence plate."},
 			},
 		},
 		{
@@ -602,6 +620,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		},
 		{
 			Title:    "Preparation and retry timing",
+			Help:     "Copied from your general Settings when this request is created. Changes here apply only to this request.",
 			Advanced: true,
 			Fields: []formField{
 				{
@@ -671,6 +690,9 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				} else if field.Type == "checkbox" {
 					field.Checked = checked(r, field.Name)
 				} else {
+					if field.Name == "vehicle_keyword" && !r.Form.Has(field.Name) {
+						continue
+					}
 					if field.Name == "release_days_before" && !r.Form.Has(field.Name) {
 						continue // Older clients predate the per-request policy field.
 					}

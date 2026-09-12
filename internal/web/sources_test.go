@@ -22,8 +22,8 @@ func TestSourcesPairFromTheLinkedProfileWithoutABooking(t *testing.T) {
 		loginURL, wantLabel, wantDetail string
 	}{
 		{name: "ready without a booking", enabled: true, loginURL: "https://example.test/login", wantLabel: "Pair with Yodel"},
-		{name: "disabled profile", loginURL: "https://example.test/login", wantLabel: "Enable profile", wantDetail: "enable the lake profile"},
-		{name: "unapproved profile login URL", enabled: true, loginURL: "https://unapproved.example/login", wantLabel: "Review profile", wantDetail: "Yodel login URL must use an approved Yodel origin"},
+		{name: "disabled profile", loginURL: "https://example.test/login", wantLabel: "Enable sign-in", wantDetail: "enable the Yodel sign-in"},
+		{name: "unapproved profile login URL", enabled: true, loginURL: "https://unapproved.example/login", wantLabel: "Review sign-in", wantDetail: "Yodel login URL must use an approved Yodel origin"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newWebFixture(t)

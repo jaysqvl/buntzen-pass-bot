@@ -13,11 +13,27 @@ from lake_pass_actions.environment import operator_env
 from lake_pass_actions.errors import ProtocolError
 from lake_pass_actions.lakes import LAKES, resolve_lake
 from lake_pass_actions.providers import PROVIDERS, Provider, resolve_provider
+from lake_pass_actions.providers.yodel.action import YodelAction
 from lake_pass_actions.worker import run_action
 from test_config import start_frame
 
 
 class RegistryTests(unittest.TestCase):
+    def test_provider_only_auth_works_without_any_registered_lake(self) -> None:
+        frame = start_frame()
+        frame["command"] = "auth-check"
+        frame["config"].pop("vehicle_keyword")
+        frame["config"].pop("pass_order")
+        with patch("lake_pass_actions.lakes.LAKES", {}):
+            config = ActionConfig.from_start(frame)
+            page = Mock()
+            action = YodelAction(page, config, Mock(), Mock())
+            action.ensure_authenticated = Mock(return_value=True)
+            result = action.execute()
+            self.assertTrue(result.success)
+            self.assertIsNone(action.lake)
+            action.ensure_authenticated.assert_called_once()
+
     def test_legacy_start_and_explicit_selection_resolve_to_same_lake(self) -> None:
         legacy = ActionConfig.from_start(start_frame())
         frame = start_frame()

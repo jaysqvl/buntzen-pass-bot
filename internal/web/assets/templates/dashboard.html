@@ -1,13 +1,18 @@
 {{define "content"}}
-<section class="hero dashboard-hero"><div><p class="eyebrow">Lake Pass Bot</p><h1>Your next lake visit.</h1><p>Choose a lake, set up its profile, and create a booking request.</p></div><a class="button primary" href="/lakes">Choose a lake</a></section>
+<section class="hero dashboard-hero"><div><p class="eyebrow">Lake Pass Bot</p><h1>Your next lake visit.</h1><p>Sign in to Yodel, choose a lake, and plan your visit.</p></div><a class="button primary" href="/lakes">Choose a lake</a></section>
+<section class="dashboard-sign-in" id="yodel-sign-in" aria-labelledby="yodel-sign-in-heading">
+<div class="section-head"><div><h2 id="yodel-sign-in-heading">Yodel sign-in</h2><p>Your Yodel sign-ins work across supported lakes. Signing in does not book a pass.</p></div>{{if .DefaultSourceName}}<a class="button" href="/profiles/new">Add Yodel sign-in</a>{{else}}<a class="button" href="/sources">Choose default OTP source</a>{{end}}</div>
+<p class="field-help">{{if .DefaultSourceName}}Default OTP source: {{.DefaultSourceName}}.{{else}}Select a default inbox for your login codes.{{end}} <a href="/sources">Manage OTP sources</a></p>
+<div class="card-grid">{{range .Profiles}}{{template "resource-card" .}}{{else}}<section class="empty-card"><h3>Connect your Yodel account</h3><p>{{if .DefaultSourceName}}Add the mobile number used by Yodel, then choose Sign in to Yodel.{{else}}Configure BlueBubbles or Twilio on the OTP sources page and select your default, then add your Yodel sign-in.{{end}}</p></section>{{end}}</div>
+</section>
 <ol class="setup-order" aria-label="Setup order">
  <li><a href="/sources"><strong>1. Connect an inbox</strong><span>Your OTP sources work across the app.</span></a></li>
- <li><a href="/lakes"><strong>2. Set up a lake</strong><span>Profiles, vehicle choices, and booking defaults.</span></a></li>
- <li><a href="/bookings"><strong>3. Plan your visit</strong><span>Choose a date, profile, and pass preferences.</span></a></li>
+ <li><a href="#yodel-sign-in"><strong>2. Sign in to Yodel</strong><span>Connect your account once for supported lakes.</span></a></li>
+ <li><a href="/bookings"><strong>3. Plan your visit</strong><span>Choose a lake, date, and pass preferences.</span></a></li>
  <li><a href="/jobs"><strong>4. Follow the booking</strong><span>Check progress and approve when prompted.</span></a></li>
 </ol>
 <div class="card-grid">
- <section class="card"><h2>Lakes</h2><p>Each supported lake has its own settings and profiles.</p><div class="actions"><a class="button" href="/lakes">Manage lakes</a></div></section>
+ <section class="card"><h2>Lakes</h2><p>Manage each lake’s vehicle choice and booking rules.</p><div class="actions"><a class="button" href="/lakes">Manage lakes</a></div></section>
  <section class="card"><h2>Booking requests</h2><p>{{.BookingCount}} saved {{if eq .BookingCount 1}}request{{else}}requests{{end}}. Review upcoming visits or create a new request.</p><div class="actions"><a class="button" href="/bookings">Open bookings</a></div></section>
 </div>
 {{if not .SchedulesEnabled}}<p class="setup-note">{{.AutoQueueNotice}}</p>{{end}}

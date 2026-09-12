@@ -74,7 +74,7 @@ func safeFormError(err error) string {
 		return "This account has reached the limit for this resource."
 	}
 	if errors.Is(err, store.ErrConflict) {
-		return "That name, inbox, browser profile, or exclusive source is already in use."
+		return "That name or inbox is already in use, or an active job is using these settings."
 	}
 	message := strings.TrimSpace(err.Error())
 	if len(message) > 300 {

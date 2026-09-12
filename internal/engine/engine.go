@@ -266,17 +266,13 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 			return control.RunResult{}, err
 		}
 	}
-	// Profile-only sign-in jobs use the profile's lake. Booking jobs must
-	// agree with that lake before either set of credentials is decrypted.
-	lake, err := executionDestination(profile.EffectiveLakeID())
-	if err != nil {
+	// Sign-in belongs to the provider. Booking destinations must be compatible
+	// before either set of credentials is decrypted.
+	if err := executionProvider(profile.EffectiveProviderID()); err != nil {
 		return control.RunResult{}, err
 	}
 	if job.BookingRequestID != nil {
-		if _, err := executionDestination(booking.EffectiveLakeID()); err != nil {
-			return control.RunResult{}, err
-		}
-		if err := validateProfileBookingLake(profile, booking); err != nil {
+		if err := validateProfileBookingProvider(profile, booking); err != nil {
 			return control.RunResult{}, err
 		}
 	}
@@ -339,12 +335,10 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 	}
 
 	startConfig := map[string]any{
-		"lake_id":               lake.ID,
-		"provider_id":           lake.ProviderID,
+		"provider_id":           profile.EffectiveProviderID(),
 		"profile_dir":           profileDir,
 		"login_probe_url":       profile.LoginProbeURL,
 		"allowed_yodel_origins": append([]string(nil), e.config.YodelOrigins...),
-		"vehicle_keyword":       profile.DefaultVehicle,
 		"headless":              profile.Headless,
 		"browser_channel":       nullable(strings.ToLower(strings.TrimSpace(profile.BrowserChannel))),
 		"default_timeout_ms":    profile.DefaultTimeoutMS,
@@ -352,6 +346,8 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 	}
 	otpTimeout := 120 * time.Second
 	if job.Command != model.CommandAuthCheck {
+		startConfig["lake_id"] = booking.EffectiveLakeID()
+		startConfig["vehicle_keyword"] = booking.VehicleKeyword
 		startConfig["target_date"] = booking.TargetDate
 		startConfig["timezone"] = booking.Timezone
 		startConfig["all_day_pass_url"] = nullable(booking.AllDayPassURL)
@@ -397,7 +393,7 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 	)
 	result, err = control.Run(ctx, control.RunInput{
 		JobID: job.ID, Command: job.Command, Mode: job.RunMode,
-		ActionProviderID: lake.ProviderID,
+		ActionProviderID: profile.EffectiveProviderID(),
 		StartConfig:      startConfig, Credentials: credentials,
 		Provider: provider, OTPFilter: filter,
 		OTPTimeout:  otpTimeout,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -12,84 +11,56 @@ import (
 	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
-func TestHomeShowsSetupOrderAndOnlyOwnedLinkedResources(t *testing.T) {
-	fixture := newWebFixture(t)
+func TestHomeShowsGlobalYodelSignInsAndOnlyOwnedResources(t *testing.T) {
+	f := newWebFixture(t)
 	ctx := context.Background()
-	member, err := fixture.store.CreateMember(ctx, store.CreateUserInput{Username: "other-member", Password: "other-member-password"})
+	member, err := f.store.CreateMember(ctx, store.CreateUserInput{Username: "other-member", Password: "other-member-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	var own []model.Profile
 	for _, owner := range []struct {
 		id   int64
 		name string
-	}{{fixture.admin.ID, "Owned"}, {member.ID, "Private"}} {
-		resources := fixture.store.ForUser(owner.id)
-		source, err := resources.CreateOTPSource(ctx, store.OTPSourceInput{Name: owner.name + " inbox", Provider: model.OTPProviderTwilio, Identity: "twilio:" + owner.name, ProviderConfig: map[string]string{"auth_token": "secret-never-rendered"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = resources.CreateProfile(ctx, store.ProfileInput{Name: owner.name + " vehicle", DefaultVehicle: owner.name + " car", LoginProbeURL: "https://example.test/login", OTPSourceID: source.ID, DefaultTimeoutMS: 15000, Enabled: true, Headless: true, Credentials: &model.ProfileCredentials{Phone: "5559876543"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, "http://example.test/", loginCookies(t, fixture), nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("home=%d %s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	for _, text := range []string{"1. Connect an inbox", "2. Set up a lake", "3. Plan your visit", "4. Follow the booking", "Already queued jobs remain scheduled", `href="/lakes"`, `href="/sources"`, `href="/settings"`} {
-		if !strings.Contains(body, text) {
-			t.Fatalf("home missing %q", text)
-		}
-	}
-	for _, target := range []string{"/sources", "/lakes/buntzen"} {
-		response = httptest.NewRecorder()
-		fixture.handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, "http://example.test"+target, loginCookies(t, fixture), nil))
-		if response.Code != http.StatusOK {
-			t.Fatalf("%s=%d %s", target, response.Code, response.Body.String())
-		}
-		body = response.Body.String()
-		expected := "Owned inbox"
-		if target == "/lakes/buntzen" {
-			expected = "Owned vehicle"
-		}
-		if !strings.Contains(body, expected) {
-			t.Fatalf("%s missing owned resource", target)
-		}
-		for _, text := range []string{"Private inbox", "Private vehicle", "secret-never-rendered", "5559876543"} {
-			if strings.Contains(body, text) {
-				t.Fatalf("%s exposed %q", target, text)
+	}{{f.admin.ID, "Owned"}, {member.ID, "Private"}} {
+		source := createDefaultSignInSource(t, f, owner.id, owner.name+" inbox")
+		for i := 1; i <= 2; i++ {
+			profile, err := f.store.ForUser(owner.id).CreateProfile(ctx, store.ProfileInput{ProviderID: "yodel", Name: fmt.Sprintf("%s sign-in %d", owner.name, i), DefaultVehicle: owner.name + " legacy vehicle", LoginProbeURL: "https://example.test/login", OTPSourceID: source.ID, DefaultTimeoutMS: 15000, Enabled: true, Headless: true, Credentials: &model.ProfileCredentials{Phone: "5559876543"}})
+			if err != nil {
+				t.Fatal(err)
 			}
+			if owner.id == f.admin.ID {
+				own = append(own, profile)
+			}
+		}
+	}
+	response := serveForm(f, http.MethodGet, "/", loginCookies(t, f), nil)
+	body := response.Body.String()
+	if response.Code != http.StatusOK {
+		t.Fatalf("home=%d %s", response.Code, body)
+	}
+	for _, text := range []string{`id="yodel-sign-in"`, "Yodel sign-in", "Owned inbox", "Owned sign-in 1", "Owned sign-in 2", "Signing in does not book a pass", `href="/profiles/new"`, `href="/sources"`, `href="/lakes"`, `href="/settings"`, "2. Sign in to Yodel", "Already queued jobs remain scheduled"} {
+		if !strings.Contains(body, text) {
+			t.Errorf("Home missing %q", text)
+		}
+	}
+	for _, profile := range own {
+		if !strings.Contains(body, fmt.Sprintf(`action="/profiles/%d/sign-in"`, profile.ID)) {
+			t.Errorf("Home lost action for existing sign-in%d", profile.ID)
+		}
+	}
+	for _, text := range []string{"Private inbox", "Private sign-in", "legacy vehicle", "5559876543", "synthetic", "https://example.test/login"} {
+		if strings.Contains(body, text) {
+			t.Errorf("Home exposed %q", text)
 		}
 	}
 }
 
-func TestProfileFormOwnsLoginURLAndPreselectsOnlyOwnedSource(t *testing.T) {
-	fixture := newWebFixture(t)
-	ctx := context.Background()
-	source, err := fixture.store.ForUser(fixture.admin.ID).CreateOTPSource(ctx, store.OTPSourceInput{Name: "Saved inbox", Provider: model.OTPProviderTwilio, Identity: "twilio:profile-form", ProviderConfig: map[string]string{"auth_token": "synthetic"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cookies := loginCookies(t, fixture)
-	for _, requestedID := range []int64{source.ID, source.ID + 100} {
-		response := httptest.NewRecorder()
-		target := fmt.Sprintf("http://example.test/profiles/new?source_id=%d", requestedID)
-		fixture.handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, target, cookies, nil))
-		if response.Code != http.StatusOK {
-			t.Fatalf("profile form=%d %s", response.Code, response.Body.String())
-		}
-		body := response.Body.String()
-		if !strings.Contains(body, `name="login_probe_url" value="https://example.test/buntzen-lake"`) {
-			t.Fatal("profile missing approved default login URL")
-		}
-		if requestedID == source.ID && !strings.Contains(body, fmt.Sprintf(`value="%d" selected`, source.ID)) {
-			t.Fatal("owned source was not preselected")
-		}
-		if requestedID != source.ID && strings.Contains(body, fmt.Sprintf(`value="%d"`, requestedID)) {
-			t.Fatal("unowned source was rendered")
-		}
+func TestHomeGuidesDefaultOTPSetupBeforeYodelSignIn(t *testing.T) {
+	f := newWebFixture(t)
+	response := serveForm(f, http.MethodGet, "/", loginCookies(t, f), nil)
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "Choose default OTP source") || !strings.Contains(body, "Configure BlueBubbles or Twilio") || strings.Contains(body, `action="/profiles/`) {
+		t.Fatalf("empty Home=%d %s", response.Code, body)
 	}
 }

@@ -171,15 +171,35 @@ func TestJobStreamDeliversFinalEventsBeforeClosingAndUpdatesDetails(t *testing.T
 	// Model the real status-before-event ordering. The browser must still be
 	// subscribed when this final durable event becomes available.
 	last := appendLiveJobEvent(t, fixture, job.ID, "job.succeeded")
+	// A poll or another live notification can emit a duplicate terminal state
+	// before completion. Exercise that ordering without relying on ticker timing.
+	fixture.server.engine.Hub().Publish(key, control.LiveEvent{Kind: "event"})
 	fixture.server.engine.Hub().Publish(key, control.LiveEvent{Kind: "complete"})
-	if event := readJobEvent(t, reader); event.kind != "job_event" || event.id != strconv.FormatInt(last.ID, 10) {
-		t.Fatalf("missing final event: %+v", event)
-	}
-	if event := readJobEvent(t, reader); event.kind != "state" {
-		t.Fatalf("missing final state: %+v", event)
-	}
-	if event := readJobEvent(t, reader); event.kind != "complete" {
-		t.Fatalf("stream closed before completion marker: %+v", event)
+	seenFinalEvent, seenStateAfterFinalEvent := false, false
+completion:
+	for {
+		event := readJobEvent(t, reader)
+		switch event.kind {
+		case "job_event":
+			if seenFinalEvent || event.id != strconv.FormatInt(last.ID, 10) || event.data["type"] != "job.succeeded" {
+				t.Fatalf("unexpected or duplicate final event: %+v", event)
+			}
+			seenFinalEvent = true
+		case "state":
+			if event.data["terminal"] != true || event.data["status"] != "succeeded" || event.data["message"] != "Confirmed" {
+				t.Fatalf("unexpected final state: %+v", event)
+			}
+			if seenFinalEvent {
+				seenStateAfterFinalEvent = true
+			}
+		case "complete":
+			if !seenFinalEvent || !seenStateAfterFinalEvent {
+				t.Fatal("completion marker arrived before the final durable event and terminal state")
+			}
+			break completion
+		default:
+			t.Fatalf("unexpected event before completion marker: %+v", event)
+		}
 	}
 	if _, err := reader.ReadByte(); err != io.EOF {
 		t.Fatalf("completed stream remained open: %v", err)

@@ -101,12 +101,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sources/{id}", s.authenticated(s.sourceUpdate))
 	s.mux.HandleFunc("POST /sources/{id}/health", s.authenticated(s.sourceHealth))
 	s.mux.HandleFunc("POST /sources/{id}/pair", s.authenticated(s.sourcePair))
+	s.mux.HandleFunc("POST /sources/{id}/default", s.authenticated(s.sourceDefault))
 
 	s.mux.HandleFunc("GET /profiles", s.authenticated(s.profiles))
 	s.mux.HandleFunc("GET /profiles/new", s.authenticated(s.profileNew))
 	s.mux.HandleFunc("POST /profiles/new", s.authenticated(s.profileCreate))
 	s.mux.HandleFunc("GET /profiles/{id}", s.authenticated(s.profileEdit))
 	s.mux.HandleFunc("POST /profiles/{id}", s.authenticated(s.profileUpdate))
+	s.mux.HandleFunc("POST /profiles/{id}/sign-in", s.authenticated(s.profileSignIn))
 
 	s.mux.HandleFunc("GET /bookings", s.authenticated(s.bookings))
 	s.mux.HandleFunc("GET /bookings/new", s.authenticated(s.bookingNew))

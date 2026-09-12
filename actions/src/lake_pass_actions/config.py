@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .errors import ProtocolError
 from .lakes import LEGACY_LAKE_ID, LEGACY_PROVIDER_ID, resolve_lake
-from .providers import resolve_provider
+from .providers import resolve_action_provider
 from .protocol import validate_start_has_no_secrets
 
 
@@ -55,7 +55,7 @@ class ActionConfig:
     artifacts_dir: Optional[Path]
     release_at: Optional[datetime]
     auth_deadline_at: Optional[datetime]
-    lake_id: str = LEGACY_LAKE_ID
+    lake_id: Optional[str] = LEGACY_LAKE_ID
     provider_id: str = LEGACY_PROVIDER_ID
 
     def allows_yodel_url(self, value: str) -> bool:
@@ -75,11 +75,6 @@ class ActionConfig:
 
         # Only absent keys use legacy defaults. Explicit unknown, blank, null,
         # or mismatched selections must fail before credentials or browser use.
-        lake_id = config.get("lake_id", LEGACY_LAKE_ID)
-        lake = resolve_lake(lake_id)
-        provider_id = config.get("provider_id", lake.provider_id)
-        resolve_provider(lake_id, provider_id)
-
         run_id = _required_text(frame, "run_id")
         command = _required_text(frame, "command")
         mode = _required_text(frame, "mode")
@@ -91,6 +86,17 @@ class ActionConfig:
             mode = "dry-run"
         elif command == "book" and mode not in {"auto", "manual"}:
             raise ProtocolError("book mode must be auto or manual")
+
+        # An omitted lake is meaningful for global sign-in. Explicit invalid
+        # destination values still fail, including legacy auth-check callers.
+        if command == "auth-check" and "lake_id" not in config:
+            lake_id, lake = None, None
+            provider_id = config.get("provider_id", LEGACY_PROVIDER_ID)
+        else:
+            lake_id = config.get("lake_id", LEGACY_LAKE_ID)
+            lake = resolve_lake(lake_id)
+            provider_id = config.get("provider_id", lake.provider_id)
+        resolve_action_provider(command, lake_id, provider_id)
 
         profile_dir = Path(_required_text(config, "profile_dir")).expanduser()
         if not profile_dir.is_absolute():
@@ -113,8 +119,9 @@ class ActionConfig:
         ):
             raise ProtocolError("pass_order must be an array of pass keys")
         pass_order = tuple(raw_order)
+        pass_lake = lake or (resolve_lake(LEGACY_LAKE_ID) if pass_order else None)
         if len(set(pass_order)) != len(pass_order) or any(
-            item not in lake.pass_preferences for item in pass_order
+            item not in pass_lake.pass_preferences for item in pass_order
         ):
             raise ProtocolError(
                 "pass_order contains duplicate or unsupported pass keys"
@@ -154,7 +161,11 @@ class ActionConfig:
         elif "afternoon" in pass_order or "morning" in pass_order:
             raise ProtocolError("half_day_pass_url is required for the selected action")
 
-        vehicle_keyword = _required_text(config, "vehicle_keyword")
+        vehicle_keyword = (
+            _optional_text(config, "vehicle_keyword") or ""
+            if command == "auth-check"
+            else _required_text(config, "vehicle_keyword")
+        )
         headless = _optional_bool(config, "headless", False)
         default_timeout_ms = _bounded_number(
             config, "default_timeout_ms", 15_000, 1_000, 120_000

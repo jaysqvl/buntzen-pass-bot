@@ -30,7 +30,7 @@ func TestExecutionRejectsPersistedUnknownLakeBeforeDecryptingCredentials(t *test
 			// corrupted persisted state after queueing. Make decryption fail
 			// if execution reaches either credential source.
 			for _, statement := range []string{
-				`DROP TRIGGER booking_profile_lake_update`,
+				`DROP TRIGGER IF EXISTS booking_profile_lake_update`,
 				`UPDATE booking_requests SET lake_id = 'unknown-lake'`,
 				`UPDATE profiles SET yodel_phone_ciphertext = 'invalid-ciphertext'`,
 				`UPDATE otp_sources SET config_ciphertext = 'invalid-ciphertext'`,
@@ -46,7 +46,7 @@ func TestExecutionRejectsPersistedUnknownLakeBeforeDecryptingCredentials(t *test
 	}
 }
 
-func TestProfileOnlyExecutionRejectsUnknownProfileLakeBeforeCredentials(t *testing.T) {
+func TestProfileOnlyExecutionRejectsUnknownProviderBeforeCredentials(t *testing.T) {
 	fixture := newEngineTestFixture(t)
 	ctx := context.Background()
 	job, err := fixture.resources.EnqueueJob(ctx, store.EnqueueJobParams{
@@ -63,32 +63,33 @@ func TestProfileOnlyExecutionRejectsUnknownProfileLakeBeforeCredentials(t *testi
 	// Bypass immutability in this isolated database to verify the execution
 	// boundary independently of the normal profile write guard.
 	for _, statement := range []string{
-		`DROP TRIGGER profiles_lake_immutable`,
-		`UPDATE profiles SET lake_id = 'future-lake', yodel_phone_ciphertext = 'invalid-ciphertext'`,
+		`DROP TRIGGER IF EXISTS profiles_provider_immutable`,
+		`UPDATE profiles SET provider_id = 'future-provider', yodel_phone_ciphertext = 'invalid-ciphertext'`,
 		`UPDATE otp_sources SET config_ciphertext = 'invalid-ciphertext'`,
 	} {
 		if _, err := database.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := fixture.engine.execute(ctx, job); err == nil || !strings.Contains(err.Error(), "unsupported lake") {
-		t.Fatalf("profile-only execution did not validate the saved profile lake first: %v", err)
+	if _, err := fixture.engine.execute(ctx, job); err == nil || !strings.Contains(err.Error(), "unsupported sign-in provider") {
+		t.Fatalf("profile-only execution did not validate the saved provider first: %v", err)
 	}
 }
 
-func TestProfileAndBookingMustSelectTheSameLake(t *testing.T) {
+func TestProfileAndBookingMustUseCompatibleProviders(t *testing.T) {
 	for _, test := range []struct {
-		name, profileLake, bookingLake string
-		wantError                      bool
+		name, profileLake, profileProvider, bookingLake string
+		wantError                                       bool
 	}{
 		{name: "legacy defaults"},
 		{name: "legacy profile", bookingLake: "buntzen"},
 		{name: "legacy booking", profileLake: "buntzen"},
-		{name: "same lake", profileLake: "future-lake", bookingLake: "future-lake"},
-		{name: "different lakes", profileLake: "buntzen", bookingLake: "future-lake", wantError: true},
+		{name: "global Yodel sign-in", profileLake: "future-lake", profileProvider: "yodel", bookingLake: "buntzen"},
+		{name: "unknown lake", profileLake: "buntzen", bookingLake: "future-lake", wantError: true},
+		{name: "different provider", profileProvider: "another-provider", bookingLake: "buntzen", wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateProfileBookingLake(model.Profile{LakeID: test.profileLake}, model.BookingRequest{LakeID: test.bookingLake})
+			err := validateProfileBookingProvider(model.Profile{LakeID: test.profileLake, ProviderID: test.profileProvider}, model.BookingRequest{LakeID: test.bookingLake})
 			if (err != nil) != test.wantError {
 				t.Fatalf("profile=%q booking=%q mismatch error=%v", test.profileLake, test.bookingLake, err)
 			}

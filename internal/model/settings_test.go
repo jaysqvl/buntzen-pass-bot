@@ -16,12 +16,18 @@ func TestLakeSettingsCopyOnlyDefaultsIntoBooking(t *testing.T) {
 	request := BookingRequest{
 		ID: 4, UserID: 5, Name: "A visit", ProfileID: 6, TargetDate: "2030-06-20",
 		Enabled: true, ScheduleEnabled: true, ConfirmationMode: RunModeAuto,
+		PrepMinutesBefore: 45, AuthDeadlineMinutesBefore: 10,
+		PollDeadlineSeconds: 300, PollMinSeconds: 2.5, PollMaxSeconds: 5,
 	}
 	updated := settings.ApplyTo(request)
 	if updated.ID != request.ID || updated.UserID != request.UserID || updated.Name != request.Name ||
 		updated.ProfileID != request.ProfileID || updated.TargetDate != request.TargetDate ||
 		updated.Enabled != request.Enabled || updated.ScheduleEnabled != request.ScheduleEnabled ||
-		updated.ConfirmationMode != request.ConfirmationMode {
+		updated.ConfirmationMode != request.ConfirmationMode ||
+		updated.PrepMinutesBefore != request.PrepMinutesBefore ||
+		updated.AuthDeadlineMinutesBefore != request.AuthDeadlineMinutesBefore ||
+		updated.PollDeadlineSeconds != request.PollDeadlineSeconds ||
+		updated.PollMinSeconds != request.PollMinSeconds || updated.PollMaxSeconds != request.PollMaxSeconds {
 		t.Fatalf("applying defaults changed request-specific fields: %+v", updated)
 	}
 	if updated.ReleaseDaysBefore == nil || updated.EffectiveReleaseDaysBefore() != 0 ||
@@ -38,19 +44,14 @@ func TestLakeSettingsCopyOnlyDefaultsIntoBooking(t *testing.T) {
 func TestLakeSettingsValidationMatchesBookingBounds(t *testing.T) {
 	lake, _ := destinations.Resolve("")
 	for name, change := range map[string]func(*LakeSettings){
-		"unknown lake":      func(s *LakeSettings) { s.LakeID = "unknown" },
-		"negative days":     func(s *LakeSettings) { s.ReleaseDaysBefore = -1 },
-		"excessive days":    func(s *LakeSettings) { s.ReleaseDaysBefore = MaxReleaseDaysBefore + 1 },
-		"unknown timezone":  func(s *LakeSettings) { s.Timezone = "No/SuchPlace" },
-		"invalid time":      func(s *LakeSettings) { s.ReleaseTime = "25:00" },
-		"empty order":       func(s *LakeSettings) { s.PreferredPasses = nil },
-		"duplicate passes":  func(s *LakeSettings) { s.PreferredPasses = []PassType{PassAllDay, PassAllDay} },
-		"unsupported pass":  func(s *LakeSettings) { s.PreferredPasses = []PassType{"camping"} },
-		"unbounded prep":    func(s *LakeSettings) { s.PrepMinutesBefore = MaxPrepMinutesBefore + 1 },
-		"auth outside prep": func(s *LakeSettings) { s.AuthDeadlineMinutesBefore = s.PrepMinutesBefore + 1 },
-		"unbounded window":  func(s *LakeSettings) { s.PollDeadlineSeconds = 901 },
-		"nan poll":          func(s *LakeSettings) { s.PollMinSeconds = math.NaN() },
-		"reversed poll":     func(s *LakeSettings) { s.PollMaxSeconds = s.PollMinSeconds - 1 },
+		"unknown lake":     func(s *LakeSettings) { s.LakeID = "unknown" },
+		"negative days":    func(s *LakeSettings) { s.ReleaseDaysBefore = -1 },
+		"excessive days":   func(s *LakeSettings) { s.ReleaseDaysBefore = MaxReleaseDaysBefore + 1 },
+		"unknown timezone": func(s *LakeSettings) { s.Timezone = "No/SuchPlace" },
+		"invalid time":     func(s *LakeSettings) { s.ReleaseTime = "25:00" },
+		"empty order":      func(s *LakeSettings) { s.PreferredPasses = nil },
+		"duplicate passes": func(s *LakeSettings) { s.PreferredPasses = []PassType{PassAllDay, PassAllDay} },
+		"unsupported pass": func(s *LakeSettings) { s.PreferredPasses = []PassType{"camping"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			settings := DefaultLakeSettings(lake)
@@ -90,5 +91,61 @@ func TestAccountSettingsValidateBrowserPolicy(t *testing.T) {
 	settings.DefaultTimeoutMS = 999
 	if err := settings.Validate(); err == nil {
 		t.Fatal("account defaults accepted an unbounded timeout")
+	}
+}
+
+func TestAccountSettingsValidateGlobalTimingPolicy(t *testing.T) {
+	for name, change := range map[string]func(*AccountSettings){
+		"negative prep":     func(s *AccountSettings) { s.PrepMinutesBefore = -1 },
+		"unbounded prep":    func(s *AccountSettings) { s.PrepMinutesBefore = MaxPrepMinutesBefore + 1 },
+		"negative auth":     func(s *AccountSettings) { s.AuthDeadlineMinutesBefore = -1 },
+		"auth outside prep": func(s *AccountSettings) { s.AuthDeadlineMinutesBefore = s.PrepMinutesBefore + 1 },
+		"empty window":      func(s *AccountSettings) { s.PollDeadlineSeconds = 0 },
+		"unbounded window":  func(s *AccountSettings) { s.PollDeadlineSeconds = 901 },
+		"nan min":           func(s *AccountSettings) { s.PollMinSeconds = math.NaN() },
+		"nan max":           func(s *AccountSettings) { s.PollMaxSeconds = math.NaN() },
+		"infinite min":      func(s *AccountSettings) { s.PollMinSeconds = math.Inf(-1) },
+		"infinite max":      func(s *AccountSettings) { s.PollMaxSeconds = math.Inf(1) },
+		"reversed poll":     func(s *AccountSettings) { s.PollMaxSeconds = s.PollMinSeconds - 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			settings := DefaultAccountSettings()
+			change(&settings)
+			if err := settings.Validate(); err == nil {
+				t.Fatal("invalid account timing was accepted")
+			}
+		})
+	}
+	settings := DefaultAccountSettings()
+	settings.PrepMinutesBefore, settings.AuthDeadlineMinutesBefore = 0, 0
+	if err := settings.Validate(); err != nil {
+		t.Fatalf("explicit zero preparation offsets: %v", err)
+	}
+}
+
+func TestAccountSettingsCopyTimingWithoutChangingLakeOrBookingChoices(t *testing.T) {
+	lake, _ := destinations.Resolve("")
+	request := DefaultLakeSettings(lake).ApplyTo(BookingRequest{
+		Name: "Existing visit", ProfileID: 5, TargetDate: "2030-06-20",
+		ConfirmationMode: RunModeAuto, Enabled: true, ScheduleEnabled: true,
+	})
+	settings := DefaultAccountSettings()
+	updated := settings.ApplyToBooking(request)
+	if updated.PrepMinutesBefore != 30 || updated.AuthDeadlineMinutesBefore != 5 ||
+		updated.PollDeadlineSeconds != 120 || updated.PollMinSeconds != 1.4 || updated.PollMaxSeconds != 3.6 {
+		t.Fatalf("global timing defaults were not copied: %+v", updated)
+	}
+	if updated.LakeID != request.LakeID || updated.Timezone != request.Timezone ||
+		updated.ReleaseTime != request.ReleaseTime || updated.EffectiveReleaseDaysBefore() != request.EffectiveReleaseDaysBefore() ||
+		updated.AllDayPassURL != request.AllDayPassURL || updated.HalfDayPassURL != request.HalfDayPassURL ||
+		!slices.Equal(updated.PreferredPasses, request.PreferredPasses) || updated.Name != request.Name ||
+		updated.ProfileID != request.ProfileID || updated.TargetDate != request.TargetDate ||
+		updated.ConfirmationMode != request.ConfirmationMode || updated.Enabled != request.Enabled ||
+		updated.ScheduleEnabled != request.ScheduleEnabled {
+		t.Fatalf("global defaults changed lake or request choices: %+v", updated)
+	}
+	settings.PrepMinutesBefore = 90
+	if updated.PrepMinutesBefore != 30 {
+		t.Fatal("copied request timing changed when defaults changed")
 	}
 }

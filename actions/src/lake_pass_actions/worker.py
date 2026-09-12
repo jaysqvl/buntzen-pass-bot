@@ -18,7 +18,7 @@ from .diagnostics import SafeDiagnostics
 from .errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
 from .environment import operator_env
 from .protocol import ControlInbox, JsonLineStream, PROTOCOL_VERSION
-from .providers import resolve_provider
+from .providers import resolve_action_provider
 from .secrets import RedactingLogFilter, SecretRedactor
 
 
@@ -55,7 +55,7 @@ def configure_logging(redactor: SecretRedactor) -> None:
 
 
 def _open_context(playwright: Any, config: ActionConfig) -> Any:
-    resolve_provider(config.lake_id, config.provider_id)
+    resolve_action_provider(config.command, config.lake_id, config.provider_id)
     channel = browser_selection(config.browser_channel, config.executable_path)
     executable = operator_env("BROWSER_EXECUTABLE").strip()
     if executable and (
@@ -199,7 +199,7 @@ def _allow_insecure_loopback_tls(config: ActionConfig) -> bool:
 
 
 def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optional[str]]:
-    provider = resolve_provider(config.lake_id, config.provider_id)
+    provider = resolve_action_provider(config.command, config.lake_id, config.provider_id)
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -295,7 +295,7 @@ def main() -> int:
         )
         inbox = ControlInbox(stream)
         control = ControlPort(stream=stream, inbox=inbox, redactor=redactor)
-        provider = resolve_provider(config.lake_id, config.provider_id)
+        provider = resolve_action_provider(config.command, config.lake_id, config.provider_id)
         control.status("starting", f"Starting isolated {provider.label} browser action.")
         message, pass_key = run_action(config, control)
         logger.info(

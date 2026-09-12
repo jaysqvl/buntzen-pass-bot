@@ -14,12 +14,16 @@ import (
 type EnqueueJobParams struct {
 	BookingRequestID *int64
 	ProfileID        int64
-	Command          model.JobCommand
-	RunMode          model.RunMode
-	RunImmediately   bool
-	DueAt            time.Time
-	ExpiresAt        *time.Time
-	DedupKey         string
+	// An explicit source is for supervised sign-in/pairing. Other jobs use
+	// the account default, snapshotted here for the lifetime of the job.
+	OTPSourceID              int64
+	DeduplicateProfileSignIn bool
+	Command                  model.JobCommand
+	RunMode                  model.RunMode
+	RunImmediately           bool
+	DueAt                    time.Time
+	ExpiresAt                *time.Time
+	DedupKey                 string
 }
 
 func (s *Store) EnqueueJob(ctx context.Context, userID int64, params EnqueueJobParams) (model.Job, error) {
@@ -36,6 +40,9 @@ func (s *Store) SystemEnqueueJob(ctx context.Context, params EnqueueJobParams) (
 }
 
 func (s *Store) enqueueJob(ctx context.Context, actorUserID int64, params EnqueueJobParams) (model.Job, error) {
+	if params.OTPSourceID < 0 || (params.OTPSourceID != 0 && params.Command != model.CommandAuthCheck) {
+		return model.Job{}, errors.New("an explicit OTP source is only supported for sign-in checks")
+	}
 	if !params.Command.Valid() {
 		return model.Job{}, fmt.Errorf("invalid job command %q", params.Command)
 	}
@@ -127,6 +134,40 @@ func (s *Store) enqueueJob(ctx context.Context, actorUserID int64, params Enqueu
 		return model.Job{}, fmt.Errorf("%w: booking request and profile owners differ", ErrConflict)
 	}
 	jobUserID = profileUserID
+	if params.DeduplicateProfileSignIn {
+		if params.Command != model.CommandAuthCheck || params.BookingRequestID != nil {
+			return model.Job{}, errors.New("sign-in deduplication requires a profile-only auth check")
+		}
+		var pending bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM jobs WHERE profile_id = ? AND user_id = ? AND booking_request_id IS NULL
+			AND command = 'auth-check' AND status IN ('queued', 'running', 'awaiting_approval')
+		)`, profileID, jobUserID).Scan(&pending); err != nil {
+			return model.Job{}, fmt.Errorf("check pending profile sign-in: %w", err)
+		}
+		if pending {
+			return model.Job{}, fmt.Errorf("%w: this sign-in already has a pending job", ErrConflict)
+		}
+	}
+	if params.OTPSourceID != 0 {
+		sourceID = params.OTPSourceID
+	} else {
+		var defaultSourceID int64
+		err := tx.QueryRowContext(ctx, `SELECT source_id FROM user_otp_preferences WHERE user_id = ?`, jobUserID).Scan(&defaultSourceID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return model.Job{}, fmt.Errorf("read default OTP source for job: %w", err)
+		}
+		if err == nil {
+			sourceID = defaultSourceID
+		}
+	}
+	var ownedSource bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM otp_sources WHERE id = ? AND user_id = ?)`, sourceID, jobUserID).Scan(&ownedSource); err != nil {
+		return model.Job{}, fmt.Errorf("verify job OTP source owner: %w", err)
+	}
+	if !ownedSource {
+		return model.Job{}, ErrNotFound
+	}
 	now := s.now()
 	if _, err := pruneJobHistory(ctx, tx, jobUserID, now); err != nil {
 		return model.Job{}, fmt.Errorf("prune job history before enqueue: %w", err)
@@ -210,11 +251,12 @@ func (s *Store) SystemClaimNextDueJobAt(ctx context.Context, workerOwner string,
 			SELECT candidate.id
 			FROM jobs AS candidate
 			JOIN users AS account ON account.id = candidate.user_id AND account.status = 'active'
-			JOIN profiles AS profile ON profile.id = candidate.profile_id
+			JOIN profiles AS profile ON profile.id = candidate.profile_id AND profile.user_id = candidate.user_id
+			JOIN otp_sources AS source ON source.id = candidate.otp_source_id AND source.user_id = candidate.user_id
 			LEFT JOIN booking_requests AS booking ON booking.id = candidate.booking_request_id
 			WHERE candidate.status = 'queued' AND candidate.cancel_requested = 0 AND candidate.due_at <= ?
 			AND (candidate.expires_at IS NULL OR candidate.expires_at > ?)
-			AND profile.enabled = 1 AND profile.otp_source_id = candidate.otp_source_id
+			AND profile.enabled = 1
 			AND (candidate.command <> 'book' OR EXISTS (
 				SELECT 1 FROM booking_reservations WHERE job_id = candidate.id
 				AND profile_id = candidate.profile_id
