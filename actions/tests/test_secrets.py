@@ -6,8 +6,8 @@ import os
 import unittest
 from unittest.mock import patch
 
-from buntzen_actions.secrets import RedactingLogFilter, SecretRedactor
-from buntzen_actions.worker import configure_logging
+from lake_pass_actions.secrets import RedactingLogFilter, SecretRedactor
+from lake_pass_actions.worker import configure_logging
 
 
 class SecretRedactorTests(unittest.TestCase):

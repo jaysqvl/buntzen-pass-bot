@@ -7,15 +7,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func TestMissingKeyCannotBeReplacedForExistingDatabase(t *testing.T) {
 	directory := t.TempDir()
 	t.Setenv("APPDATA_DIR", directory)
-	t.Setenv("BUNTZEN_MASTER_KEY_FILE", "")
+	t.Setenv("LAKE_PASS_MASTER_KEY_FILE", "")
 	keyPath := filepath.Join(directory, "master.key")
 	dbPath := filepath.Join(directory, "buntzen.db")
 	box, err := secretcrypto.LoadOrCreate(keyPath)
@@ -66,14 +66,14 @@ func TestExplicitMissingKeyCannotFallBackToLegacyKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	explicit := filepath.Join(t.TempDir(), "absent", "master.key")
-	t.Setenv("BUNTZEN_MASTER_KEY_FILE", explicit)
+	t.Setenv("LAKE_PASS_MASTER_KEY_FILE", explicit)
 	if err := run(context.Background(), []string{"migrate"}); err == nil {
 		t.Fatal("explicit missing key fell back to colocated key")
 	}
 	if _, err := os.Stat(filepath.Dir(explicit)); !os.IsNotExist(err) {
 		t.Fatalf("external key directory created: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(directory, "buntzen.db")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(directory, "lake-pass-bot.db")); !os.IsNotExist(err) {
 		t.Fatalf("database initialized despite explicit key failure: %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func testRelocatedExistingKey(t *testing.T, populated bool) {
 	t.Helper()
 	directory := t.TempDir()
 	t.Setenv("APPDATA_DIR", directory)
-	t.Setenv("BUNTZEN_MASTER_KEY_FILE", "")
+	t.Setenv("LAKE_PASS_MASTER_KEY_FILE", "")
 	if err := run(context.Background(), []string{"migrate"}); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func testRelocatedExistingKey(t *testing.T, populated bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		db, err := store.OpenMigrated(context.Background(), filepath.Join(directory, "buntzen.db"), box)
+		db, err := store.OpenMigrated(context.Background(), filepath.Join(directory, "lake-pass-bot.db"), box)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +129,7 @@ func testRelocatedExistingKey(t *testing.T, populated bool) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("BUNTZEN_MASTER_KEY_FILE", relocated)
+	t.Setenv("LAKE_PASS_MASTER_KEY_FILE", relocated)
 	if err := run(context.Background(), []string{"migrate"}); err != nil {
 		t.Fatalf("relocated key rejected: %v", err)
 	}
@@ -148,7 +148,7 @@ func testRelocatedExistingKey(t *testing.T, populated bool) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		db, err := store.OpenMigrated(context.Background(), filepath.Join(directory, "buntzen.db"), box)
+		db, err := store.OpenMigrated(context.Background(), filepath.Join(directory, "lake-pass-bot.db"), box)
 		if err != nil {
 			t.Fatal(err)
 		}

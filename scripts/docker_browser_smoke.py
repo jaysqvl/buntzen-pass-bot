@@ -93,13 +93,14 @@ def check_browser_arguments():
 
 def worker(profile: Path, base_url: str, barrier: Path):
     from playwright.sync_api import sync_playwright
-    from buntzen_actions.config import ActionConfig
-    from buntzen_actions.worker import _chromium_user_agent, _open_context
+    from lake_pass_actions.config import ActionConfig
+    from lake_pass_actions.worker import _chromium_user_agent, _open_context
 
     config = ActionConfig.from_start({
         "v": 2, "type": "run.start", "run_id": "container-browser-smoke",
         "command": "auth-check", "mode": "auto",
         "config": {
+            "lake_id": "buntzen", "provider_id": "yodel",
             "profile_dir": str(profile), "headless": True,
             "vehicle_keyword": "fixture",
             "login_probe_url": "https://yodelportal.com/buntzen-lake",

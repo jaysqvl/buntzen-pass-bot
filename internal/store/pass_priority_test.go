@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestBookingPassPriorityRoundTripsAndSynchronizesLegacyFlags(t *testing.T) {

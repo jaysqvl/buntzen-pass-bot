@@ -1,5 +1,5 @@
-from .worker import main
+"""Preserve existing `python -m buntzen_actions` operator commands."""
 
+from lake_pass_actions.worker import main
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+raise SystemExit(main())

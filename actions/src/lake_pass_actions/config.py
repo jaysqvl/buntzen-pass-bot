@@ -8,7 +8,8 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from .errors import ProtocolError
-from .pass_types import PASS_PREFERENCES
+from .lakes import LEGACY_LAKE_ID, LEGACY_PROVIDER_ID, resolve_lake
+from .providers import resolve_provider
 from .protocol import validate_start_has_no_secrets
 
 
@@ -54,6 +55,8 @@ class ActionConfig:
     artifacts_dir: Optional[Path]
     release_at: Optional[datetime]
     auth_deadline_at: Optional[datetime]
+    lake_id: str = LEGACY_LAKE_ID
+    provider_id: str = LEGACY_PROVIDER_ID
 
     def allows_yodel_url(self, value: str) -> bool:
         try:
@@ -69,6 +72,13 @@ class ActionConfig:
         config = frame.get("config")
         if not isinstance(config, Mapping):
             raise ProtocolError("run.start config must be an object")
+
+        # Only absent keys use legacy defaults. Explicit unknown, blank, null,
+        # or mismatched selections must fail before credentials or browser use.
+        lake_id = config.get("lake_id", LEGACY_LAKE_ID)
+        lake = resolve_lake(lake_id)
+        provider_id = config.get("provider_id", lake.provider_id)
+        resolve_provider(lake_id, provider_id)
 
         run_id = _required_text(frame, "run_id")
         command = _required_text(frame, "command")
@@ -104,7 +114,7 @@ class ActionConfig:
             raise ProtocolError("pass_order must be an array of pass keys")
         pass_order = tuple(raw_order)
         if len(set(pass_order)) != len(pass_order) or any(
-            item not in PASS_PREFERENCES for item in pass_order
+            item not in lake.pass_preferences for item in pass_order
         ):
             raise ProtocolError(
                 "pass_order contains duplicate or unsupported pass keys"
@@ -207,6 +217,8 @@ class ActionConfig:
             artifacts_dir=artifacts_dir,
             release_at=release_at,
             auth_deadline_at=auth_deadline_at,
+            lake_id=lake_id,
+            provider_id=provider_id,
         )
 
 

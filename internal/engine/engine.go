@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/observability"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/actionproc"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/control"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/observability"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 var ErrUserCancelled = errors.New("job cancelled by operator")
@@ -250,20 +250,25 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 		return control.RunResult{}, err
 	}
 	var booking model.BookingRequest
-	if job.Command != model.CommandAuthCheck {
-		if job.BookingRequestID == nil {
-			return control.RunResult{}, errors.New("dry-run and book jobs require a booking request")
-		}
+	if job.BookingRequestID != nil {
 		booking, err = e.store.SystemGetBookingRequest(ctx, *job.BookingRequestID)
 		if err != nil {
 			return control.RunResult{}, err
 		}
+	} else if job.Command != model.CommandAuthCheck {
+		return control.RunResult{}, errors.New("dry-run and book jobs require a booking request")
+	}
+	if job.Command != model.CommandAuthCheck {
 		if err := booking.ValidateForOrigins(e.config.YodelOrigins); err != nil {
 			return control.RunResult{}, err
 		}
 		if _, err := bookingStartTiming(job, booking, time.Now()); err != nil {
 			return control.RunResult{}, err
 		}
+	}
+	lake, err := executionDestination(booking.LakeID)
+	if err != nil {
+		return control.RunResult{}, err
 	}
 	deadline, err := jobExecutionDeadline(job, booking, startedAt, interactive, checkout)
 	if err != nil {
@@ -324,6 +329,8 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 	}
 
 	startConfig := map[string]any{
+		"lake_id":               lake.ID,
+		"provider_id":           lake.ProviderID,
 		"profile_dir":           profileDir,
 		"login_probe_url":       profile.LoginProbeURL,
 		"allowed_yodel_origins": append([]string(nil), e.config.YodelOrigins...),
@@ -380,7 +387,8 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 	)
 	result, err = control.Run(ctx, control.RunInput{
 		JobID: job.ID, Command: job.Command, Mode: job.RunMode,
-		StartConfig: startConfig, Credentials: credentials,
+		ActionProviderID: lake.ProviderID,
+		StartConfig:      startConfig, Credentials: credentials,
 		Provider: provider, OTPFilter: filter,
 		OTPTimeout:  otpTimeout,
 		CancelGrace: cancelGrace, Hub: e.hub,
@@ -389,9 +397,9 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 				Executable: e.config.PythonExecutable,
 				Args:       []string{"-m", e.config.PythonModule},
 				Environment: []string{
-					"BUNTZEN_BROWSER_EXECUTABLE=" + e.config.BrowserExecutable,
+					"LAKE_PASS_BROWSER_EXECUTABLE=" + e.config.BrowserExecutable,
 					"PYTHONUNBUFFERED=1",
-					"BUNTZEN_ACTION_LOG_LEVEL=" + e.config.EffectiveLogLevel(),
+					"LAKE_PASS_ACTION_LOG_LEVEL=" + e.config.EffectiveLogLevel(),
 				},
 				CancelGrace: cancelGrace,
 				OnStderr: func(line string) {

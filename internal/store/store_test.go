@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestMigrateCreatesCleanSchemaAndRefusesLegacyDatabase(t *testing.T) {
@@ -29,7 +29,7 @@ func TestMigrateCreatesCleanSchemaAndRefusesLegacyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := store.SchemaVersion(ctx)
-	if err != nil || version != 6 {
+	if err != nil || version != 7 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 

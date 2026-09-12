@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func assertBookingPassChoices(t *testing.T, body string, choices []string) {

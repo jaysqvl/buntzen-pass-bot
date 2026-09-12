@@ -10,9 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/actionproc"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
 )
 
 var standaloneCode = regexp.MustCompile(`(^|[^0-9])[0-9]{4,8}([^0-9]|$)`)
@@ -30,18 +31,21 @@ type ActionProcess interface {
 type ProcessFactory func(context.Context) (ActionProcess, error)
 
 type RunInput struct {
-	JobID       int64
-	Command     model.JobCommand
-	Mode        model.RunMode
-	StartConfig map[string]any
-	Credentials model.ProfileCredentials
-	Provider    otp.Provider
-	OTPFilter   otp.Filter
-	OTPTimeout  time.Duration
-	CancelGrace time.Duration
-	Hub         *Hub
-	NewProcess  ProcessFactory
-	Hooks       RunHooks
+	// ActionProviderID identifies the browser adapter, independently of the OTP
+	// provider. Empty preserves callers predating destination selection.
+	ActionProviderID string
+	JobID            int64
+	Command          model.JobCommand
+	Mode             model.RunMode
+	StartConfig      map[string]any
+	Credentials      model.ProfileCredentials
+	Provider         otp.Provider
+	OTPFilter        otp.Filter
+	OTPTimeout       time.Duration
+	CancelGrace      time.Duration
+	Hub              *Hub
+	NewProcess       ProcessFactory
+	Hooks            RunHooks
 }
 
 // RunHooks bridge transient protocol activity to sanitized durable state.
@@ -79,6 +83,9 @@ type asyncResult struct {
 func Run(ctx context.Context, input RunInput) (result RunResult, runErr error) {
 	if input.NewProcess == nil || input.Provider == nil || input.Hub == nil {
 		return RunResult{}, errors.New("action process, OTP provider, and live hub are required")
+	}
+	if input.ActionProviderID == "" {
+		input.ActionProviderID = destinations.ProviderYodel
 	}
 	// The coordinator owns every process and asynchronous wait it starts. A
 	// terminal worker must release them even when its parent context stays alive.
@@ -147,10 +154,10 @@ func Run(ctx context.Context, input RunInput) (result RunResult, runErr error) {
 			if !ready {
 				protocol, protocolOK := frame.Payload["protocol"].(float64)
 				if frame.Type != "worker.ready" ||
-					stringValue(frame.Payload, "action") != "yodel" ||
+					stringValue(frame.Payload, "action") != input.ActionProviderID ||
 					!protocolOK || protocol != float64(actionproc.ProtocolVersion) {
 					process.Cancel(input.CancelGrace)
-					return RunResult{}, errors.New("action worker did not negotiate the Yodel v2 protocol")
+					return RunResult{}, fmt.Errorf("action worker did not negotiate the %s v%d protocol", input.ActionProviderID, actionproc.ProtocolVersion)
 				}
 				ready = true
 				if err := process.Send("run.start", map[string]any{

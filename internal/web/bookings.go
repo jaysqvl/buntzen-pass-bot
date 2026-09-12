@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,11 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/scheduler"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/engine"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/scheduler"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +74,65 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 
 const autoQueueOffNotice = "Auto-queueing is off for this server. New jobs must be queued manually. Already queued jobs remain scheduled; use Cancel job to stop one."
 
+func lakeName(id string) string {
+	lake, err := destinations.Resolve(id)
+	if err != nil {
+		return "Unsupported lake"
+	}
+	return lake.Name
+}
+
+func lakeReleasePolicy(lake destinations.Lake) string {
+	unit := "days"
+	if lake.ReleaseDaysBefore == 1 {
+		unit = "day"
+	}
+	return fmt.Sprintf("Passes release %d %s before your visit at the configured local time.", lake.ReleaseDaysBefore, unit)
+}
+
+func passOptionLabel(pass string) string {
+	switch model.PassType(pass) {
+	case model.PassAllDay:
+		return "All-day"
+	case model.PassAfternoon:
+		return "Afternoon"
+	case model.PassMorning:
+		return "Morning"
+	default:
+		return strings.ReplaceAll(pass, "_", " ")
+	}
+}
+
+type lakePassOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type lakeFormDefaults struct {
+	ID             string           `json:"id"`
+	Timezone       string           `json:"timezone"`
+	ReleaseTime    string           `json:"releaseTime"`
+	AllDayPassURL  string           `json:"allDayPassURL"`
+	HalfDayPassURL string           `json:"halfDayPassURL"`
+	ReleasePolicy  string           `json:"releasePolicy"`
+	Passes         []lakePassOption `json:"passes"`
+}
+
+func lakeSelectOption(lake destinations.Lake, selectedID string) selectOption {
+	defaults := lakeFormDefaults{
+		ID: lake.ID, Timezone: lake.Timezone, ReleaseTime: lake.ReleaseTime,
+		AllDayPassURL: lake.AllDayPassURL, HalfDayPassURL: lake.HalfDayPassURL,
+		ReleasePolicy: lakeReleasePolicy(lake),
+	}
+	for _, pass := range lake.SupportedPasses {
+		defaults.Passes = append(defaults.Passes, lakePassOption{Value: pass, Label: passOptionLabel(pass)})
+	}
+	// Only strings and slices are encoded; html/template escapes the result
+	// as an attribute, and the external client parses it as data, never code.
+	encoded, _ := json.Marshal(defaults)
+	return selectOption{Value: lake.ID, Label: lake.Name, Selected: lake.ID == selectedID, LakeDefaults: string(encoded)}
+}
+
 func bookingCard(booking model.BookingRequest, profileName string, schedulesEnabled bool, job *model.Job) listCard {
 	status, class := "No booking queued", ""
 	autoQueue := "Off for this booking"
@@ -89,7 +150,7 @@ func bookingCard(booking model.BookingRequest, profileName string, schedulesEnab
 		// even when the booking request specifies automatic confirmation.
 		confirmation = jobModeLabel(*job)
 	}
-	release := booking.ReleaseTime + " on the day before the target date · " + booking.Timezone
+	release := booking.ReleaseTime + " · " + booking.Timezone
 	if window, err := scheduler.WindowFor(booking); err == nil {
 		release = formatJobTime(window.ReleaseAt, window.ReleaseAt.Location())
 	}
@@ -101,6 +162,7 @@ func bookingCard(booking model.BookingRequest, profileName string, schedulesEnab
 		StatusClass: class,
 		URL:         url,
 		Fields: []labelValue{
+			{"Lake", lakeName(booking.EffectiveLakeID())},
 			{"Target date", booking.TargetDate + " · " + booking.Timezone},
 			{"Pass release", release},
 			{"Auto-queueing", autoQueue},
@@ -285,6 +347,7 @@ func (s *Server) bookingInput(r *http.Request, id int64) (model.BookingRequest, 
 	}
 	request := model.BookingRequest{
 		ID:                        id,
+		LakeID:                    r.Form.Get("lake_id"),
 		Name:                      r.Form.Get("name"),
 		ProfileID:                 parseInt64(r.Form.Get("profile_id")),
 		Enabled:                   checked(r, "enabled"),
@@ -331,25 +394,44 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	if len(s.config.YodelOrigins) > 0 {
 		defaultYodelOrigin = s.config.YodelOrigins[0]
 	}
-	yodelBaseURL := strings.TrimRight(defaultYodelOrigin, "/") + "/buntzen-lake"
-	localTimezone, err := time.LoadLocation("America/Vancouver")
+	lakeID := r.URL.Query().Get("lake_id")
+	if booking != nil {
+		lakeID = booking.EffectiveLakeID()
+	}
+	if r.Method == http.MethodPost {
+		lakeID = r.Form.Get("lake_id")
+	}
+	lake, err := destinations.Resolve(lakeID)
+	if err != nil {
+		if r.Method == http.MethodGet {
+			http.Error(w, "unsupported lake", http.StatusBadRequest)
+			return
+		}
+		// Keep the rejected choice visible while rendering validation errors.
+		lake, _ = destinations.Resolve(destinations.DefaultLakeID)
+	}
+	lake = lake.WithOrigin(defaultYodelOrigin)
+	localTimezone, err := time.LoadLocation(lake.Timezone)
 	if err != nil {
 		localTimezone = time.Local
 	}
 	value := model.BookingRequest{
+		LakeID:                    lake.ID,
 		Enabled:                   true,
 		TargetDate:                time.Now().In(localTimezone).AddDate(0, 0, 1).Format(time.DateOnly),
-		Timezone:                  "America/Vancouver",
-		ReleaseTime:               "07:00",
+		Timezone:                  lake.Timezone,
+		ReleaseTime:               lake.ReleaseTime,
 		PrepMinutesBefore:         30,
 		AuthDeadlineMinutesBefore: 5,
 		PollDeadlineSeconds:       120,
 		PollMinSeconds:            1.4,
 		PollMaxSeconds:            3.6,
 		ConfirmationMode:          model.RunModeManual,
-		AllDayPassURL:             yodelBaseURL + "/All-Day-Pass",
-		HalfDayPassURL:            yodelBaseURL + "/Half-Day-Pass",
-		PreferredPasses:           []model.PassType{model.PassAllDay, model.PassAfternoon, model.PassMorning},
+		AllDayPassURL:             lake.AllDayPassURL,
+		HalfDayPassURL:            lake.HalfDayPassURL,
+	}
+	for _, pass := range lake.SupportedPasses {
+		value.PreferredPasses = append(value.PreferredPasses, model.PassType(pass))
 	}
 	if booking != nil {
 		value = *booking
@@ -366,6 +448,13 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		parsed, _ := s.bookingInput(r, value.ID)
 		value = parsed
 	}
+	lakeOptions := make([]selectOption, 0, len(destinations.List()))
+	for _, supported := range destinations.List() {
+		lakeOptions = append(lakeOptions, lakeSelectOption(supported.WithOrigin(defaultYodelOrigin), value.EffectiveLakeID()))
+	}
+	if _, err := destinations.Resolve(value.LakeID); err != nil {
+		lakeOptions = append(lakeOptions, selectOption{Value: value.LakeID, Label: "Unsupported lake — choose a supported lake", Selected: true})
+	}
 	profileOptions := []selectOption{{Value: "", Label: "Choose a profile", Selected: value.ProfileID == 0}}
 	for _, profile := range profiles {
 		if !profile.Enabled && (booking == nil || profile.ID != booking.ProfileID) {
@@ -380,12 +469,11 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		if i < len(order) {
 			selected = string(order[i])
 		}
-		options := []selectOption{
-			{Value: string(model.PassAllDay), Label: "All-day"},
-			{Value: string(model.PassAfternoon), Label: "Afternoon"},
-			{Value: string(model.PassMorning), Label: "Morning"},
-			{Value: "", Label: "None"},
+		options := make([]selectOption, 0, len(lake.SupportedPasses)+1)
+		for _, pass := range lake.SupportedPasses {
+			options = append(options, selectOption{Value: pass, Label: passOptionLabel(pass)})
 		}
+		options = append(options, selectOption{Value: "", Label: "None"})
 		for j := range options {
 			options[j].Selected = options[j].Value == selected
 		}
@@ -396,14 +484,15 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		actionURL, heading, submit = fmt.Sprintf("/bookings/%d", booking.ID), "Edit booking request", "Save booking"
 	}
 	data := formData{
-		BaseData:    base(r, heading),
-		Eyebrow:     "Booking policy",
-		Heading:     heading,
-		Description: "The release occurs at the selected time on target date minus one day.",
-		CancelURL:   "/bookings",
-		ActionURL:   actionURL,
-		SubmitLabel: submit,
-		FormError:   formError,
+		BaseData:      base(r, heading),
+		Eyebrow:       "Booking policy",
+		Heading:       heading,
+		Description:   lakeReleasePolicy(lake),
+		CancelURL:     "/bookings",
+		ActionURL:     actionURL,
+		SubmitLabel:   submit,
+		FormError:     formError,
+		LakeSelection: true,
 	}
 	autoQueueHelp := "Turning this off does not cancel jobs already queued; cancel them from Jobs."
 	if !s.config.SchedulesEnabled {
@@ -413,6 +502,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		{
 			Title: "Request",
 			Fields: []formField{
+				{Name: "lake_id", Label: "Lake", Type: "select", Required: true, Options: lakeOptions, Help: "Choose where you want to book a pass."},
 				{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true},
 				{Name: "profile_id", Label: "Yodel profile", Type: "select", Required: true, Options: profileOptions},
 				{Name: "target_date", Label: "Target date", Type: "date", Value: value.TargetDate, Required: true},
@@ -434,7 +524,8 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 			},
 		},
 		{
-			Title: "Yodel URLs",
+			Title: "Pass URLs",
+			Help:  "Defaults come from the selected lake. Custom URLs must stay on an operator-approved booking site.",
 			Fields: []formField{
 				{Name: "all_day_pass_url", Label: "All-day pass URL", Type: "url", Value: value.AllDayPassURL},
 				{Name: "half_day_pass_url", Label: "Half-day pass URL", Type: "url", Value: value.HalfDayPassURL},

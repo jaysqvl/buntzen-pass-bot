@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "go",
-      "package-name": "buntzen-pass-bot",
+      "package-name": "lake-pass-bot",
       "bump-minor-pre-major": true,
       "extra-files": [
         {
@@ -15,7 +15,9 @@
           "type": "generic",
           "path": "actions/uv.lock"
         }
-      ]
+      ],
+      "component": "lake-pass-bot"
     }
-  }
+  },
+  "bootstrap-sha": "7b752a5c72a5b5eda23827058f6267150d4d1baf"
 }

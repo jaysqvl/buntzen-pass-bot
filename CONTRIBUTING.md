@@ -28,7 +28,8 @@ implementation is usually better here than a reusable framework.
 
 | Area | Responsibility |
 | --- | --- |
-| `cmd/buntzen` | Process setup and CLI dispatch |
+| `cmd/lake-pass-bot` | Process setup and CLI dispatch |
+| `internal/destinations` | Supported lakes, provider IDs, URL and release defaults |
 | `internal/web` | HTTP authorization, forms, rendering, live job presentation |
 | `internal/engine` | Queueing, scheduling, job execution, provider composition, storage maintenance |
 | `internal/store` | SQLite transactions, ownership, leases, durable state and booking admission |
@@ -36,7 +37,10 @@ implementation is usually better here than a reusable framework.
 | `internal/control` | Worker protocol orchestration and transient OTP/approval state |
 | `internal/actionproc` | Process lifetime, bounded JSON-lines and stderr transport |
 | `internal/otp` and adapters | Inbox matching and provider-specific read operations |
-| `actions/src/buntzen_actions` | Browser interaction behind the versioned worker protocol |
+| `actions/src/lake_pass_actions/lakes` | Lake-specific pass choices and matching rules |
+| `actions/src/lake_pass_actions/providers` | Provider browser interaction behind the versioned worker protocol |
+
+See [lakes and providers](docs/lakes.md) before extending destination support.
 
 Keep owner-scoped and system-authorized store entry points distinct. Keep
 reservation uniqueness in SQLite so it covers multiple requests and processes.

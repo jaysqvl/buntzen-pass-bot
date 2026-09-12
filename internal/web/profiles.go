@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +116,8 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 	if len(s.config.YodelOrigins) > 0 {
 		yodelOrigin = s.config.YodelOrigins[0]
 	}
-	value := model.Profile{Headless: true, Enabled: true, DefaultTimeoutMS: 15000, LoginProbeURL: yodelOrigin + "/buntzen-lake"}
+	lake, _ := destinations.Resolve(destinations.DefaultLakeID)
+	value := model.Profile{Headless: true, Enabled: true, DefaultTimeoutMS: 15000, LoginProbeURL: lake.WithOrigin(yodelOrigin).LoginURL}
 	if profile != nil {
 		value = *profile
 	}
@@ -169,7 +171,7 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 			Help:  "Enter the 10-digit Canadian/US mobile number used by Yodel. A leading +1 and common separators are accepted. If this profile predates mobile login support, re-enter the number before enabling it.",
 			Fields: []formField{
 				{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: secretPlaceholder(creating), Required: creating},
-				{Name: "login_probe_url", Label: "Yodel login URL", Type: "url", Value: value.LoginProbeURL, Required: true, Help: "Used for pairing and signing in. Keep the default Buntzen Lake URL unless your host uses another approved Yodel site."},
+				{Name: "login_probe_url", Label: "Yodel login URL", Type: "url", Value: value.LoginProbeURL, Required: true, Help: "Used for pairing and signing in to the booking provider. Keep the default unless your operator has approved another provider site."},
 			},
 		},
 		{

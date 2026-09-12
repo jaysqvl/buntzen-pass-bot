@@ -76,15 +76,15 @@ jobs:
         run: uv run --project actions python -m compileall -q actions/src
       - name: Build distributions with the pinned backend
         run: |
-          uv export --project actions --locked --only-group dev --format requirements-txt --no-emit-project --output-file /tmp/buntzen-build-requirements.txt
-          uv build actions --no-config --build-constraints /tmp/buntzen-build-requirements.txt --require-hashes --out-dir /tmp/buntzen-dist
+          uv export --project actions --locked --only-group dev --format requirements-txt --no-emit-project --output-file /tmp/lake-pass-build-requirements.txt
+          uv build actions --no-config --build-constraints /tmp/lake-pass-build-requirements.txt --require-hashes --out-dir /tmp/lake-pass-dist
       - name: Reject altered build backend artifacts
         run: uv run --project actions --locked python scripts/check_build_backend.py
       - name: Dependency audit
         run: |
-          uv export --project actions --locked --format requirements-txt --no-dev --no-emit-project --output-file /tmp/buntzen-requirements.txt
-          uvx --from pip-audit==2.9.0 pip-audit --disable-pip -r /tmp/buntzen-requirements.txt
-          uvx --from pip-audit==2.9.0 pip-audit --disable-pip -r /tmp/buntzen-build-requirements.txt
+          uv export --project actions --locked --format requirements-txt --no-dev --no-emit-project --output-file /tmp/lake-pass-requirements.txt
+          uvx --from pip-audit==2.9.0 pip-audit --disable-pip -r /tmp/lake-pass-requirements.txt
+          uvx --from pip-audit==2.9.0 pip-audit --disable-pip -r /tmp/lake-pass-build-requirements.txt
 
   integration:
     runs-on: ubuntu-latest
@@ -106,7 +106,7 @@ jobs:
       - name: Vet browser integration
         run: go vet -tags=integration ./integration/...
       - name: Browser integration
-        run: BUNTZEN_E2E_PYTHON="$PWD/actions/.venv/bin/python" go test -race -count=1 -tags=integration -timeout=5m ./integration/...
+        run: LAKE_PASS_E2E_PYTHON="$PWD/actions/.venv/bin/python" go test -race -count=1 -tags=integration -timeout=5m ./integration/...
 
   docker:
     runs-on: ubuntu-latest
@@ -118,21 +118,21 @@ jobs:
       - name: Validate Compose
         env:
           BLUEBUBBLES_URL: http://bluebubbles.example:1234
-          BUNTZEN_ALLOWED_HOSTS: buntzen.example
-          BUNTZEN_APPDATA_PATH: /tmp/buntzen-appdata
-          BUNTZEN_SECCOMP_PROFILE_PATH: /tmp/buntzen-seccomp.json
-          BUNTZEN_WEB_PORT: "18091"
+          LAKE_PASS_ALLOWED_HOSTS: lake-pass.example
+          LAKE_PASS_APPDATA_PATH: /tmp/lake-pass-appdata
+          LAKE_PASS_SECCOMP_PROFILE_PATH: /tmp/lake-pass-seccomp.json
+          LAKE_PASS_WEB_PORT: "18091"
         run: |
           docker compose -f deploy/portainer.yml config --format json | jq -e '
-            .services["buntzen-pass-bot"].image == "ghcr.io/jaysqvl/buntzen-pass-bot:latest"
+            .services["lake-pass-bot"].image == "ghcr.io/jaysqvl/lake-pass-bot:latest"
           ' >/dev/null
-          export BUNTZEN_IMAGE=ghcr.io/example/buntzen-pass-bot@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-          docker compose -f deploy/portainer.yml config --format json | jq -e --arg image "$BUNTZEN_IMAGE" '
-            .services["buntzen-pass-bot"].image == $image
+          export LAKE_PASS_IMAGE=ghcr.io/example/lake-pass-bot@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          docker compose -f deploy/portainer.yml config --format json | jq -e --arg image "$LAKE_PASS_IMAGE" '
+            .services["lake-pass-bot"].image == $image
           ' >/dev/null
           for manifest in docker-compose.yml deploy/portainer.yml; do
             docker compose -f "$manifest" config --format json | jq -e '
-              .services["buntzen-pass-bot"] |
+              .services["lake-pass-bot"] |
               (.cpus | tonumber) == 2 and
               (.mem_limit | tonumber) == (4 * 1024 * 1024 * 1024) and
               (.memswap_limit | tonumber) == (4 * 1024 * 1024 * 1024) and
@@ -140,38 +140,64 @@ jobs:
               (.tmpfs | length == 2) and
               (.volumes | any(.target == "/run/buntzen-key" and .read_only == true))
             ' >/dev/null
-            BUNTZEN_KEY_DIRECTORY_PATH=/tmp/separate-key \
-              BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key \
+            LAKE_PASS_KEY_DIRECTORY_PATH=/tmp/separate-key \
+              LAKE_PASS_MASTER_KEY_FILE=/run/buntzen-key/master.key \
               docker compose -f "$manifest" config --format json | jq -e '
-                .services["buntzen-pass-bot"] |
-                .environment.BUNTZEN_MASTER_KEY_FILE == "/run/buntzen-key/master.key" and
+                .services["lake-pass-bot"] |
+                .environment.LAKE_PASS_MASTER_KEY_FILE == "/run/buntzen-key/master.key" and
                 (.volumes | any(.source == "/tmp/separate-key" and .target == "/run/buntzen-key" and .read_only == true))
               ' >/dev/null
           done
+      - name: Validate legacy Compose settings during upgrade
+        env:
+          BLUEBUBBLES_URL: http://bluebubbles.example:1234
+          BUNTZEN_ALLOWED_HOSTS: legacy.example
+          BUNTZEN_APPDATA_PATH: /tmp/legacy-appdata
+          BUNTZEN_SECCOMP_PROFILE_PATH: /tmp/legacy-seccomp.json
+          BUNTZEN_WEB_PORT: "18092"
+          BUNTZEN_IMAGE: ghcr.io/example/legacy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          BUNTZEN_MASTER_KEY_FILE: /run/buntzen-key/master.key
+          BUNTZEN_DEBUG: "true"
+        run: |
+          docker compose -f deploy/portainer.yml config --format json | jq -e --arg image "$BUNTZEN_IMAGE" '
+            .services["lake-pass-bot"] |
+            .image == $image and
+            .environment.LAKE_PASS_ALLOWED_HOSTS == "legacy.example" and
+            .environment.LAKE_PASS_MASTER_KEY_FILE == "/run/buntzen-key/master.key" and
+            .environment.LAKE_PASS_DEBUG == "true" and
+            (.ports | any(.published == "18092")) and
+            (.volumes | any(.source == "/tmp/legacy-appdata" and .target == "/appdata")) and
+            (.volumes | any(.source == "/tmp/legacy-appdata" and .target == "/run/buntzen-key" and .read_only == true))
+          ' >/dev/null
+          LAKE_PASS_DEBUG=false LAKE_PASS_MASTER_KEY_FILE= \
+            docker compose -f deploy/portainer.yml config --format json | jq -e '
+              .services["lake-pass-bot"].environment |
+              .LAKE_PASS_DEBUG == "false" and .LAKE_PASS_MASTER_KEY_FILE == ""
+            ' >/dev/null
       - name: Build amd64 image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           build-args: |
-            BUNTZEN_VERSION=0.0.0-ci
-            BUNTZEN_REVISION=${{ github.sha }}
+            LAKE_PASS_VERSION=0.0.0-ci
+            LAKE_PASS_REVISION=${{ github.sha }}
           context: .
           load: true
           no-cache: ${{ github.event_name == 'schedule' }}
           pull: true
           push: false
           platforms: linux/amd64
-          tags: buntzen-pass-bot:ci
+          tags: lake-pass-bot:ci
       - name: Runtime container smoke test
         env:
           EXPECTED_REVISION: ${{ github.sha }}
-        run: bash scripts/docker_smoke.sh buntzen-pass-bot:ci 0.0.0-ci "$EXPECTED_REVISION"
+        run: bash scripts/docker_smoke.sh lake-pass-bot:ci 0.0.0-ci "$EXPECTED_REVISION"
       - name: Scan runtime image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           exit-code: "1"
           format: table
           hide-progress: true
-          image-ref: buntzen-pass-bot:ci
+          image-ref: lake-pass-bot:ci
           ignore-unfixed: false
           scanners: vuln
           severity: HIGH,CRITICAL

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/lockfile"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
+	"github.com/jaysqvl/lake-pass-bot/internal/lockfile"
 	_ "modernc.org/sqlite"
 )
 

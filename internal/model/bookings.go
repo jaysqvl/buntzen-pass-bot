@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/origin"
 )
 
 type PassType string
@@ -23,6 +24,7 @@ type BookingRequest struct {
 	ID                        int64
 	UserID                    int64
 	Name                      string
+	LakeID                    string
 	ProfileID                 int64
 	Enabled                   bool
 	ScheduleEnabled           bool
@@ -49,6 +51,13 @@ type BookingRequest struct {
 	UpdatedAt      time.Time
 }
 
+func (r BookingRequest) EffectiveLakeID() string {
+	if r.LakeID == "" {
+		return destinations.DefaultLakeID
+	}
+	return r.LakeID
+}
+
 func (r BookingRequest) PassOrder() []PassType {
 	if r.PreferredPasses != nil {
 		return slices.Clone(r.PreferredPasses)
@@ -68,6 +77,10 @@ func (r BookingRequest) PassOrder() []PassType {
 
 func (r BookingRequest) Validate() error {
 	var problems []string
+	lake, lakeErr := destinations.Resolve(r.LakeID)
+	if lakeErr != nil {
+		problems = append(problems, lakeErr.Error())
+	}
 	if strings.TrimSpace(r.Name) == "" {
 		problems = append(problems, "name is required")
 	} else if len(r.Name) > MaxResourceNameBytes {
@@ -113,8 +126,8 @@ func (r BookingRequest) Validate() error {
 	}
 	seen := make(map[PassType]bool, len(passes))
 	for _, pass := range passes {
-		if pass != PassAllDay && pass != PassAfternoon && pass != PassMorning {
-			problems = append(problems, "pass preferences must be all-day, afternoon, or morning")
+		if lakeErr == nil && !slices.Contains(lake.SupportedPasses, string(pass)) {
+			problems = append(problems, "pass preference is not supported by the selected lake")
 		} else if seen[pass] {
 			problems = append(problems, "each pass preference can only be selected once")
 		}

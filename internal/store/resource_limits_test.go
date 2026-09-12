@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestDurableResourceCountsAreBoundedAcrossDatabaseHandles(t *testing.T) {

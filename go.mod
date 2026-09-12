@@ -1,4 +1,4 @@
-module github.com/jaysqvl/buntzen-pass-bot
+module github.com/jaysqvl/lake-pass-bot
 
 go 1.27.1
 

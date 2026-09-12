@@ -16,12 +16,13 @@ from .config import ActionConfig, browser_selection
 from .control import ControlPort
 from .diagnostics import SafeDiagnostics
 from .errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
+from .environment import operator_env
 from .protocol import ControlInbox, JsonLineStream, PROTOCOL_VERSION
+from .providers import resolve_provider
 from .secrets import RedactingLogFilter, SecretRedactor
-from .yodel import YodelAction
 
 
-logger = logging.getLogger("buntzen_actions.worker")
+logger = logging.getLogger("lake_pass_actions.worker")
 
 EXIT_FAILED = 1
 EXIT_CANCELLED = 2
@@ -42,7 +43,7 @@ def configure_logging(redactor: SecretRedactor) -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
-    level_name = os.environ.get("BUNTZEN_ACTION_LOG_LEVEL", "info").strip().lower()
+    level_name = operator_env("ACTION_LOG_LEVEL", "info").strip().lower()
     levels = {
         "debug": logging.DEBUG,
         "info": logging.INFO,
@@ -54,8 +55,9 @@ def configure_logging(redactor: SecretRedactor) -> None:
 
 
 def _open_context(playwright: Any, config: ActionConfig) -> Any:
+    resolve_provider(config.lake_id, config.provider_id)
     channel = browser_selection(config.browser_channel, config.executable_path)
-    executable = os.environ.get("BUNTZEN_BROWSER_EXECUTABLE", "").strip()
+    executable = operator_env("BROWSER_EXECUTABLE").strip()
     if executable and (
         not os.path.isabs(executable)
         or len(executable.encode("utf-8")) > 2048
@@ -180,12 +182,12 @@ def _browser_channel_executable(channel: str) -> str:
         if resolved:
             return resolved
     raise ActionError(
-        "Chrome is not installed; ask the operator to configure BUNTZEN_BROWSER_EXECUTABLE"
+        "Chrome is not installed; ask the operator to configure LAKE_PASS_BROWSER_EXECUTABLE"
     )
 
 
 def _allow_insecure_loopback_tls(config: ActionConfig) -> bool:
-    if os.environ.get("BUNTZEN_ACTIONPROC_HELPER") != "e2e-local-tls":
+    if operator_env("ACTIONPROC_HELPER") != "e2e-local-tls":
         return False
     hostname = urlparse(config.login_probe_url).hostname
     if hostname == "localhost":
@@ -197,6 +199,7 @@ def _allow_insecure_loopback_tls(config: ActionConfig) -> bool:
 
 
 def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optional[str]]:
+    provider = resolve_provider(config.lake_id, config.provider_id)
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -222,7 +225,7 @@ def run_action(config: ActionConfig, control: ControlPort) -> tuple[str, Optiona
                 context=context, base_dir=config.artifacts_dir
             )
             page = context.pages[0] if context.pages else context.new_page()
-            action = YodelAction(
+            action = provider.create_action(
                 page=page,
                 config=config,
                 control=control,
@@ -292,7 +295,8 @@ def main() -> int:
         )
         inbox = ControlInbox(stream)
         control = ControlPort(stream=stream, inbox=inbox, redactor=redactor)
-        control.status("starting", "Starting isolated Yodel browser action.")
+        provider = resolve_provider(config.lake_id, config.provider_id)
+        control.status("starting", f"Starting isolated {provider.label} browser action.")
         message, pass_key = run_action(config, control)
         logger.info(
             "Action completed run_id=%s command=%s status=succeeded",

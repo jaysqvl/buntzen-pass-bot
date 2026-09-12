@@ -7,7 +7,7 @@
   <meta name="referrer" content="same-origin">
   <meta name="htmx-config" content='{"historyCacheSize":0,"includeIndicatorStyles":false}'>
   <link rel="icon" type="image/svg+xml" href="{{assetURL "favicon.svg"}}">
-  <title>{{if .Title}}{{.Title}} · {{end}}Buntzen Bot</title>
+  <title>{{if .Title}}{{.Title}} · {{end}}Lake Pass Bot</title>
   <link rel="stylesheet" href="{{assetURL "app.css"}}">
   <script defer src="{{assetURL "htmx.min.js"}}"></script>
   <script defer src="{{assetURL "app.js"}}"></script>
@@ -15,7 +15,7 @@
 <body>
   {{if .Authenticated}}
   <header class="topbar">
-    <a class="brand" href="/">Buntzen <span>Bot</span></a>
+    <a class="brand" href="/">Lake Pass <span>Bot</span></a>
     <nav>
       <a href="/">Setup</a>
       <a href="/bookings">Bookings</a>
@@ -45,7 +45,7 @@
   </main>
   {{with appBuild}}
   <footer id="build-info" class="app-footer" aria-label="Application version" data-version="{{.Version}}" data-revision="{{.Revision}}">
-    <span>Buntzen Bot</span>
+    <span>Lake Pass Bot</span>
     <div class="build-details">
       {{if .ReleaseURL}}<a class="release-version" href="{{.ReleaseURL}}" target="_blank" rel="noopener noreferrer" aria-label="Release notes for {{.Label}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}
       {{if .CommitURL}}<a class="build-revision" href="{{.CommitURL}}" target="_blank" rel="noopener noreferrer" title="Build {{.Revision}}">Build {{.ShortRevision}}</a>{{end}}

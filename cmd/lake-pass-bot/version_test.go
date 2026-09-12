@@ -9,18 +9,18 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo"
+	"github.com/jaysqvl/lake-pass-bot/internal/buildinfo"
 )
 
 func TestVersionCommandDoesNotLoadRuntimeConfigurationOrCreateAppdata(t *testing.T) {
 	appdata := filepath.Join(t.TempDir(), "uninitialized-appdata")
 	command := exec.Command(os.Args[0], "-test.run=^TestVersionCommandProcess$")
 	command.Env = append(os.Environ(),
-		"BUNTZEN_VERSION_TEST_PROCESS=1",
+		"LAKE_PASS_VERSION_TEST_PROCESS=1",
 		"APPDATA_DIR="+appdata,
 		"MAX_CONCURRENT_JOBS=invalid-runtime-setting",
-		"BUNTZEN_VERSION=999.999.999",
-		"BUNTZEN_REVISION=runtime-overrides-do-not-identify-a-build",
+		"LAKE_PASS_VERSION=999.999.999",
+		"LAKE_PASS_REVISION=runtime-overrides-do-not-identify-a-build",
 	)
 	output, err := command.Output()
 	if err != nil {
@@ -43,13 +43,13 @@ func TestVersionCommandDoesNotLoadRuntimeConfigurationOrCreateAppdata(t *testing
 
 func TestVersionCommandRejectsArgumentsBeforeRuntimeSetup(t *testing.T) {
 	t.Setenv("MAX_CONCURRENT_JOBS", "invalid-runtime-setting")
-	if err := run(context.Background(), []string{"version", "unexpected"}); err == nil || err.Error() != "usage: buntzen version" {
+	if err := run(context.Background(), []string{"version", "unexpected"}); err == nil || err.Error() != "usage: lake-pass-bot version" {
 		t.Fatalf("version with an argument: %v", err)
 	}
 }
 
 func TestVersionCommandProcess(t *testing.T) {
-	if os.Getenv("BUNTZEN_VERSION_TEST_PROCESS") != "1" {
+	if os.Getenv("LAKE_PASS_VERSION_TEST_PROCESS") != "1" {
 		return
 	}
 	if err := run(context.Background(), []string{"version"}); err != nil {

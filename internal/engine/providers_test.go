@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/egress"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp/bluebubbles"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func TestPairingPrerequisitesIdentifyTheProfileToCorrect(t *testing.T) {
@@ -171,6 +171,8 @@ emit("worker.ready", action="yodel", protocol=2)
 start = json.loads(sys.stdin.readline())
 assert start["type"] == "run.start"
 config = start["config"]
+assert config["lake_id"] == "buntzen"
+assert config["provider_id"] == "yodel"
 assert config["login_probe_url"] == "https://example.test/profile-login"
 if start["command"] == "auth-check":
     assert not ({"target_date", "timezone", "all_day_pass_url", "half_day_pass_url", "pass_order", "release_at", "auth_deadline_at"} & config.keys())

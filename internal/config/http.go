@@ -3,26 +3,25 @@ package config
 import (
 	"errors"
 	"net/netip"
-	"os"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
+	"github.com/jaysqvl/lake-pass-bot/internal/origin"
 )
 
 func (c *Config) loadHTTPBoundary() error {
-	c.PublicOrigin = strings.TrimSpace(os.Getenv("BUNTZEN_PUBLIC_ORIGIN"))
+	c.PublicOrigin = strings.TrimSpace(Env("LAKE_PASS_PUBLIC_ORIGIN"))
 	if c.PublicOrigin != "" {
 		canonical, err := origin.Canonical(c.PublicOrigin)
 		if err != nil {
-			return errors.New("BUNTZEN_PUBLIC_ORIGIN must be an exact HTTPS origin without a path")
+			return errors.New("LAKE_PASS_PUBLIC_ORIGIN must be an exact HTTPS origin without a path")
 		}
 		c.PublicOrigin = canonical
 	}
-	if raw := strings.TrimSpace(os.Getenv("BUNTZEN_TRUSTED_PROXIES")); raw != "" {
+	if raw := strings.TrimSpace(Env("LAKE_PASS_TRUSTED_PROXIES")); raw != "" {
 		for _, value := range strings.Split(raw, ",") {
 			prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
 			if err != nil {
-				return errors.New("BUNTZEN_TRUSTED_PROXIES must contain connector IP CIDRs")
+				return errors.New("LAKE_PASS_TRUSTED_PROXIES must contain connector IP CIDRs")
 			}
 			c.TrustedProxies = append(c.TrustedProxies, prefix.Masked())
 		}
@@ -35,7 +34,7 @@ func (c *Config) loadHTTPBoundary() error {
 func (c Config) ValidateHTTPBoundary() error {
 	if c.PublicOrigin == "" {
 		if len(c.TrustedProxies) != 0 {
-			return errors.New("trusted proxies require BUNTZEN_PUBLIC_ORIGIN")
+			return errors.New("trusted proxies require LAKE_PASS_PUBLIC_ORIGIN")
 		}
 		return nil
 	}

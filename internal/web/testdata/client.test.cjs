@@ -18,6 +18,7 @@ class Element {
     this.disabled = false;
   }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
+  get selectedOptions() { return this.children.filter(child => child.tagName === 'OPTION' && child.value === this.value); }
   set textContent(value) { this.replaceChildren(); this._text = value; }
   setAttribute(name, value) { this.attributes[name] = value; }
   getAttribute(name) { return this.attributes[name]; }
@@ -45,11 +46,15 @@ class Element {
   closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector); }
 }
 
-function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, flash} = {}) {
+function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, flash, booking} = {}) {
   const ids = ['live-job', 'otp-code', 'otp-panel', 'pairing-candidates', 'pairing-panel',
     'job-message', 'job-pill', 'approval-panel', 'job-events', 'job-status', 'job-started',
     'job-finished', 'job-confirmation', 'cancel-job', 'notifications'];
   const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
+  if (booking) {
+    nodes['booking-form'] = booking.form;
+    nodes['lake-release-policy'] = booking.policy;
+  }
   if (flash) nodes.notifications.append(flash);
   nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf', lastEventId: '7'};
   nodes['job-status'].textContent = 'queued';
@@ -86,6 +91,84 @@ function openPage({fetchResult = async () => new Response(null, {status: 204}), 
 }
 
 function openJob(fetchResult) { return openPage({fetchResult}); }
+
+function bookingFixture() {
+  const values = {
+    lake_id: 'buntzen', timezone: 'UTC', release_time: '11:00',
+    all_day_pass_url: 'https://example.test/custom-all', half_day_pass_url: 'https://example.test/custom-half',
+    pass_priority_1: 'morning', pass_priority_2: '', pass_priority_3: 'all_day',
+    name: 'Weekend plans', target_date: '2030-07-20', profile_id: '24', confirmation_mode: 'manual',
+    prep_minutes_before: '40', csrf_token: 'synthetic-csrf',
+  };
+  const fields = Object.fromEntries(Object.entries(values).map(([name, value]) => {
+    const field = new Element(name === 'lake_id' || name.startsWith('pass_priority_') ? 'select' : 'input');
+    field.value = value;
+    return [name, field];
+  }));
+  const definitions = [
+    {id: 'buntzen', timezone: 'America/Vancouver', releaseTime: '07:00',
+      allDayPassURL: 'https://example.test/buntzen-lake/All-Day-Pass', halfDayPassURL: 'https://example.test/buntzen-lake/Half-Day-Pass',
+      releasePolicy: 'Buntzen Lake releases 1 day before the visit.',
+      passes: [{value: 'all_day', label: 'All-day'}, {value: 'afternoon', label: 'Afternoon'}, {value: 'morning', label: 'Morning'}]},
+    {id: 'test-lake', timezone: 'Etc/UTC', releaseTime: '09:30',
+      allDayPassURL: 'https://example.test/test-lake/day', halfDayPassURL: '',
+      releasePolicy: 'Test Lake releases 3 days before the visit.',
+      passes: [{value: 'all_day', label: 'Day entry <test>'}]},
+  ];
+  for (const defaults of definitions) {
+    const option = new Element('option');
+    option.value = defaults.id;
+    option.dataset.lakeDefaults = JSON.stringify(defaults);
+    fields.lake_id.append(option);
+  }
+  const form = new Element('form');
+  form.elements = {namedItem: name => fields[name] || null};
+  const policy = new Element('p');
+  policy.textContent = 'Existing booking release policy';
+  return {form, policy, fields, definitions};
+}
+
+test('changing lakes replaces destination defaults and pass options while preserving trip choices', () => {
+  const booking = bookingFixture();
+  const page = openPage({liveJob: false, supportsEvents: false, booking});
+  const fields = booking.fields;
+  const preserved = ['name', 'target_date', 'profile_id', 'confirmation_mode', 'prep_minutes_before', 'csrf_token'];
+  const original = Object.fromEntries(preserved.map(name => [name, fields[name].value]));
+  fields.lake_id.value = 'test-lake';
+  fields.lake_id.listeners.change();
+  assert.equal(fields.timezone.value, 'Etc/UTC');
+  assert.equal(fields.release_time.value, '09:30');
+  assert.equal(fields.all_day_pass_url.value, 'https://example.test/test-lake/day');
+  assert.equal(fields.half_day_pass_url.value, '', 'an absent URL must clear the previous lake URL');
+  assert.equal(booking.policy.textContent, booking.definitions[1].releasePolicy);
+  assert.equal(fields.pass_priority_1.value, 'all_day');
+  assert.equal(fields.pass_priority_2.value, '');
+  assert.equal(fields.pass_priority_3.value, '');
+  for (const name of ['pass_priority_1', 'pass_priority_2', 'pass_priority_3']) {
+    assert.deepEqual(fields[name].children.map(option => option.value), ['all_day', '']);
+    assert.equal(fields[name].children[0].textContent, 'Day entry <test>');
+    assert.equal(fields[name].children[0].children.length, 0, 'pass labels must remain text');
+  }
+  assert.deepEqual(Object.fromEntries(preserved.map(name => [name, fields[name].value])), original);
+  fields.lake_id.value = 'buntzen';
+  fields.lake_id.listeners.change();
+  assert.equal(fields.timezone.value, 'America/Vancouver');
+  assert.equal(fields.release_time.value, '07:00');
+  assert.equal(fields.half_day_pass_url.value, booking.definitions[0].halfDayPassURL);
+  assert.deepEqual(['pass_priority_1', 'pass_priority_2', 'pass_priority_3'].map(name => fields[name].value), ['all_day', 'afternoon', 'morning']);
+  assert.equal(page.requests.length, 0);
+  assert.equal(page.connections, 0);
+});
+
+test('opening an existing booking and reselecting its lake preserves custom settings', () => {
+  const booking = bookingFixture();
+  const original = Object.fromEntries(Object.entries(booking.fields).map(([name, field]) => [name, field.value]));
+  const page = openPage({liveJob: false, booking});
+  booking.fields.lake_id.listeners.change();
+  assert.deepEqual(Object.fromEntries(Object.entries(booking.fields).map(([name, field]) => [name, field.value])), original);
+  assert.equal(booking.policy.textContent, 'Existing booking release policy');
+  assert.equal(page.requests.length, 0);
+});
 
 function notificationMessages(page) {
   return page.nodes.notifications.querySelectorAll('.notification-message').map(message => message.textContent);

@@ -4,7 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestWindowUsesPreviousLocalCalendarDayAcrossDST(t *testing.T) {
@@ -58,6 +59,27 @@ func TestShouldQueueUsesBoundedWindow(t *testing.T) {
 	}
 	if ShouldQueue(window.PollEndsAt.Add(time.Nanosecond), window) {
 		t.Fatal("queued after poll window")
+	}
+}
+
+func TestWindowUsesSelectedDestinationAndRejectsUnknown(t *testing.T) {
+	request := validRequest()
+	request.LakeID = destinations.DefaultLakeID
+	lake, err := destinations.Resolve(request.LakeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := WindowFor(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _ := time.Parse(time.DateOnly, request.TargetDate)
+	if got, want := window.ReleaseAt.Format(time.DateOnly), target.AddDate(0, 0, -lake.ReleaseDaysBefore).Format(time.DateOnly); got != want {
+		t.Fatalf("release date = %s, want destination rule %s", got, want)
+	}
+	request.LakeID = "unknown"
+	if _, err := WindowFor(request); err == nil {
+		t.Fatal("unknown lake received a release window")
 	}
 }
 

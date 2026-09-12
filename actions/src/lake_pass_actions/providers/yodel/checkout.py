@@ -7,7 +7,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from .errors import ActionError
+from ...errors import ActionError
 
 
 CONFIRMATION_TIMEOUT_SECONDS = 30.0

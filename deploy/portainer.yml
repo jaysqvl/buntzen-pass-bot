@@ -1,48 +1,49 @@
+# The renamed image must be published before using this template; see docs/rebrand-migration.md.
 services:
-  buntzen-pass-bot:
-    image: "${BUNTZEN_IMAGE:-ghcr.io/jaysqvl/buntzen-pass-bot:latest}"
-    container_name: buntzen-pass-bot
+  lake-pass-bot:
+    image: "${LAKE_PASS_IMAGE-${BUNTZEN_IMAGE:-ghcr.io/jaysqvl/lake-pass-bot:latest}}"
+    container_name: lake-pass-bot
     restart: unless-stopped
     init: true
     ports:
-      - "${BUNTZEN_WEB_PORT:?set the configured Buntzen host port}:8080"
+      - "${LAKE_PASS_WEB_PORT-${BUNTZEN_WEB_PORT:?set the configured Lake Pass Bot host port}}:8080"
     environment:
       APPDATA_DIR: /appdata
-      BUNTZEN_MASTER_KEY_FILE: "${BUNTZEN_MASTER_KEY_FILE:-}"
+      LAKE_PASS_MASTER_KEY_FILE: "${LAKE_PASS_MASTER_KEY_FILE-${BUNTZEN_MASTER_KEY_FILE:-}}"
       BLUEBUBBLES_URL: "${BLUEBUBBLES_URL:?set the LAN BlueBubbles URL in Portainer}"
-      BUNTZEN_BLUEBUBBLES_ENDPOINTS: "${BUNTZEN_BLUEBUBBLES_ENDPOINTS:-}"
-      BUNTZEN_YODEL_ORIGINS: "${BUNTZEN_YODEL_ORIGINS:-https://yodelportal.com}"
-      BUNTZEN_ALLOWED_HOSTS: "${BUNTZEN_ALLOWED_HOSTS:?set the exact Buntzen authorities}"
-      BUNTZEN_ALLOWED_ORIGINS: "${BUNTZEN_ALLOWED_ORIGINS:-}"
-      BUNTZEN_PUBLIC_ORIGIN: "${BUNTZEN_PUBLIC_ORIGIN:-}"
-      BUNTZEN_TRUSTED_PROXIES: "${BUNTZEN_TRUSTED_PROXIES:-}"
-      BUNTZEN_SETUP_TOKEN: "${BUNTZEN_SETUP_TOKEN:-}"
-      BUNTZEN_LOG_LEVEL: "${BUNTZEN_LOG_LEVEL:-info}"
-      BUNTZEN_DEBUG: "${BUNTZEN_DEBUG:-false}"
-      BUNTZEN_BROWSER_EXECUTABLE: "${BUNTZEN_BROWSER_EXECUTABLE:-}"
+      LAKE_PASS_BLUEBUBBLES_ENDPOINTS: "${LAKE_PASS_BLUEBUBBLES_ENDPOINTS-${BUNTZEN_BLUEBUBBLES_ENDPOINTS:-}}"
+      LAKE_PASS_YODEL_ORIGINS: "${LAKE_PASS_YODEL_ORIGINS-${BUNTZEN_YODEL_ORIGINS:-https://yodelportal.com}}"
+      LAKE_PASS_ALLOWED_HOSTS: "${LAKE_PASS_ALLOWED_HOSTS-${BUNTZEN_ALLOWED_HOSTS:?set the exact Lake Pass Bot authorities}}"
+      LAKE_PASS_ALLOWED_ORIGINS: "${LAKE_PASS_ALLOWED_ORIGINS-${BUNTZEN_ALLOWED_ORIGINS:-}}"
+      LAKE_PASS_PUBLIC_ORIGIN: "${LAKE_PASS_PUBLIC_ORIGIN-${BUNTZEN_PUBLIC_ORIGIN:-}}"
+      LAKE_PASS_TRUSTED_PROXIES: "${LAKE_PASS_TRUSTED_PROXIES-${BUNTZEN_TRUSTED_PROXIES:-}}"
+      LAKE_PASS_SETUP_TOKEN: "${LAKE_PASS_SETUP_TOKEN-${BUNTZEN_SETUP_TOKEN:-}}"
+      LAKE_PASS_LOG_LEVEL: "${LAKE_PASS_LOG_LEVEL-${BUNTZEN_LOG_LEVEL:-info}}"
+      LAKE_PASS_DEBUG: "${LAKE_PASS_DEBUG-${BUNTZEN_DEBUG:-false}}"
+      LAKE_PASS_BROWSER_EXECUTABLE: "${LAKE_PASS_BROWSER_EXECUTABLE-${BUNTZEN_BROWSER_EXECUTABLE:-}}"
       MAX_CONCURRENT_JOBS: "${MAX_CONCURRENT_JOBS:-2}"
       # Keep auto-queueing off until the operator completes live booking tests.
       SCHEDULES_ENABLED: "false"
     volumes:
-      - "${BUNTZEN_APPDATA_PATH:?set the configured absolute Buntzen appdata path}:/appdata"
+      - "${LAKE_PASS_APPDATA_PATH-${BUNTZEN_APPDATA_PATH:?set the configured absolute Lake Pass Bot appdata path}}:/appdata"
       # The optional directory must already exist; never generate an external key.
       - type: bind
-        source: "${BUNTZEN_KEY_DIRECTORY_PATH:-${BUNTZEN_APPDATA_PATH}}"
+        source: "${LAKE_PASS_KEY_DIRECTORY_PATH-${BUNTZEN_KEY_DIRECTORY_PATH:-${LAKE_PASS_APPDATA_PATH-${BUNTZEN_APPDATA_PATH}}}}"
         target: /run/buntzen-key
         read_only: true
         bind:
           create_host_path: false
     shm_size: "1gb"
-    cpus: "${BUNTZEN_CPU_LIMIT:-2.0}"
-    mem_limit: "${BUNTZEN_MEMORY_LIMIT:-4g}"
-    memswap_limit: "${BUNTZEN_MEMORY_LIMIT:-4g}"
-    pids_limit: ${BUNTZEN_PIDS_LIMIT:-512}
+    cpus: "${LAKE_PASS_CPU_LIMIT-${BUNTZEN_CPU_LIMIT:-2.0}}"
+    mem_limit: "${LAKE_PASS_MEMORY_LIMIT-${BUNTZEN_MEMORY_LIMIT:-4g}}"
+    memswap_limit: "${LAKE_PASS_MEMORY_LIMIT-${BUNTZEN_MEMORY_LIMIT:-4g}}"
+    pids_limit: ${LAKE_PASS_PIDS_LIMIT-${BUNTZEN_PIDS_LIMIT:-512}}
     read_only: true
     tmpfs:
       - /tmp:size=512m,mode=1777,nosuid,nodev
       - /home/pwuser:size=128m,uid=1001,gid=1001,mode=0700,nosuid,nodev
     security_opt:
-      - "seccomp=${BUNTZEN_SECCOMP_PROFILE_PATH:?install and reference the Playwright seccomp profile on the Docker host}"
+      - "seccomp=${LAKE_PASS_SECCOMP_PROFILE_PATH-${BUNTZEN_SECCOMP_PROFILE_PATH:?install and reference the Playwright seccomp profile on the Docker host}}"
     stop_grace_period: 45s
     logging:
       driver: json-file

@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/internal/httpguard"
+	"github.com/jaysqvl/lake-pass-bot/internal/egress"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp/internal/httpguard"
 )
 
 const (

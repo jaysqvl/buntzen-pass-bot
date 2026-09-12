@@ -9,7 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo"
+	"github.com/jaysqvl/lake-pass-bot/internal/buildinfo"
 )
 
 // assets contains the complete browser UI. Keeping these files in the Go

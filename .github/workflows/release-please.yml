@@ -13,6 +13,8 @@ concurrency:
 
 jobs:
   release-please:
+    # Publishing the new identity is a separate repository migration step.
+    if: github.repository == 'jaysqvl/lake-pass-bot'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -35,7 +37,7 @@ jobs:
     needs: release-please
     if: >-
       needs.release-please.outputs.release_created == 'true' &&
-      startsWith(needs.release-please.outputs.tag_name, 'buntzen-pass-bot-v')
+      startsWith(needs.release-please.outputs.tag_name, 'lake-pass-bot-v')
     permissions:
       attestations: write
       contents: read

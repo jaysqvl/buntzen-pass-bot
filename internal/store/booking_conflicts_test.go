@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestBookingConflictFindsPendingCommandsBeyondRecentHistory(t *testing.T) {

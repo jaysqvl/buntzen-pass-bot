@@ -13,7 +13,7 @@ import (
 )
 
 func TestProcessRoundTripAndCancellation(t *testing.T) {
-	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == "1" {
+	if os.Getenv("LAKE_PASS_ACTIONPROC_HELPER") == "1" {
 		helperProcess()
 		os.Exit(0)
 	}
@@ -23,7 +23,7 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 		Executable: os.Args[0],
 		Args:       []string{"-test.run=TestProcessRoundTripAndCancellation"},
 		Environment: []string{
-			"BUNTZEN_ACTIONPROC_HELPER=1",
+			"LAKE_PASS_ACTIONPROC_HELPER=1",
 		},
 		CancelGrace: 5 * time.Second,
 	})
@@ -55,7 +55,7 @@ func TestProcessRoundTripAndCancellation(t *testing.T) {
 
 func TestCancellationKillsWorkerWithBlockedInput(t *testing.T) {
 	const helperMode = "blocked-stdin"
-	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == helperMode {
+	if os.Getenv("LAKE_PASS_ACTIONPROC_HELPER") == helperMode {
 		fmt.Fprintln(os.Stdout, `{"v":2,"type":"worker.ready"}`)
 		// Keep stdin open without consuming it, like a hung browser worker.
 		time.Sleep(time.Minute)
@@ -64,7 +64,7 @@ func TestCancellationKillsWorkerWithBlockedInput(t *testing.T) {
 	session, err := Start(t.Context(), Config{
 		Executable:  os.Args[0],
 		Args:        []string{"-test.run=^TestCancellationKillsWorkerWithBlockedInput$"},
-		Environment: []string{"BUNTZEN_ACTIONPROC_HELPER=" + helperMode},
+		Environment: []string{"LAKE_PASS_ACTIONPROC_HELPER=" + helperMode},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestCancellationKillsWorkerWithBlockedInput(t *testing.T) {
 
 func TestCancellationReapsWorkerWhenCallerStopsReadingEvents(t *testing.T) {
 	const helperMode = "unread-events"
-	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == helperMode {
+	if os.Getenv("LAKE_PASS_ACTIONPROC_HELPER") == helperMode {
 		for range 256 {
 			fmt.Fprintln(os.Stdout, `{"v":2,"type":"heartbeat"}`)
 		}
@@ -127,7 +127,7 @@ func TestCancellationReapsWorkerWhenCallerStopsReadingEvents(t *testing.T) {
 	session, err := Start(t.Context(), Config{
 		Executable:  os.Args[0],
 		Args:        []string{"-test.run=^TestCancellationReapsWorkerWhenCallerStopsReadingEvents$"},
-		Environment: []string{"BUNTZEN_ACTIONPROC_HELPER=" + helperMode},
+		Environment: []string{"LAKE_PASS_ACTIONPROC_HELPER=" + helperMode},
 		OnStderr: func(line string) {
 			if line == "events-written" {
 				close(written)
@@ -170,8 +170,8 @@ func TestDecodeRejectsMalformedAndOversizedFrames(t *testing.T) {
 }
 
 func TestChildEnvironmentDoesNotInheritControlPlaneSecrets(t *testing.T) {
-	t.Setenv("BUNTZEN_ADMIN_PASSWORD", "admin-secret")
-	t.Setenv("BUNTZEN_MASTER_KEY", "master-secret")
+	t.Setenv("LAKE_PASS_ADMIN_PASSWORD", "admin-secret")
+	t.Setenv("LAKE_PASS_MASTER_KEY", "master-secret")
 	t.Setenv("TWILIO_AUTH_TOKEN", "provider-secret")
 	t.Setenv("HTTP_PROXY", "http://proxy-with-credentials.example")
 	t.Setenv("PLAYWRIGHT_BROWSERS_PATH", "/safe/playwright")
@@ -182,8 +182,8 @@ func TestChildEnvironmentDoesNotInheritControlPlaneSecrets(t *testing.T) {
 	}
 	joined := strings.Join(environment, "\n")
 	for _, forbidden := range []string{
-		"BUNTZEN_ADMIN_PASSWORD=",
-		"BUNTZEN_MASTER_KEY=",
+		"LAKE_PASS_ADMIN_PASSWORD=",
+		"LAKE_PASS_MASTER_KEY=",
 		"TWILIO_AUTH_TOKEN=",
 		"HTTP_PROXY=",
 		"admin-secret",
@@ -203,7 +203,7 @@ func TestChildEnvironmentDoesNotInheritControlPlaneSecrets(t *testing.T) {
 }
 
 func TestChildEnvironmentRejectsUnapprovedOverrides(t *testing.T) {
-	for _, override := range []string{"BUNTZEN_ADMIN_PASSWORD=secret", "HTTP_PROXY=http://proxy", "MALFORMED"} {
+	for _, override := range []string{"LAKE_PASS_ADMIN_PASSWORD=secret", "HTTP_PROXY=http://proxy", "MALFORMED"} {
 		if _, err := childEnvironment([]string{override}); err == nil {
 			t.Fatalf("expected override %q to be rejected", override)
 		}
@@ -211,22 +211,22 @@ func TestChildEnvironmentRejectsUnapprovedOverrides(t *testing.T) {
 }
 
 func TestChildEnvironmentAllowsActionLogLevel(t *testing.T) {
-	environment, err := childEnvironment([]string{"BUNTZEN_ACTION_LOG_LEVEL=debug"})
+	environment, err := childEnvironment([]string{"LAKE_PASS_ACTION_LOG_LEVEL=debug"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(environment, "\n"), "BUNTZEN_ACTION_LOG_LEVEL=debug") {
+	if !strings.Contains(strings.Join(environment, "\n"), "LAKE_PASS_ACTION_LOG_LEVEL=debug") {
 		t.Fatalf("child environment omitted action log level: %q", environment)
 	}
 }
 
 func TestBrowserExecutableRequiresExplicitOperatorOverride(t *testing.T) {
-	t.Setenv("BUNTZEN_BROWSER_EXECUTABLE", "/not/implicitly/inherited")
+	t.Setenv("LAKE_PASS_BROWSER_EXECUTABLE", "/not/implicitly/inherited")
 	environment, err := childEnvironment(nil)
-	if err != nil || strings.Contains(strings.Join(environment, "\n"), "BUNTZEN_BROWSER_EXECUTABLE=") {
+	if err != nil || strings.Contains(strings.Join(environment, "\n"), "LAKE_PASS_BROWSER_EXECUTABLE=") {
 		t.Fatalf("unexpected inherited browser environment: %v", err)
 	}
-	want := "BUNTZEN_BROWSER_EXECUTABLE=/Applications/Google Chrome"
+	want := "LAKE_PASS_BROWSER_EXECUTABLE=/Applications/Google Chrome"
 	environment, err = childEnvironment([]string{want})
 	if err != nil || !strings.Contains(strings.Join(environment, "\n"), want) {
 		t.Fatalf("explicit operator override missing: %v", err)
@@ -280,7 +280,7 @@ func TestStderrCallbackPanicCannotCrashDrain(t *testing.T) {
 func TestProcessDrainsMultiMegabyteUnterminatedStderr(t *testing.T) {
 	const helperMode = "oversized-stderr"
 	const sentinel = "SENSITIVE_STDERR_SENTINEL_4f17"
-	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == helperMode {
+	if os.Getenv("LAKE_PASS_ACTIONPROC_HELPER") == helperMode {
 		payload := strings.Repeat(sentinel, (2<<20)/len(sentinel)+1)
 		if _, err := fmt.Fprint(os.Stderr, payload); err != nil {
 			os.Exit(2)
@@ -295,7 +295,7 @@ func TestProcessDrainsMultiMegabyteUnterminatedStderr(t *testing.T) {
 		Executable: os.Args[0],
 		Args:       []string{"-test.run=^TestProcessDrainsMultiMegabyteUnterminatedStderr$"},
 		Environment: []string{
-			"BUNTZEN_ACTIONPROC_HELPER=" + helperMode,
+			"LAKE_PASS_ACTIONPROC_HELPER=" + helperMode,
 		},
 		CancelGrace: 100 * time.Millisecond,
 		OnStderr: func(line string) {
@@ -331,7 +331,7 @@ func TestProcessDrainsMultiMegabyteUnterminatedStderr(t *testing.T) {
 }
 
 func TestSendRejectsOversizedFrame(t *testing.T) {
-	if os.Getenv("BUNTZEN_ACTIONPROC_HELPER") == "1" {
+	if os.Getenv("LAKE_PASS_ACTIONPROC_HELPER") == "1" {
 		helperProcess()
 		os.Exit(0)
 	}
@@ -341,7 +341,7 @@ func TestSendRejectsOversizedFrame(t *testing.T) {
 		Executable: os.Args[0],
 		Args:       []string{"-test.run=TestSendRejectsOversizedFrame"},
 		Environment: []string{
-			"BUNTZEN_ACTIONPROC_HELPER=1",
+			"LAKE_PASS_ACTIONPROC_HELPER=1",
 		},
 	})
 	if err != nil {

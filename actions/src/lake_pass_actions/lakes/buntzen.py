@@ -1,17 +1,12 @@
-from __future__ import annotations
+"""Buntzen Lake pass choices; scheduling and URL defaults live in Go's catalog."""
 
-from dataclasses import dataclass
+from types import MappingProxyType
 
-
-@dataclass(frozen=True)
-class PassPreference:
-    key: str
-    label: str
-    url_kind: str
-    text_patterns: tuple[str, ...]
+from ..pass_types import PassPreference
+from .base import Lake
 
 
-PASS_PREFERENCES = {
+PASS_PREFERENCES = MappingProxyType({
     "all_day": PassPreference(
         key="all_day",
         label="All-day",
@@ -30,4 +25,11 @@ PASS_PREFERENCES = {
         url_kind="half_day",
         text_patterns=("Morning",),
     ),
-}
+})
+
+LAKE = Lake(
+    id="buntzen",
+    label="Buntzen Lake",
+    provider_id="yodel",
+    pass_preferences=PASS_PREFERENCES,
+)

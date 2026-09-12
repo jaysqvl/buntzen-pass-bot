@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 type cardAction struct{ Label, URL, Class string }
@@ -32,6 +32,7 @@ type listData struct {
 type selectOption struct {
 	Value, Label string
 	Selected     bool
+	LakeDefaults string
 }
 type formField struct {
 	Name, Label, Type, Value, Placeholder, Help, Step, Min, Max string
@@ -46,6 +47,7 @@ type formData struct {
 	BaseData
 	Eyebrow, Heading, Description, CancelURL, ActionURL, SubmitLabel, FormError string
 	Sections                                                                    []formSection
+	LakeSelection                                                               bool
 }
 
 func checked(r *http.Request, name string) bool {

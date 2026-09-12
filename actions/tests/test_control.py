@@ -5,9 +5,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from buntzen_actions.control import ControlPort
-from buntzen_actions.errors import ActionError, ApprovalExpired, Cancelled, ProtocolError
-from buntzen_actions.secrets import SecretRedactor
+from lake_pass_actions.control import ControlPort
+from lake_pass_actions.errors import ActionError, ApprovalExpired, Cancelled, ProtocolError
+from lake_pass_actions.secrets import SecretRedactor
 
 
 class FakeStream:
@@ -72,7 +72,7 @@ class ControlTests(unittest.TestCase):
                         "v": 2, "type": response_type, "challenge_id": "challenge",
                     }])
                     control = ControlPort(stream, inbox, SecretRedactor())
-                    with patch("buntzen_actions.control.uuid.uuid4") as identifier:
+                    with patch("lake_pass_actions.control.uuid.uuid4") as identifier:
                         identifier.return_value.hex = "challenge"
                         with self.assertRaises(ActionError):
                             if stage == "prepare":
@@ -134,7 +134,7 @@ class ControlTests(unittest.TestCase):
         )
         control = ControlPort(stream, inbox, SecretRedactor())
         with patch(
-            "buntzen_actions.control._remaining_seconds", side_effect=[1.0, -0.01]
+            "lake_pass_actions.control._remaining_seconds", side_effect=[1.0, -0.01]
         ):
             with self.assertRaises(ActionError):
                 control.wait_for_otp(

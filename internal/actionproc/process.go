@@ -37,7 +37,7 @@ var (
 )
 
 // Only process-launch settings needed by Python/Playwright cross the action
-// boundary. In particular, BUNTZEN_* and provider credentials from the Go
+// boundary. In particular, LAKE_PASS_* and provider credentials from the Go
 // control-plane environment are intentionally not inherited by workers.
 var inheritedEnvironmentKeys = []string{
 	"HOME",
@@ -54,11 +54,11 @@ var inheritedEnvironmentKeys = []string{
 }
 
 var allowedEnvironmentOverrides = map[string]struct{}{
-	"BUNTZEN_BROWSER_EXECUTABLE": {}, // Operator configuration only; never profile data.
-	"BUNTZEN_ACTIONPROC_HELPER":  {}, // Test helper only; never contains a secret.
-	"BUNTZEN_ACTION_LOG_LEVEL":   {}, // Validated control-plane log level only.
-	"PYTHONDONTWRITEBYTECODE":    {},
-	"PYTHONUNBUFFERED":           {},
+	"LAKE_PASS_BROWSER_EXECUTABLE": {}, // Operator configuration only; never profile data.
+	"LAKE_PASS_ACTIONPROC_HELPER":  {}, // Test helper only; never contains a secret.
+	"LAKE_PASS_ACTION_LOG_LEVEL":   {}, // Validated control-plane log level only.
+	"PYTHONDONTWRITEBYTECODE":      {},
+	"PYTHONUNBUFFERED":             {},
 }
 
 // Frame is a decoded protocol frame. Payload never gets logged by this
@@ -90,7 +90,7 @@ func decodeFrame(raw []byte) (Frame, error) {
 }
 
 // Config describes an executable without involving a shell. Production uses
-// Python with Args set to {"-m", "buntzen_actions"}; tests can provide a
+// Python with Args set to {"-m", "lake_pass_actions"}; tests can provide a
 // purpose-built helper executable.
 type Config struct {
 	Executable  string

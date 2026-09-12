@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from .errors import ActionError
+from ...errors import ActionError
 
 
 # These structures are shared by the public portal's single-item and grouped

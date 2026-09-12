@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/lockfile"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/control"
+	"github.com/jaysqvl/lake-pass-bot/internal/engine"
+	"github.com/jaysqvl/lake-pass-bot/internal/lockfile"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func runJobCommand(parent context.Context, cfg config.Config, database *store.Store, commandName string, args []string) error {

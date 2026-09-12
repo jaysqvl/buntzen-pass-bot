@@ -12,13 +12,13 @@ import (
 	"syscall"
 	"time"
 
-	accountauth "github.com/jaysqvl/buntzen-pass-bot/internal/auth"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/lockfile"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/web"
+	accountauth "github.com/jaysqvl/lake-pass-bot/internal/auth"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/control"
+	"github.com/jaysqvl/lake-pass-bot/internal/engine"
+	"github.com/jaysqvl/lake-pass-bot/internal/lockfile"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/web"
 )
 
 func runServe(parent context.Context, cfg config.Config, database *store.Store) error {
@@ -31,13 +31,14 @@ func runServe(parent context.Context, cfg config.Config, database *store.Store) 
 	instanceLock, err := lockfile.TryAcquire(cfg.AppDataDir + "/control-plane.lock")
 	if err != nil {
 		if errors.Is(err, lockfile.ErrLocked) {
-			return errors.New("another Buntzen control plane is already using this appdata directory")
+			return errors.New("another Lake Pass Bot control plane is already using this appdata directory")
 		}
 		return err
 	}
 	defer instanceLock.Close()
 	// The recovery secret is never part of normal service operation and must
 	// not be inherited by action-worker subprocesses.
+	_ = os.Unsetenv("LAKE_PASS_ADMIN_PASSWORD")
 	_ = os.Unsetenv("BUNTZEN_ADMIN_PASSWORD")
 	hasUsers, err := database.HasUsers(parent)
 	if err != nil {
@@ -54,7 +55,7 @@ func runServe(parent context.Context, cfg config.Config, database *store.Store) 
 			// the generated value there is no way to complete bootstrap.
 			slog.Error("first-run setup required; one-time setup token: " + cfg.SetupToken)
 		} else {
-			slog.Info("first-run setup token loaded from BUNTZEN_SETUP_TOKEN")
+			slog.Info("first-run setup token loaded from LAKE_PASS_SETUP_TOKEN")
 		}
 	}
 	recovered, err := database.SystemRecoverInterruptedJobs(parent)

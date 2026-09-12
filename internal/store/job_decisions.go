@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func (s *Store) RecordJobDecision(ctx context.Context, userID, jobID int64, decision model.ApprovalDecision) (model.JobDecision, error) {

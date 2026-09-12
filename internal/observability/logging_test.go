@@ -94,7 +94,7 @@ func TestActionDiagnosticCarriesCorrelationAndMapsLevel(t *testing.T) {
 	slog.SetDefault(logger)
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	LogActionDiagnostic(context.Background(), "42", "WARNING buntzen_actions.worker: code=482913")
+	LogActionDiagnostic(context.Background(), "42", "WARNING lake_pass_actions.worker: code=482913")
 	logged := output.String()
 	if !strings.Contains(logged, `"level":"WARN"`) || !strings.Contains(logged, `"job_id":"42"`) {
 		t.Fatalf("missing correlated action diagnostic: %s", logged)

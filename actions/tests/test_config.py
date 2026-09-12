@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from buntzen_actions.config import ActionConfig
-from buntzen_actions.errors import ProtocolError
+from lake_pass_actions.config import ActionConfig
+from lake_pass_actions.errors import ProtocolError
 
 
 def start_frame() -> dict:
@@ -14,7 +14,7 @@ def start_frame() -> dict:
         "command": "book",
         "mode": "manual",
         "config": {
-            "profile_dir": "/tmp/buntzen-profile",
+            "profile_dir": "/tmp/lake-pass-profile",
             "target_date": "2030-01-15",
             "timezone": "UTC",
             "allowed_yodel_origins": ["https://yodelportal.com"],

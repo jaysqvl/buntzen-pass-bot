@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/actionproc"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestApprovalCarriesOnlyValidatedPassIdentity(t *testing.T) {

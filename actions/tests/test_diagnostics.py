@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from buntzen_actions.diagnostics import SafeDiagnostics
+from lake_pass_actions.diagnostics import SafeDiagnostics
 
 
 class SensitiveBrowser:

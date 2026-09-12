@@ -3,16 +3,18 @@ requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "buntzen-actions"
+name = "lake-pass-actions"
 version = "0.5.3"
-description = "Supervised Playwright actions for the Buntzen Pass Bot control plane."
+description = "Supervised Playwright actions for the Lake Pass Bot control plane."
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "playwright==1.62.0",
 ]
 
 [project.scripts]
-buntzen-actions = "buntzen_actions.worker:main"
+lake-pass-actions = "lake_pass_actions.worker:main"
+# Legacy launcher for existing operator configurations.
+buntzen-actions = "lake_pass_actions.worker:main"
 
 [dependency-groups]
 dev = ["setuptools==84.0.0"]
@@ -20,7 +22,7 @@ dev = ["setuptools==84.0.0"]
 [tool.uv]
 # Install the backend from the hash-verified lock before building this project.
 # An isolated PEP 517 dependency resolution would bypass those locked hashes.
-no-build-isolation-package = ["buntzen-actions"]
+no-build-isolation-package = ["lake-pass-actions"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

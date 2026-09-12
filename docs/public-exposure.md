@@ -1,6 +1,6 @@
 # Public HTTPS transport
 
-Buntzen authenticates users with its own accounts. A Cloudflare Tunnel can carry
+Lake Pass Bot authenticates users with its own accounts. A Cloudflare Tunnel can carry
 public HTTPS traffic to the application; Cloudflare Access is not required by
 the app. Configure this transport boundary before exposing the login page.
 
@@ -10,16 +10,16 @@ never an Internet-facing authentication method. Then set these deployment
 environment variables:
 
 ```dotenv
-BUNTZEN_PUBLIC_ORIGIN=https://buntzen.example
-BUNTZEN_TRUSTED_PROXIES=127.0.0.1/32,::1/128
+LAKE_PASS_PUBLIC_ORIGIN=https://lake-pass.example
+LAKE_PASS_TRUSTED_PROXIES=127.0.0.1/32,::1/128
 ```
 
 Replace the origin with the exact public HTTPS hostname, including a nondefault
 port if needed, and omit the trailing slash. Replace the proxy entries with the
-actual socket addresses of your connector as seen by Buntzen. The loopback
+actual socket addresses of your connector as seen by Lake Pass Bot. The loopback
 example applies only when the connector connects over loopback. A connector in
 another Docker container or on another host has a different socket address.
-Prefer fixed connector addresses and `/32` or `/128` entries. Buntzen rejects
+Prefer fixed connector addresses and `/32` or `/128` entries. Lake Pass Bot rejects
 networks broader than IPv4 `/24` or IPv6 `/64`. These are connector addresses,
 not Cloudflare edge IP ranges; never trust an entire LAN or shared container
 network unless every host on it is authorized to supply visitor identity.
@@ -50,12 +50,12 @@ URL and enable HTTPS enforcement for the public hostname at the tunnel edge.
 
 Keep the application port reachable only by the connector and intended health
 probes. `GET`/`HEAD /healthz` remains a cookieless HTTP health check on the public
-hostname and configured `BUNTZEN_ALLOWED_HOSTS`; the implicit localhost health
+hostname and configured `LAKE_PASS_ALLOWED_HOSTS`; the implicit localhost health
 authority is accepted only from an actual loopback socket. This exception grants
 no access to the login, account, job, or other UI routes. Public-mode UI requests
 do not inherit the legacy allowed-host/origin aliases.
 
-Leaving `BUNTZEN_PUBLIC_ORIGIN` empty preserves the existing private HTTP mode.
+Leaving `LAKE_PASS_PUBLIC_ORIGIN` empty preserves the existing private HTTP mode.
 That mode must not be exposed publicly. These transport controls complement
 application authentication, ownership checks, provider restrictions, resource
 limits, private storage, and release verification; they do not make a browser
@@ -64,7 +64,7 @@ worker or dependency inherently trustworthy.
 ## Authentication admission
 
 First-run setup accepts the randomly generated token printed by the host. If
-`BUNTZEN_SETUP_TOKEN` is supplied, it must encode 32 random bytes as unpadded
+`LAKE_PASS_SETUP_TOKEN` is supplied, it must encode 32 random bytes as unpadded
 URL-safe base64 (43 characters). Generate it with
 `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`, or leave it unset
 for automatic generation. The app validates its format only while setup is
@@ -115,7 +115,7 @@ rechecks, and final-event delivery remain enabled.
 The default is `APPDATA_DIR/master.key`. A new installation creates this file
 once with private permissions and publishes it only after a complete write and
 sync. An existing database with a missing default key is refused; the app never
-silently generates a replacement. `BUNTZEN_MASTER_KEY_FILE` selects an absolute,
+silently generates a replacement. `LAKE_PASS_MASTER_KEY_FILE` selects an absolute,
 existing key file and never falls back to the default or creates external paths.
 The file must be a regular file owned by the service user, with no group/other
 permissions (0400 or 0600). Symlinks, special files, oversized and malformed keys
@@ -126,10 +126,10 @@ To separate an existing installation's key from appdata:
 1. Stop the service and make a consistent private database/appdata backup. Retain
    the original matching key in a separate private backup.
 2. Copy the **existing key bytes** into an existing private host directory such
-   as `/srv/buntzen-key/master.key`. Set directory mode 0700 and file mode 0400;
+   as `/srv/lake-pass-key/master.key`. Set directory mode 0700 and file mode 0400;
    both must be owned by the service UID (1001 for the published container).
-3. In Compose/Portainer set `BUNTZEN_KEY_DIRECTORY_PATH=/srv/buntzen-key` and
-   `BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key`. The canonical templates
+3. In Compose/Portainer set `LAKE_PASS_KEY_DIRECTORY_PATH=/srv/lake-pass-key` and
+   `LAKE_PASS_MASTER_KEY_FILE=/run/buntzen-key/master.key`. The canonical templates
    mount that directory read-only and refuse to create a missing host directory.
    Native runs use the actual absolute key-file path, without a container mount.
 4. Start privately and verify existing provider/profile data can be read. Remove
@@ -141,7 +141,7 @@ unused read-only mount defaults to appdata; that fallback adds no key separation
 With the service stopped, restore the matching database and original key together
 when recovering or rolling back. No key-rotation command is provided here.
 
-Before write-capable database opening and before migrations, Buntzen authenticates
+Before write-capable database opening and before migrations, Lake Pass Bot authenticates
 all current and legacy encrypted fields, including disabled profiles and committed
 WAL records. A wrong key or corrupt ciphertext stops startup with a generic error.
 The read-only preflight does not modify database/WAL contents or schema; SQLite
@@ -153,7 +153,7 @@ not isolation from a compromised service process.
 
 ## Outbound provider access
 
-Before using BlueBubbles, set `BUNTZEN_BLUEBUBBLES_ENDPOINTS` in the operator's
+Before using BlueBubbles, set `LAKE_PASS_BLUEBUBBLES_ENDPOINTS` in the operator's
 deployment environment. Its JSON array approves at most 16 exact server origins.
 An empty/unset policy disables BlueBubbles network access, including existing
 saved sources. `BLUEBUBBLES_URL` only pre-fills the form and grants no access.
@@ -162,14 +162,14 @@ Members cannot expand this policy by editing a source or its encrypted settings.
 For a public HTTPS server:
 
 ```dotenv
-BUNTZEN_BLUEBUBBLES_ENDPOINTS='[{"origin":"https://messages.example"}]'
+LAKE_PASS_BLUEBUBBLES_ENDPOINTS='[{"origin":"https://messages.example"}]'
 ```
 
 For a server on the same native host, reached over loopback:
 
 ```dotenv
 BLUEBUBBLES_URL=http://127.0.0.1:1234
-BUNTZEN_BLUEBUBBLES_ENDPOINTS='[{"origin":"http://127.0.0.1:1234","networks":["127.0.0.1/32"]}]'
+LAKE_PASS_BLUEBUBBLES_ENDPOINTS='[{"origin":"http://127.0.0.1:1234","networks":["127.0.0.1/32"]}]'
 ```
 
 For a LAN server, replace that example's origin and network with the actual
@@ -245,8 +245,8 @@ not replace process/filesystem isolation.
 
 Both Compose templates default to 2 CPUs, 4 GiB memory with no additional swap,
 and 512 processes/threads. The kernel enforces these container-wide limits across
-the web app and its workers. `BUNTZEN_CPU_LIMIT`, `BUNTZEN_MEMORY_LIMIT` and
-`BUNTZEN_PIDS_LIMIT` can raise them; keep every limit finite and size them alongside
+the web app and its workers. `LAKE_PASS_CPU_LIMIT`, `LAKE_PASS_MEMORY_LIMIT` and
+`LAKE_PASS_PIDS_LIMIT` can raise them; keep every limit finite and size them alongside
 `MAX_CONCURRENT_JOBS`. The default of two workers is exercised with two independent
 Chromium processes in the image smoke test. This synthetic local page is not a
 capacity measurement for live Yodel workloads or eight concurrent workers.

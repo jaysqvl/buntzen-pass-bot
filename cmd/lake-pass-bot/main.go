@@ -8,11 +8,11 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/observability"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/buildinfo"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
+	"github.com/jaysqvl/lake-pass-bot/internal/observability"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func main() {
@@ -30,7 +30,7 @@ func run(ctx context.Context, args []string) error {
 	// configuration is invalid, without opening or modifying appdata.
 	if args[0] == "version" {
 		if len(args) != 1 {
-			return errors.New("usage: buntzen version")
+			return errors.New("usage: lake-pass-bot version")
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]string{
 			"version":  buildinfo.Version,
@@ -85,11 +85,11 @@ func run(ctx context.Context, args []string) error {
 
 func adminPasswordCommand(ctx context.Context, cfg config.Config, database *store.Store, args []string) error {
 	if len(args) != 1 || args[0] != "reset" {
-		return errors.New("usage: buntzen admin-password reset")
+		return errors.New("usage: lake-pass-bot admin-password reset")
 	}
-	password := os.Getenv("BUNTZEN_ADMIN_PASSWORD")
+	password := config.Env("LAKE_PASS_ADMIN_PASSWORD")
 	if password == "" {
-		return errors.New("BUNTZEN_ADMIN_PASSWORD must contain the new password")
+		return errors.New("LAKE_PASS_ADMIN_PASSWORD must contain the new password")
 	}
 	admin, err := database.ResetAdministratorPassword(ctx, password)
 	if err != nil {
@@ -100,5 +100,5 @@ func adminPasswordCommand(ctx context.Context, cfg config.Config, database *stor
 }
 
 func usageError() error {
-	return errors.New("usage: buntzen {serve|doctor|version|migrate|auth-check|dry-run|book|admin-password reset}; runtime commands require --booking 1")
+	return errors.New("usage: lake-pass-bot {serve|doctor|version|migrate|auth-check|dry-run|book|admin-password reset}; runtime commands require --booking 1")
 }

@@ -9,17 +9,19 @@ from datetime import datetime
 from typing import Any, Iterable, Optional
 
 from .calendar_dates import select_target_date
-from .config import ActionConfig
+from ...config import ActionConfig
 from .checkout import CheckoutConfirmation
 from .cart import require_empty_cart, require_single_pass_cart
-from .control import ControlPort
-from .diagnostics import SafeDiagnostics
-from .errors import ActionError, OutcomeUnknown
-from .pass_types import PASS_PREFERENCES, PassPreference
+from ...control import ControlPort
+from ...diagnostics import SafeDiagnostics
+from ...errors import ActionError, OutcomeUnknown
+from ...lakes import LEGACY_LAKE_ID, LEGACY_PROVIDER_ID, resolve_lake
+from ...pass_types import PassPreference
+from .. import resolve_provider
 from .vehicle_selection import VehicleSelectionResult, select_vehicle
 
 
-logger = logging.getLogger("buntzen_actions.yodel")
+logger = logging.getLogger("lake_pass_actions.yodel")
 
 
 LOGIN_PHONE_SELECTORS = (
@@ -113,7 +115,7 @@ class BookingResult:
 
 
 class YodelAction:
-    """The single allowlisted browser action exposed by this worker."""
+    """Yodel authentication and checkout mechanics for a supported destination."""
 
     def __init__(
         self,
@@ -122,6 +124,14 @@ class YodelAction:
         control: ControlPort,
         diagnostics: SafeDiagnostics,
     ) -> None:
+        # Direct adapter callers receive the same allowlist protection as the
+        # worker; older constructed configurations retain their legacy lake.
+        lake_id = getattr(config, "lake_id", LEGACY_LAKE_ID)
+        provider_id = getattr(config, "provider_id", LEGACY_PROVIDER_ID)
+        provider = resolve_provider(lake_id, provider_id)
+        if provider.id != "yodel":
+            raise ActionError("Yodel adapter requires the Yodel provider")
+        self.lake = resolve_lake(lake_id)
         self.page = page
         self.config = config
         self.control = control
@@ -414,7 +424,7 @@ class YodelAction:
     def try_booking_once(self, mode: str) -> BookingResult:
         failures = []
         for key in self.config.pass_order:
-            preference = PASS_PREFERENCES[key]
+            preference = self.lake.pass_preferences[key]
             self.control.inbox.check_cancelled()
             result = self._try_pass(preference, mode=mode)
             self.control.status("pass_result", result.message)

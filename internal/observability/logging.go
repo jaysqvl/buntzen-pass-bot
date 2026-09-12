@@ -81,7 +81,7 @@ func SanitizeChildDiagnostic(value string, secrets ...string) string {
 	value = Sanitize(value, secrets...)
 	urls := make([]string, 0, 2)
 	value = urlPattern.ReplaceAllStringFunc(value, func(safeURL string) string {
-		token := fmt.Sprintf("__BUNTZEN_SAFE_URL_%x__", len(urls))
+		token := fmt.Sprintf("__LAKE_PASS_SAFE_URL_%x__", len(urls))
 		urls = append(urls, safeURL)
 		return token
 	})
@@ -93,7 +93,7 @@ func SanitizeChildDiagnostic(value string, secrets ...string) string {
 		value = updated
 	}
 	for index, safeURL := range urls {
-		token := fmt.Sprintf("__BUNTZEN_SAFE_URL_%x__", index)
+		token := fmt.Sprintf("__LAKE_PASS_SAFE_URL_%x__", index)
 		value = strings.ReplaceAll(value, token, safeURL)
 	}
 	return truncate(value, MaxLogMessageBytes)

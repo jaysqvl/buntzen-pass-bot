@@ -4,25 +4,29 @@ GitHub builds, tests, scans, and publishes the Docker image. Portainer updates t
 existing stack when you choose to install a release. No GitHub deployment
 workflow, LAN runner, deployment approval, or Portainer API credential is needed.
 
-## Update from Portainer
+> The renamed image is a future publication target. This source rebrand has not
+> published it or changed any running stack. Use the local source build for
+> review and read [rebrand migration](rebrand-migration.md) before upgrading.
+
+## Update from Portainer after publication
 
 The [Portainer Compose template](../deploy/portainer.yml) defaults to:
 
 ```text
-ghcr.io/jaysqvl/buntzen-pass-bot:latest
+ghcr.io/jaysqvl/lake-pass-bot:latest
 ```
 
-`latest` follows the newest accepted stable release, including future minor and
-major versions. Publishing a release does not restart your container. You decide
+After the first renamed release is published, `latest` follows the newest
+accepted stable release, including future minor and major versions. Publishing a release does not restart your container. You decide
 when to install it:
 
 1. Read the release notes for configuration or database changes. Wait for active
    jobs to finish and keep auto-queueing disabled during the update.
-2. In Portainer, open **Stacks**, select the existing Buntzen stack, and open
+2. In Portainer, open **Stacks**, select the existing Lake Pass Bot stack, and open
    **Editor**. Apply any required Compose or environment changes there.
 3. Choose **Update the stack** and enable **Re-pull image and redeploy** so Docker
    checks the registry for the new image.
-4. Wait for the container to become healthy. Open Buntzen and check the version
+4. Wait for the container to become healthy. Open Lake Pass Bot and check the version
    and build in the footer against the release you intended to install.
 5. Check the OTP source's **Test connection** and the relevant application flows.
    Container health alone does not prove that Yodel checkout works.
@@ -33,14 +37,13 @@ update your saved Compose file or add new environment settings. Portainer's
 explains the update controls.
 
 If your existing stack uses a literal `@sha256:...` image or an explicit version,
-change it to the `:latest` image above once. If it uses `${BUNTZEN_IMAGE}`, set that
+change it to the `:latest` image above once. If it uses `${LAKE_PASS_IMAGE}`, set that
 Portainer environment variable to the same `:latest` value, or use the current
 template's default with the variable unset. A force update of an old digest
 recreates the old image; it cannot choose a newer release.
 
-To stay on a chosen release, set `BUNTZEN_IMAGE` to a published version such as
-`ghcr.io/jaysqvl/buntzen-pass-bot:0.5.1`, or to the exact digest printed in the
-release workflow summary. To follow only patch releases within a minor version,
+To stay on a chosen release, set `LAKE_PASS_IMAGE` to its published version tag
+or to the exact digest printed in the release workflow summary. To follow only patch releases within a minor version,
 use its tag, such as `:0.5`. The footer continues to display the version built into
 the running image regardless of the tag used to install it.
 
@@ -49,16 +52,16 @@ the running image regardless of the tag used to install it.
 Preserve the existing stack's name, port, appdata path, and configuration. The
 canonical [deploy/portainer.yml](../deploy/portainer.yml) uses:
 
-- `BUNTZEN_IMAGE`: optional image override; defaults to the project's `:latest`.
-- `BUNTZEN_WEB_PORT`: the host port already used by Buntzen.
-- `BUNTZEN_APPDATA_PATH`: the existing absolute appdata directory, owned by UID/GID
+- `LAKE_PASS_IMAGE`: optional image override; defaults to the project's `:latest`.
+- `LAKE_PASS_WEB_PORT`: the host port already used by Lake Pass Bot.
+- `LAKE_PASS_APPDATA_PATH`: the existing absolute appdata directory, owned by UID/GID
   1001. Never share it with another container or a native development instance.
-- `BUNTZEN_SECCOMP_PROFILE_PATH`: the Playwright seccomp profile path as seen by
+- `LAKE_PASS_SECCOMP_PROFILE_PATH`: the Playwright seccomp profile path as seen by
   Portainer's Compose process. For containerized Portainer, keep it inside the
-  persistent `/data` mount, for example `/data/buntzen/seccomp_profile.json`.
-- `BLUEBUBBLES_URL` and `BUNTZEN_BLUEBUBBLES_ENDPOINTS`: when using BlueBubbles,
+  persistent `/data` mount, for example `/data/lake-pass-bot/seccomp_profile.json`.
+- `BLUEBUBBLES_URL` and `LAKE_PASS_BLUEBUBBLES_ENDPOINTS`: when using BlueBubbles,
   configure its exact [approved origin and network](public-exposure.md#outbound-provider-access).
-- `BUNTZEN_ALLOWED_HOSTS` and, when needed, `BUNTZEN_ALLOWED_ORIGINS`: the exact
+- `LAKE_PASS_ALLOWED_HOSTS` and, when needed, `LAKE_PASS_ALLOWED_ORIGINS`: the exact
   authorities and origins used to access the app in private mode.
 - `MAX_CONCURRENT_JOBS`: preserve your chosen concurrency.
 
@@ -66,17 +69,17 @@ The template keeps `SCHEDULES_ENABLED=false`. Complete the
 [live booking tests](live-testing.md) before deliberately enabling unattended
 scheduling in your saved stack. Updating an image does not itself enable it.
 
-The optional `BUNTZEN_KEY_DIRECTORY_PATH` must refer to an existing directory
+The optional `LAKE_PASS_KEY_DIRECTORY_PATH` must refer to an existing directory
 containing the original `master.key`, owned by UID/GID 1001 with mode 0400 or
 0600. To use its read-only mount, set
-`BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key` after following the
+`LAKE_PASS_MASTER_KEY_FILE=/run/buntzen-key/master.key` after following the
 [key relocation procedure](public-exposure.md#key-storage-and-recovery).
 Otherwise preserve the existing key location.
 
 Public HTTPS is optional for a private LAN installation. To enable it, follow
 [public HTTPS configuration](public-exposure.md#public-https-transport), including
-private administrator setup, `BUNTZEN_PUBLIC_ORIGIN`, and
-`BUNTZEN_TRUSTED_PROXIES`. Public mode changes which hosts may access the UI.
+private administrator setup, `LAKE_PASS_PUBLIC_ORIGIN`, and
+`LAKE_PASS_TRUSTED_PROXIES`. Public mode changes which hosts may access the UI.
 
 If GHCR package visibility requires authentication, configure a read-only pull
 credential in Portainer's registry settings. This is registry access; the app
@@ -84,8 +87,8 @@ does not need a Portainer API credential.
 
 ### Upgrading from 0.5.0 or earlier
 
-Existing BlueBubbles sources require `BUNTZEN_BLUEBUBBLES_ENDPOINTS` from 0.5.1
-onwards. Without it, provider network access is disabled even if the source has a
+Provider origin approval became required in 0.5.1. Existing BlueBubbles sources
+now use `LAKE_PASS_BLUEBUBBLES_ENDPOINTS` (or the retained legacy variable). Without it, provider network access is disabled even if the source has a
 saved URL and password. Add the exact origin and its allowed network before
 updating the image; see the provider policy linked above.
 
@@ -96,8 +99,12 @@ original encryption key and any deliberate local paths or network settings.
 
 ## Release publication
 
+The 0.5.3 manifest baseline is retained; see
+[release continuity](rebrand-migration.md#release-continuity-and-later-choices).
+Publication is enabled only in the renamed repository.
+
 `release-please.yml` calls `release-image.yml` when it creates a
-`buntzen-pass-bot-v*` release. GitHub-token-created tags do not trigger a second
+`lake-pass-bot-v*` release. GitHub-token-created tags do not trigger a second
 release workflow, so publication is explicitly connected in the same run.
 
 The publication jobs:
@@ -121,6 +128,9 @@ release image** also supports manual dispatch from `main` for an existing
 published component tag and exact commit SHA. It repeats the release checks and
 publishes the image without contacting your server.
 
+Manual recovery also accepts historical component tags and passes both old and
+new Docker build argument names. New releases use only the new prefix.
+
 Keep `main` protected with reviewed pull requests and passing `go`,
 `python-actions`, `integration`, and `docker` checks. Release Please still needs
 permission to create release pull requests and publish releases. None of these
@@ -135,7 +145,7 @@ separate private backup as well. Losing it makes encrypted credentials
 unrecoverable.
 
 Verify the new version in the app footer and, from the container console, with
-`buntzen version` and `buntzen doctor`. Check the actual running image and health;
+`lake-pass-bot version` and `lake-pass-bot doctor`. Check the actual running image and health;
 a successful pull or a saved stack file alone does not prove deployment finished.
 
 If deployment fails, inspect Portainer and establish that its update operation
@@ -143,7 +153,8 @@ has finished before trying recovery. Do not overlap updates or automatically
 restore an older image against changed data. Reconcile the backed-up Compose,
 environment, image, and matching appdata/key before a deliberate rollback. A
 healthy older binary alone does not establish schema compatibility. Releases
-before `BUNTZEN_MASTER_KEY_FILE` require the key at their legacy appdata location.
+without support for an external master key require it at the legacy appdata
+location.
 
 Keep booking evidence private. Never run the same Yodel identity concurrently
 from a development instance and the deployed service. Follow the

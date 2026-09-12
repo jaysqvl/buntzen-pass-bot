@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/actionproc"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
 )
 
 type fakeProcess struct {
@@ -151,6 +151,7 @@ func TestCoordinatorRequiresExplicitProtocolV2Negotiation(t *testing.T) {
 	for _, payload := range []map[string]any{
 		{"action": "yodel"},
 		{"action": "yodel", "protocol": float64(1)},
+		{"action": "unknown-provider", "protocol": float64(actionproc.ProtocolVersion)},
 	} {
 		process := newFakeProcess()
 		errCh := make(chan error, 1)
@@ -165,8 +166,11 @@ func TestCoordinatorRequiresExplicitProtocolV2Negotiation(t *testing.T) {
 		process.events <- frame("worker.ready", payload)
 		select {
 		case err := <-errCh:
-			if err == nil || err.Error() != "action worker did not negotiate the Yodel v2 protocol" {
+			if err == nil || err.Error() != "action worker did not negotiate the yodel v2 protocol" {
 				t.Fatalf("negotiation error = %v", err)
+			}
+			if len(process.sent) != 0 {
+				t.Fatal("rejected worker received run configuration or credentials")
 			}
 		case <-time.After(time.Second):
 			t.Fatal("coordinator did not reject invalid worker negotiation")

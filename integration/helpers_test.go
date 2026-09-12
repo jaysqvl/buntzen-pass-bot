@@ -24,7 +24,7 @@ func repositoryRoot(t *testing.T) string {
 
 func pythonCommand(t *testing.T, repoRoot string, args ...string) (string, []string) {
 	t.Helper()
-	if configured := strings.TrimSpace(os.Getenv("BUNTZEN_E2E_PYTHON")); configured != "" {
+	if configured := strings.TrimSpace(os.Getenv("LAKE_PASS_E2E_PYTHON")); configured != "" {
 		return configured, args
 	}
 	venvPython := filepath.Join(repoRoot, "actions", ".venv", "bin", "python")
@@ -39,7 +39,7 @@ func pythonCommand(t *testing.T, repoRoot string, args ...string) (string, []str
 }
 
 func browserPath() string {
-	if configured := strings.TrimSpace(os.Getenv("BUNTZEN_E2E_BROWSER_EXECUTABLE")); configured != "" {
+	if configured := strings.TrimSpace(os.Getenv("LAKE_PASS_E2E_BROWSER_EXECUTABLE")); configured != "" {
 		return configured
 	}
 	for _, candidate := range []string{

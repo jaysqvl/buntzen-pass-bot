@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from buntzen_actions.calendar_dates import resolve_button_date
+from lake_pass_actions.providers.yodel.calendar_dates import resolve_button_date
 
 
 class CalendarDateTests(unittest.TestCase):

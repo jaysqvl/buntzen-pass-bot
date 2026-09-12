@@ -2,12 +2,12 @@
 
 set -Eeuo pipefail
 
-image="${1:-buntzen-pass-bot:ci}"
+image="${1:-lake-pass-bot:ci}"
 expected_version="${2:-dev}"
 expected_revision="${3:-}"
 run_suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
-container="buntzen-ci-smoke-${run_suffix}"
-volume="buntzen-ci-appdata-${run_suffix}"
+container="lake-pass-ci-smoke-${run_suffix}"
+volume="lake-pass-ci-appdata-${run_suffix}"
 setup_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 admin_username="ci-admin"
 admin_password="ci-only-administrator-password"
@@ -121,11 +121,11 @@ footer = parser.footers[0]
 if footer.get("data-version") != version or footer.get("data-revision") != revision:
     raise SystemExit("page version does not match the image build")
 text = " ".join(" ".join(parser.text).split())
-repository = "https://github.com/jaysqvl/buntzen-pass-bot"
+repository = "https://github.com/jaysqvl/lake-pass-bot"
 if version == "dev":
     if "Development build" not in text:
         raise SystemExit("development image is not clearly identified")
-elif f"v{version}" not in text or f"{repository}/releases/tag/buntzen-pass-bot-v{version}" not in parser.links:
+elif f"v{version}" not in text or f"{repository}/releases/tag/lake-pass-bot-v{version}" not in parser.links:
     raise SystemExit("release version or release notes link is missing")
 if revision and (f"Build {revision[:7]}" not in text or f"{repository}/commit/{revision}" not in parser.links):
     raise SystemExit("build revision or commit link is missing")
@@ -148,7 +148,7 @@ wait_for_health() {
 start_container() {
   local key_options=()
   if [[ -n "$key_directory" ]]; then
-    key_options+=(--env BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key)
+    key_options+=(--env LAKE_PASS_MASTER_KEY_FILE=/run/buntzen-key/master.key)
   fi
   docker run --detach \
     --name "$container" \
@@ -164,8 +164,8 @@ start_container() {
     --volume "${key_directory:-$appdata_mount}:/run/buntzen-key:ro" \
     --env APPDATA_DIR=/appdata \
     --env BLUEBUBBLES_URL=http://bluebubbles.example:1234 \
-    --env BUNTZEN_DEBUG=true \
-    --env BUNTZEN_SETUP_TOKEN="$setup_token" \
+    --env LAKE_PASS_DEBUG=true \
+    --env LAKE_PASS_SETUP_TOKEN="$setup_token" \
     --env MAX_CONCURRENT_JOBS=2 \
     --env SCHEDULES_ENABLED=false \
     "${key_options[@]}" \
@@ -199,17 +199,17 @@ start_container() {
 
 validate_doctor() {
   local report
-  report="$(docker exec "$container" /usr/local/bin/buntzen doctor)"
+  report="$(docker exec "$container" /usr/local/bin/lake-pass-bot doctor)"
   printf '%s\n' "$report" | jq -e '
     .ok == true and
-    .schema_version == 6 and
+    .schema_version == 7 and
     .action_protocol == 2 and
     .appdata_dir == "/appdata" and
-    .database_path == "/appdata/buntzen.db" and
+    .database_path == "/appdata/lake-pass-bot.db" and
     .profiles_dir == "/appdata/profiles" and
     .artifacts_dir == "/appdata/artifacts" and
-    .python_executable == "/usr/bin/python" and
-    .python_module == "buntzen_actions" and
+    .python_executable == "python3" and
+    .python_module == "lake_pass_actions" and
     .python_ready == true and
     .log_level == "debug" and
     .schedules_enabled == false and
@@ -243,8 +243,8 @@ perform_setup() {
     --write-out '%{http_code}' "$base_url/setup")"
   [[ "$code" == "303" ]] || fail "first-run setup returned HTTP $code"
   [[ "$(header_value "$headers" Location)" == "/?ok=setup" ]] || fail "first-run setup returned an unexpected redirect"
-  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: buntzen_session=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened session cookie"
-  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: buntzen_csrf=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened CSRF cookie"
+  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: lake_pass_session=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened session cookie"
+  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: lake_pass_csrf=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened CSRF cookie"
 
   curl --fail --silent --show-error --max-time 10 \
     --cookie "$cookies" --output "$workspace/setup-dashboard" "$base_url/"
@@ -318,6 +318,19 @@ unexpected = [
 if unexpected:
     raise SystemExit("unexpected runtime Python modules: " + ", ".join(unexpected))
 ' || fail "build-only Python modules remained importable in the runtime image"
+# A pre-start cancellation probes compatibility without opening a browser.
+docker exec "$container" python -c '
+import json
+import subprocess
+import sys
+
+probe = json.dumps({"v": 2, "type": "control.cancel"}) + "\n"
+result = subprocess.run([sys.executable, "-m", "buntzen_actions"], input=probe,
+                        text=True, capture_output=True, timeout=10, check=True)
+frames = [json.loads(line) for line in result.stdout.splitlines()]
+assert len(frames) == 1 and frames[0]["type"] == "worker.ready"
+assert frames[0]["protocol"] == 2
+' || fail "legacy Python worker launcher did not pass readiness"
 # Inspect the image itself without the service's tmpfs masking its home cache.
 docker run --rm --network none --read-only --user 0 --entrypoint sh "$image" -eu -c '
   test ! -e /root/.cache
@@ -329,7 +342,7 @@ docker run --rm --network none --read-only --user 0 --entrypoint sh "$image" -eu
 ' || fail "removed build caches or WebKit-only packages survived in the image"
 docker exec "$container" sh -eu -c '
   test -w /appdata
-  test -f /appdata/buntzen.db
+  test -f /appdata/lake-pass-bot.db
   test -f /appdata/master.key
   printf "%s\n" persisted > /appdata/.ci-persistence-marker
 '
@@ -337,19 +350,20 @@ docker exec "$container" sh -eu -c '
 
 key_digest="$(docker exec "$container" sha256sum /appdata/master.key | awk '{print $1}')"
 validate_doctor
+[[ "$(docker exec "$container" /usr/local/bin/buntzen version)" == "$(docker exec "$container" /usr/local/bin/lake-pass-bot version)" ]] || fail "legacy CLI alias differs from the renamed binary"
 perform_setup
 perform_login before-restart
 
-docker exec --interactive "$container" sh -eu -c 'cat > /tmp/buntzen-browser-smoke.py' \
+docker exec --interactive "$container" sh -eu -c 'cat > /tmp/lake-pass-browser-smoke.py' \
   < scripts/docker_browser_smoke.py
-docker exec "$container" python /tmp/buntzen-browser-smoke.py
+docker exec "$container" python /tmp/lake-pass-browser-smoke.py
 wait_for_health
 
 service_logs="$(docker logs "$container" 2>&1)"
 [[ "$service_logs" != *"$setup_token"* ]] || fail "service logs exposed the setup token"
 [[ "$service_logs" != *"$admin_password"* ]] || fail "service logs exposed the administrator password"
 docker exec --env "CI_SECRET=$admin_password" "$container" sh -eu -c '
-  for path in /appdata/buntzen.db*; do
+  for path in /appdata/lake-pass-bot.db*; do
     ! grep -aF -- "$CI_SECRET" "$path" >/dev/null
   done
 ' || fail "database contains the administrator password in plaintext"

@@ -31,6 +31,39 @@
     notifications.append(notification);
   };
 
+  const bookingForm = document.getElementById('booking-form');
+  if (bookingForm) {
+    const lakeSelector = bookingForm.elements.namedItem('lake_id');
+    let selectedLake = lakeSelector.value;
+    lakeSelector.addEventListener('change', () => {
+      if (lakeSelector.value === selectedLake) return;
+      const option = lakeSelector.selectedOptions[0];
+      if (!option?.dataset.lakeDefaults) return;
+      let defaults;
+      try { defaults = JSON.parse(option.dataset.lakeDefaults); }
+      catch { showNotification('Lake settings could not be loaded. Reload this page before saving.'); return; }
+      if (defaults.id !== lakeSelector.value) return;
+      for (const [name, value] of Object.entries({
+        timezone: defaults.timezone, release_time: defaults.releaseTime,
+        all_day_pass_url: defaults.allDayPassURL, half_day_pass_url: defaults.halfDayPassURL,
+      })) {
+        bookingForm.elements.namedItem(name).value = value;
+      }
+      for (let index = 0; index < 3; index++) {
+        const field = bookingForm.elements.namedItem(`pass_priority_${index + 1}`);
+        const choices = [...defaults.passes, {value: '', label: 'None'}].map(pass => {
+          const choice = document.createElement('option');
+          choice.value = pass.value; choice.textContent = pass.label;
+          return choice;
+        });
+        field.replaceChildren(...choices);
+        field.value = defaults.passes[index]?.value || '';
+      }
+      document.getElementById('lake-release-policy').textContent = defaults.releasePolicy;
+      selectedLake = lakeSelector.value;
+    });
+  }
+
   const root = document.getElementById('live-job');
   if (!root || !window.EventSource) return;
   const jobID = root.dataset.jobId;

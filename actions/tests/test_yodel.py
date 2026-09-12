@@ -6,11 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import urlparse
 
-from buntzen_actions.control import Credentials
-from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
-from buntzen_actions.pass_types import PASS_PREFERENCES
-from buntzen_actions.vehicle_selection import VehicleSelectionResult
-from buntzen_actions.yodel import (
+from lake_pass_actions.control import Credentials
+from lake_pass_actions.errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
+from lake_pass_actions.lakes.buntzen import LAKE, PASS_PREFERENCES
+from lake_pass_actions.providers.yodel.vehicle_selection import VehicleSelectionResult
+from lake_pass_actions.providers.yodel.action import (
     BookingResult,
     LOGIN_PHONE_SELECTORS,
     LOGIN_SUBMIT_SELECTORS,
@@ -316,7 +316,7 @@ class YodelTests(unittest.TestCase):
         action = object.__new__(YodelAction)
         action.page = PhoneOnlyPage()
         action.control = SimpleNamespace(inbox=Inbox())
-        with patch("buntzen_actions.yodel.time.monotonic", side_effect=lambda: action.page.elapsed):
+        with patch("lake_pass_actions.providers.yodel.action.time.monotonic", side_effect=lambda: action.page.elapsed):
             self.assertTrue(action._has_login_form())
             self.assertFalse(action._has_otp_challenge())
         self.assertNotIn("input[inputmode='numeric']", OTP_INPUT_SELECTORS)
@@ -430,7 +430,7 @@ class YodelTests(unittest.TestCase):
         action.ensure_authenticated = lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("reauthentication must not start after the deadline")
         )
-        with patch("buntzen_actions.yodel.random.random", return_value=1.0):
+        with patch("lake_pass_actions.providers.yodel.action.random.random", return_value=1.0):
             with self.assertRaises(ActionError):
                 action.keep_session_warm(auth_deadline_at=deadline)
         self.assertNotIn("otp.prepare", [event[0] for event in events])
@@ -452,9 +452,9 @@ class YodelTests(unittest.TestCase):
             )
         )
 
-        with patch("buntzen_actions.yodel.datetime", clock), patch(
-            "buntzen_actions.yodel.time.monotonic", return_value=1.0
-        ), patch("buntzen_actions.yodel.time.sleep"):
+        with patch("lake_pass_actions.providers.yodel.action.datetime", clock), patch(
+            "lake_pass_actions.providers.yodel.action.time.monotonic", return_value=1.0
+        ), patch("lake_pass_actions.providers.yodel.action.time.sleep"):
             action.wait_for_release_if_needed()
 
         trace_events = [event for event in events if event[0] == "trace"]
@@ -487,7 +487,7 @@ class YodelTests(unittest.TestCase):
         )
 
         with patch(
-            "buntzen_actions.yodel.datetime",
+            "lake_pass_actions.providers.yodel.action.datetime",
             SimpleNamespace(now=Mock(return_value=before_release)),
         ), self.assertRaises(ActionError):
             action.wait_for_release_if_needed()
@@ -502,7 +502,7 @@ class YodelTests(unittest.TestCase):
         action.control.inbox.failure = Cancelled("cancelled during release wait")
         clock = SimpleNamespace(now=Mock(side_effect=[before_release, before_release]))
 
-        with patch("buntzen_actions.yodel.datetime", clock), self.assertRaises(
+        with patch("lake_pass_actions.providers.yodel.action.datetime", clock), self.assertRaises(
             Cancelled
         ):
             action.wait_for_release_if_needed()
@@ -520,8 +520,8 @@ class YodelTests(unittest.TestCase):
         action = ReleaseAction(events, release_at, ActionError("keepalive failed"))
         clock = SimpleNamespace(now=Mock(side_effect=[before_release, before_release]))
 
-        with patch("buntzen_actions.yodel.datetime", clock), patch(
-            "buntzen_actions.yodel.time.monotonic", return_value=1.0
+        with patch("lake_pass_actions.providers.yodel.action.datetime", clock), patch(
+            "lake_pass_actions.providers.yodel.action.time.monotonic", return_value=1.0
         ), self.assertRaises(ActionError):
             action.wait_for_release_if_needed()
 
@@ -553,7 +553,7 @@ class YodelTests(unittest.TestCase):
         action.ensure_authenticated = reauthenticate
         clock = SimpleNamespace(now=Mock(side_effect=[before_release, release_at]))
 
-        with patch("buntzen_actions.yodel.datetime", clock):
+        with patch("lake_pass_actions.providers.yodel.action.datetime", clock):
             action.wait_for_release_if_needed()
 
         trace_events = [event for event in events if event[0] == "trace"]
@@ -575,7 +575,7 @@ class YodelTests(unittest.TestCase):
         self.assertLess(resuspended, final_resume)
         self.assertIn(("release.ready", {}), events)
 
-    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    @patch("lake_pass_actions.providers.yodel.action.CheckoutConfirmation")
     def test_final_click_is_bracketed(self, receipt_type) -> None:
         events = []
         action = object.__new__(YodelAction)
@@ -590,7 +590,7 @@ class YodelTests(unittest.TestCase):
         self.assertEqual(events[3][1]["confirmation_id"], "confirmation")
         receipt_type.return_value.wait.assert_called_once_with(action.control)
 
-    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    @patch("lake_pass_actions.providers.yodel.action.CheckoutConfirmation")
     def test_final_click_does_not_run_without_confirmation_ack(self, _receipt_type) -> None:
         failures = (
             Cancelled("stream closed before ack"),
@@ -617,7 +617,7 @@ class YodelTests(unittest.TestCase):
                     )
                 self.assertNotIn(("click", "confirm"), events)
 
-    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    @patch("lake_pass_actions.providers.yodel.action.CheckoutConfirmation")
     def test_final_click_failure_is_outcome_unknown(self, _receipt_type) -> None:
         events = []
         action = object.__new__(YodelAction)
@@ -632,7 +632,7 @@ class YodelTests(unittest.TestCase):
         self.assertEqual(events[1][0], "confirmation.ready")
         self.assertNotIn("confirmation.completed", [event[0] for event in events])
 
-    @patch("buntzen_actions.yodel.CheckoutConfirmation")
+    @patch("lake_pass_actions.providers.yodel.action.CheckoutConfirmation")
     def test_successful_click_without_verified_receipt_is_unknown(self, receipt_type) -> None:
         events = []
         action = object.__new__(YodelAction)
@@ -647,6 +647,7 @@ class YodelTests(unittest.TestCase):
     def test_pass_fallback_stops_after_the_first_available_preference(self) -> None:
         events = []
         action = object.__new__(YodelAction)
+        action.lake = LAKE
         action.config = SimpleNamespace(pass_order=("all_day", "afternoon", "morning"))
         action.control = FakeControl(events)
 
@@ -664,6 +665,7 @@ class YodelTests(unittest.TestCase):
 
     def test_failed_preferences_keep_each_reason_in_progress_and_final_status(self) -> None:
         action = object.__new__(YodelAction)
+        action.lake = LAKE
         action.config = SimpleNamespace(pass_order=("all_day", "afternoon"))
         action.control = SimpleNamespace(inbox=Inbox(), status=Mock())
         messages = (
@@ -681,7 +683,7 @@ class YodelTests(unittest.TestCase):
             [("pass_result", message) for message in messages],
         )
 
-    @patch("buntzen_actions.yodel.select_target_date", return_value=True)
+    @patch("lake_pass_actions.providers.yodel.action.select_target_date", return_value=True)
     def test_vehicle_failure_stops_before_cart_and_preserves_safe_reason(self, _date) -> None:
         events = []
         action = BookingAction(events)
@@ -695,9 +697,10 @@ class YodelTests(unittest.TestCase):
         self.assertNotIn("checkout.click", [event[0] for event in events])
         self.assertNotIn(action.config.vehicle_keyword, result.message)
 
-    @patch("buntzen_actions.yodel.time.monotonic", side_effect=[0, 0, 2])
+    @patch("lake_pass_actions.providers.yodel.action.time.monotonic", side_effect=[0, 0, 2])
     def test_poll_deadline_keeps_the_actual_vehicle_failure(self, _clock) -> None:
         action = object.__new__(YodelAction)
+        action.lake = LAKE
         action.config = SimpleNamespace(pass_order=("afternoon",), poll_deadline_seconds=1)
         action.control = FakeControl([])
         action.page = object()
@@ -710,9 +713,9 @@ class YodelTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.message, f"Polling deadline reached. Last status: {message}")
 
-    @patch("buntzen_actions.yodel.require_empty_cart")
-    @patch("buntzen_actions.yodel.require_single_pass_cart")
-    @patch("buntzen_actions.yodel.select_target_date", return_value=True)
+    @patch("lake_pass_actions.providers.yodel.action.require_empty_cart")
+    @patch("lake_pass_actions.providers.yodel.action.require_single_pass_cart")
+    @patch("lake_pass_actions.providers.yodel.action.select_target_date", return_value=True)
     def test_manual_approval_suspends_trace_until_submission(
         self, _select_date, _single_pass_cart, _empty_cart
     ) -> None:
@@ -734,9 +737,9 @@ class YodelTests(unittest.TestCase):
             manual_events.index(("confirmation.click", "all_day")),
         )
 
-    @patch("buntzen_actions.yodel.require_empty_cart")
-    @patch("buntzen_actions.yodel.require_single_pass_cart")
-    @patch("buntzen_actions.yodel.select_target_date", return_value=True)
+    @patch("lake_pass_actions.providers.yodel.action.require_empty_cart")
+    @patch("lake_pass_actions.providers.yodel.action.require_single_pass_cart")
+    @patch("lake_pass_actions.providers.yodel.action.select_target_date", return_value=True)
     def test_manual_wait_does_not_begin_when_trace_stop_fails(
         self, _select_date, _single_pass_cart, _empty_cart
     ) -> None:

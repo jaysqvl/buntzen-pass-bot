@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
 )
 
 func TestOTPLifecycleIsEphemeral(t *testing.T) {

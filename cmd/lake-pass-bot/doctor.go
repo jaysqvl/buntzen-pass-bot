@@ -8,11 +8,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/observability"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/actionproc"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/engine"
+	"github.com/jaysqvl/lake-pass-bot/internal/observability"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func runDoctor(ctx context.Context, cfg config.Config, database *store.Store) error {
@@ -86,7 +86,7 @@ func doctorPython(ctx context.Context, cfg config.Config) (bool, string) {
 	defer cancel()
 	session, err := actionproc.Start(checkCtx, actionproc.Config{
 		Executable: cfg.PythonExecutable, Args: []string{"-m", cfg.PythonModule},
-		Environment: []string{"PYTHONUNBUFFERED=1", "BUNTZEN_ACTION_LOG_LEVEL=" + cfg.EffectiveLogLevel()}, CancelGrace: 2 * time.Second,
+		Environment: []string{"PYTHONUNBUFFERED=1", "LAKE_PASS_ACTION_LOG_LEVEL=" + cfg.EffectiveLogLevel()}, CancelGrace: 2 * time.Second,
 		OnStderr: func(line string) {
 			observability.LogActionDiagnostic(checkCtx, "doctor", line)
 		},

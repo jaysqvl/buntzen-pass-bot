@@ -39,7 +39,8 @@ def repository_files() -> list[Path]:
         check=True,
         capture_output=True,
     )
-    return [ROOT / name.decode() for name in result.stdout.split(b"\0") if name]
+    return [ROOT / name.decode() for name in result.stdout.split(b"\0")
+            if name and (ROOT / name.decode()).is_file()]
 
 
 def read_text(path: Path) -> str | None:
@@ -89,7 +90,7 @@ def findings_for(path: Path, text: str) -> set[str]:
     if any(match.group(1).lower() not in ALLOWED_EMAIL_DOMAINS for match in EMAIL.finditer(text)):
         findings.add("non-example email address")
 
-    if relative == ".env.example" and re.search(r"(?m)^WEB_PORT=(?!8080$)\d+$", text):
+    if relative == ".env.example" and re.search(r"(?m)^(?:LAKE_PASS_)?WEB_PORT=(?!8080$)\d+$", text):
         findings.add("deployment-specific example port")
     if relative == "docker-compose.yml" and re.search(r"\$\{WEB_PORT:-(?!8080})\d+}", text):
         findings.add("deployment-specific Compose port")
@@ -109,7 +110,7 @@ def main() -> int:
         if findings_for(ROOT / "fixture", sample):
             raise RuntimeError("privacy guard mistook release metadata for a phone number")
     if findings_for(ROOT / "fixture", "America/Vancouver"):
-        raise RuntimeError("privacy guard rejected Buntzen's public local timezone")
+        raise RuntimeError("privacy guard rejected Lake Pass Bot's public local timezone")
     if "deployment-local timezone" not in findings_for(
         ROOT / "fixture", "America/Example_City"
     ):
