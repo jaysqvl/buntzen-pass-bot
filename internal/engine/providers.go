@@ -30,9 +30,9 @@ type supervisedProvider struct {
 }
 
 var (
-	ErrPairingProfileRequired = errors.New("create a Yodel profile and assign this OTP source before pairing")
-	ErrPairingProfileDisabled = errors.New("enable the Yodel profile linked to this OTP source before pairing")
-	ErrPairingProfileInvalid  = errors.New("review the linked Yodel profile before pairing")
+	ErrPairingProfileRequired = errors.New("create a lake profile and assign this OTP source before pairing")
+	ErrPairingProfileDisabled = errors.New("enable the lake profile linked to this OTP source before pairing")
+	ErrPairingProfileInvalid  = errors.New("review the linked lake profile before pairing")
 )
 
 // PairingSetup identifies the owner's profile, including the resource to correct

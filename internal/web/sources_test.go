@@ -22,7 +22,7 @@ func TestSourcesPairFromTheLinkedProfileWithoutABooking(t *testing.T) {
 		loginURL, wantLabel, wantDetail string
 	}{
 		{name: "ready without a booking", enabled: true, loginURL: "https://example.test/login", wantLabel: "Pair with Yodel"},
-		{name: "disabled profile", loginURL: "https://example.test/login", wantLabel: "Enable profile", wantDetail: "enable the Yodel profile"},
+		{name: "disabled profile", loginURL: "https://example.test/login", wantLabel: "Enable profile", wantDetail: "enable the lake profile"},
 		{name: "unapproved profile login URL", enabled: true, loginURL: "https://unapproved.example/login", wantLabel: "Review profile", wantDetail: "Yodel login URL must use an approved Yodel origin"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -45,7 +45,7 @@ func TestSourcesPairFromTheLinkedProfileWithoutABooking(t *testing.T) {
 				t.Fatal(err)
 			}
 			cookies := loginCookies(t, fixture)
-			recorder := serveForm(fixture, http.MethodGet, "/", cookies, nil)
+			recorder := serveForm(fixture, http.MethodGet, "/sources", cookies, nil)
 			body := recorder.Body.String()
 			if recorder.Code != http.StatusOK || !strings.Contains(body, test.wantLabel) || !strings.Contains(body, test.wantDetail) || !strings.Contains(body, profile.Name) {
 				t.Fatalf("sources setup guidance = %d body=%s", recorder.Code, body)
@@ -70,7 +70,7 @@ func TestSourcesPairFromTheLinkedProfileWithoutABooking(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.wantDetail != "" {
-				if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/?notice=pairing-unavailable#otp-sources" || len(jobs) != 0 {
+				if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/sources?notice=pairing-unavailable" || len(jobs) != 0 {
 					t.Fatalf("pair POST prerequisite = %d location=%q jobs=%+v", recorder.Code, recorder.Header().Get("Location"), jobs)
 				}
 				// Browsers keep the fragment locally; it is not part of the next HTTP request.
@@ -90,7 +90,7 @@ func TestSourcesPairFromTheLinkedProfileWithoutABooking(t *testing.T) {
 	}
 }
 
-func TestSourceConnectionActionsReturnToSetupWithoutProviderErrors(t *testing.T) {
+func TestSourceConnectionActionsReturnToSourcesWithoutProviderErrors(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(fmt.Sprintf("healthy=%t", healthy), func(t *testing.T) {
 			fixture := newWebFixture(t)
@@ -120,15 +120,15 @@ func TestSourceConnectionActionsReturnToSetupWithoutProviderErrors(t *testing.T)
 			}
 			cookies := loginCookies(t, fixture)
 			response := serveForm(fixture, http.MethodPost, fmt.Sprintf("/sources/%d/health", source.ID), cookies, url.Values{"csrf_token": {csrfFrom(cookies)}})
-			wantLocation, wantMessage := "/?ok=healthy#otp-sources", "Provider authentication succeeded."
+			wantLocation, wantMessage := "/sources?ok=healthy", "Provider authentication succeeded."
 			if !healthy {
-				wantLocation, wantMessage = "/?notice=provider-unavailable#otp-sources", "connection test failed"
+				wantLocation, wantMessage = "/sources?notice=provider-unavailable", "connection test failed"
 			}
 			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != wantLocation || calls.Load() != 1 {
 				t.Fatalf("connection action = %d location=%q calls=%d", response.Code, response.Header().Get("Location"), calls.Load())
 			}
 			page := serveForm(fixture, http.MethodGet, strings.SplitN(wantLocation, "#", 2)[0], cookies, nil)
-			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), wantMessage) || !strings.Contains(page.Body.String(), `id="otp-sources"`) {
+			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), wantMessage) || !strings.Contains(page.Body.String(), `href="/sources" aria-current="page"`) {
 				t.Fatalf("connection result page = %d body=%s", page.Code, page.Body.String())
 			}
 			for _, secret := range []string{password, privateError} {
@@ -140,7 +140,7 @@ func TestSourceConnectionActionsReturnToSetupWithoutProviderErrors(t *testing.T)
 	}
 }
 
-func TestPairingQueueFailuresReturnToSetupWithoutCreatingAnotherJob(t *testing.T) {
+func TestPairingQueueFailuresReturnToSourcesWithoutCreatingAnotherJob(t *testing.T) {
 	for _, full := range []bool{false, true} {
 		t.Run(fmt.Sprintf("full=%t", full), func(t *testing.T) {
 			fixture := newWebFixture(t)
@@ -174,7 +174,7 @@ func TestPairingQueueFailuresReturnToSetupWithoutCreatingAnotherJob(t *testing.T
 			}
 			cookies := loginCookies(t, fixture)
 			response := serveForm(fixture, http.MethodPost, fmt.Sprintf("/sources/%d/pair", source.ID), cookies, url.Values{"csrf_token": {csrfFrom(cookies)}})
-			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/?notice="+notice+"#otp-sources" {
+			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/sources?notice="+notice {
 				t.Fatalf("pairing queue refusal = %d location=%q", response.Code, response.Header().Get("Location"))
 			}
 			jobs, err := resources.ListJobs(ctx, 20)

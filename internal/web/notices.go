@@ -9,6 +9,9 @@ import (
 // Only fixed application messages are accepted from redirect URLs. Provider
 // errors, credentials, arbitrary text and return URLs never enter notifications.
 func noticeFor(code string) *Flash {
+	if code == "lake-defaults-reset" {
+		return &Flash{Kind: "success", Message: "Lake defaults reset. Existing profiles, requests, and queued jobs keep their saved settings."}
+	}
 	if code == "queue-pending" {
 		return &Flash{Kind: "info", Message: "A job already exists for this booking. No second job was created."}
 	}

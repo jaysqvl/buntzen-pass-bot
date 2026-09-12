@@ -21,16 +21,19 @@ const (
 )
 
 type BookingRequest struct {
-	ID                        int64
-	UserID                    int64
-	Name                      string
-	LakeID                    string
-	ProfileID                 int64
-	Enabled                   bool
-	ScheduleEnabled           bool
-	TargetDate                string
-	Timezone                  string
-	ReleaseTime               string
+	ID              int64
+	UserID          int64
+	Name            string
+	LakeID          string
+	ProfileID       int64
+	Enabled         bool
+	ScheduleEnabled bool
+	TargetDate      string
+	Timezone        string
+	ReleaseTime     string
+	// Nil supports callers predating per-lake defaults. Persistence snapshots
+	// the catalog value; an explicit zero means release on the visit date.
+	ReleaseDaysBefore         *int
 	PrepMinutesBefore         int
 	AuthDeadlineMinutesBefore int
 	PollDeadlineSeconds       int
@@ -56,6 +59,14 @@ func (r BookingRequest) EffectiveLakeID() string {
 		return destinations.DefaultLakeID
 	}
 	return r.LakeID
+}
+
+func (r BookingRequest) EffectiveReleaseDaysBefore() int {
+	if r.ReleaseDaysBefore != nil {
+		return *r.ReleaseDaysBefore
+	}
+	lake, _ := destinations.Resolve(r.LakeID)
+	return lake.ReleaseDaysBefore
 }
 
 func (r BookingRequest) PassOrder() []PassType {
@@ -99,6 +110,9 @@ func (r BookingRequest) Validate() error {
 	}
 	if _, err := time.Parse("15:04", r.ReleaseTime); err != nil {
 		problems = append(problems, "release time must use HH:MM")
+	}
+	if days := r.EffectiveReleaseDaysBefore(); days < 0 || days > MaxReleaseDaysBefore {
+		problems = append(problems, "release days before visit must be between 0 and 365")
 	}
 	if r.PrepMinutesBefore < 0 || r.AuthDeadlineMinutesBefore < 0 {
 		problems = append(problems, "preparation offsets cannot be negative")

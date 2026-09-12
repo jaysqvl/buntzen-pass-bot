@@ -47,6 +47,9 @@ type formSection struct {
 }
 type formData struct {
 	BaseData
+	HiddenFields                                                                []hiddenField
+	LakeSettingsURL                                                             string
+	AdvancedHelp                                                                string
 	Eyebrow, Heading, Description, CancelURL, ActionURL, SubmitLabel, FormError string
 	Sections                                                                    []formSection
 	LakeSelection                                                               bool

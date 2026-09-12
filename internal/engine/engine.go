@@ -266,9 +266,19 @@ func (e *Engine) executeWithBudgets(parent context.Context, job model.Job, inter
 			return control.RunResult{}, err
 		}
 	}
-	lake, err := executionDestination(booking.LakeID)
+	// Profile-only sign-in jobs use the profile's lake. Booking jobs must
+	// agree with that lake before either set of credentials is decrypted.
+	lake, err := executionDestination(profile.EffectiveLakeID())
 	if err != nil {
 		return control.RunResult{}, err
+	}
+	if job.BookingRequestID != nil {
+		if _, err := executionDestination(booking.EffectiveLakeID()); err != nil {
+			return control.RunResult{}, err
+		}
+		if err := validateProfileBookingLake(profile, booking); err != nil {
+			return control.RunResult{}, err
+		}
 	}
 	deadline, err := jobExecutionDeadline(job, booking, startedAt, interactive, checkout)
 	if err != nil {

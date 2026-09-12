@@ -18,10 +18,11 @@
   <header class="topbar">
     <a class="brand" href="/">Lake Pass <span>Bot</span></a>
     <nav aria-label="Main navigation">
-      <a href="/"{{if navCurrent .CurrentPath "/"}} aria-current="page"{{end}}>Setup</a>
+      <a href="/lakes"{{if navCurrent .CurrentPath "/lakes"}} aria-current="page"{{end}}>Lakes</a>
       <a href="/bookings"{{if navCurrent .CurrentPath "/bookings"}} aria-current="page"{{end}}>Bookings</a>
       <a href="/jobs"{{if navCurrent .CurrentPath "/jobs"}} aria-current="page"{{end}}>Jobs</a>
-	  {{if .IsAdmin}}<a href="/admin/users"{{if navCurrent .CurrentPath "/admin/users"}} aria-current="page"{{end}}>Users</a>{{end}}
+      <a href="/sources"{{if navCurrent .CurrentPath "/sources"}} aria-current="page"{{end}}>OTP sources</a>
+      <a href="/settings"{{if navCurrent .CurrentPath "/settings"}} aria-current="page"{{end}}>Settings</a>
     </nav>
 	<a class="account-link" href="/account"{{if eq .CurrentPath "/account"}} aria-current="page"{{end}} aria-label="Account settings for {{.Username}}">{{.Username}}</a>
     <form action="/logout" method="post">

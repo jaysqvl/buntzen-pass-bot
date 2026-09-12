@@ -184,6 +184,14 @@ input::-webkit-date-and-time-value { text-align: left; }
 .form-advanced > .field-help { margin-bottom: 24px; }
 .form-advanced fieldset:last-child { margin-bottom: 0; }
 .form-card > .actions { margin-top: 8px; padding-top: 24px; border-top: 1px solid var(--line); }
+.form-context { padding-bottom: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
+.form-context p { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.page-links { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0 0 28px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.page-links a { color: var(--blue); padding: 6px 0; }
+.page-links a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.settings-links { margin-bottom: 28px; }
+.reset-defaults { margin-top: 20px; }
+#defaults { scroll-margin-top: 96px; }
 .sticky { position: static; }
 .account-form { max-width: 880px; }
 .account-form + .account-form { margin-top: 24px; }
@@ -246,11 +254,15 @@ input::-webkit-date-and-time-value { text-align: left; }
   .topbar nav a { padding-inline: 10px; }
   .account-link { max-width: 120px; }
 }
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .topbar { flex-wrap: wrap; gap: 8px 12px; padding: 12px 16px 8px; }
-  .topbar nav { order: 4; flex: 1 0 100%; gap: 4px; }
-  .topbar nav a { flex: 1; padding: 10px 6px; text-align: center; font-size: 14px; }
+  .topbar nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); order: 4; flex: 1 0 100%; gap: 4px; }
+  .topbar nav a { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 4px; text-align: center; font-size: 13px; line-height: 1.3; }
   .account-link { margin-left: auto; max-width: 100px; }
+  .notifications { top: 144px; }
+  #otp-sources, #profiles, #pairing-help, #defaults { scroll-margin-top: 160px; }
+}
+@media (max-width: 760px) {
   .shell { padding: 28px 16px 48px; }
   .hero, .section-head { flex-direction: column; gap: 12px; }
   .hero > .button, .section-head > .button, .section-head > .pill { margin-top: 0; }
@@ -263,9 +275,7 @@ input::-webkit-date-and-time-value { text-align: left; }
   .form-spacer { display: none; }
   .login-card { margin: 24px auto; padding: 24px; }
   .login-card h1 { font-size: 28px; }
-  .notifications { top: 132px; }
   .table-hint { display: block; margin: 0 0 8px; color: var(--muted); font-size: 12px; }
-  #otp-sources, #profiles, #pairing-help { scroll-margin-top: 144px; }
   .app-footer { padding: 16px; }
 }
 @media (max-width: 420px) {

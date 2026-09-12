@@ -29,7 +29,7 @@ func TestMigrateCreatesCleanSchemaAndRefusesLegacyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := store.SchemaVersion(ctx)
-	if err != nil || version != 7 {
+	if err != nil || version != 8 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 

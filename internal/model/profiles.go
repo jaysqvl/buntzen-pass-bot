@@ -4,11 +4,14 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
 )
 
 type Profile struct {
 	ID                int64
 	UserID            int64
+	LakeID            string
 	Name              string
 	DefaultVehicle    string
 	LoginProbeURL     string
@@ -29,7 +32,17 @@ type ProfileCredentials struct {
 	Phone string
 }
 
+func (p Profile) EffectiveLakeID() string {
+	if p.LakeID == "" {
+		return destinations.DefaultLakeID
+	}
+	return p.LakeID
+}
+
 func (p Profile) Validate() error {
+	if _, err := destinations.Resolve(p.LakeID); err != nil {
+		return err
+	}
 	if strings.TrimSpace(p.Name) == "" {
 		return errors.New("profile name is required")
 	}

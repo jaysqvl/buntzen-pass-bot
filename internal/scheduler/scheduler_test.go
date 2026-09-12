@@ -93,3 +93,20 @@ func validRequest() model.BookingRequest {
 		CheckAllDay: true,
 	}
 }
+
+func TestWindowUsesSnapshottedReleaseDaysIncludingSameDay(t *testing.T) {
+	for _, test := range []struct {
+		days int
+		want string
+	}{
+		{0, "2030-01-15T07:00:00Z"},
+		{3, "2030-01-12T07:00:00Z"},
+	} {
+		request := validRequest()
+		request.ReleaseDaysBefore = &test.days
+		window, err := WindowFor(request)
+		if err != nil || window.ReleaseAt.Format(time.RFC3339) != test.want {
+			t.Fatalf("days=%d release=%s want=%s err=%v", test.days, window.ReleaseAt, test.want, err)
+		}
+	}
+}

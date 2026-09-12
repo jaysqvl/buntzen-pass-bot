@@ -304,6 +304,12 @@ func mapWriteError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if strings.Contains(err.Error(), "profile lake cannot be changed") {
+		return fmt.Errorf("%w: a profile's lake cannot be changed; create a new profile for that lake", ErrConflict)
+	}
+	if strings.Contains(err.Error(), "booking profile must belong to the selected lake") {
+		return fmt.Errorf("%w: choose a profile for the selected lake", ErrConflict)
+	}
 	if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed: booking_reservations.profile_id") {
 		return fmt.Errorf("%w: this profile and date already have a pending, successful, or unresolved booking", ErrConflict)
 	}

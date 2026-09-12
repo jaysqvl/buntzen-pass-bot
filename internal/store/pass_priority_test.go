@@ -86,10 +86,21 @@ func TestPassOrderMigrationPreservesEveryLegacySelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := database.CreateProfile(ctx, admin.ID, ProfileInput{
-		Name: "Pass migration profile", DefaultVehicle: "Example Vehicle", LoginProbeURL: "https://example.test/login",
-		OTPSourceID: source.ID, DefaultTimeoutMS: 15_000, Credentials: &model.ProfileCredentials{Phone: "5559876543"},
-	})
+	// Seed the v5 schema directly: current profile writes require columns
+	// introduced after the migration this fixture is exercising.
+	phone, err := database.encryptor.Encrypt([]byte("5559876543"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileResult, err := database.db.ExecContext(ctx, `
+		INSERT INTO profiles(user_id, name, default_vehicle, login_probe_url,
+			otp_source_id, yodel_phone_ciphertext, default_timeout_ms, created_at, updated_at)
+		VALUES (?, 'Pass migration profile', 'Example Vehicle', 'https://example.test/login', ?, ?, 15000, ?, ?)
+	`, admin.ID, source.ID, phone, formatTime(database.now()), formatTime(database.now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID, err := profileResult.LastInsertId()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +111,7 @@ func TestPassOrderMigrationPreservesEveryLegacySelection(t *testing.T) {
 			INSERT INTO booking_requests(user_id,name,profile_id,target_date,login_probe_url,
 				check_all_day,check_afternoon,check_morning,created_at,updated_at)
 			VALUES (?,?,?,'2030-01-15','https://example.test/login',?,?,?,?,?)
-		`, admin.ID, fmt.Sprintf("Legacy selection %d", flags), profile.ID,
+		`, admin.ID, fmt.Sprintf("Legacy selection %d", flags), profileID,
 			legacy.CheckAllDay, legacy.CheckAfternoon, legacy.CheckMorning, formatTime(database.now()), formatTime(database.now()))
 		if err != nil {
 			t.Fatal(err)

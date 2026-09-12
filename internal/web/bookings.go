@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/lake-pass-bot/internal/config"
 	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
 	"github.com/jaysqvl/lake-pass-bot/internal/engine"
 	"github.com/jaysqvl/lake-pass-bot/internal/model"
@@ -83,11 +82,15 @@ func lakeName(id string) string {
 }
 
 func lakeReleasePolicy(lake destinations.Lake) string {
+	return releaseDaysPolicy(lake.ReleaseDaysBefore)
+}
+
+func releaseDaysPolicy(days int) string {
 	unit := "days"
-	if lake.ReleaseDaysBefore == 1 {
+	if days == 1 {
 		unit = "day"
 	}
-	return fmt.Sprintf("Passes release %d %s before your visit at the configured local time.", lake.ReleaseDaysBefore, unit)
+	return fmt.Sprintf("Passes release %d %s before your visit at the configured local time.", days, unit)
 }
 
 func passOptionLabel(pass string) string {
@@ -109,25 +112,46 @@ type lakePassOption struct {
 }
 
 type lakeFormDefaults struct {
-	ID             string           `json:"id"`
-	Timezone       string           `json:"timezone"`
-	ReleaseTime    string           `json:"releaseTime"`
-	AllDayPassURL  string           `json:"allDayPassURL"`
-	HalfDayPassURL string           `json:"halfDayPassURL"`
-	ReleasePolicy  string           `json:"releasePolicy"`
-	Passes         []lakePassOption `json:"passes"`
+	ID                        string           `json:"id"`
+	Timezone                  string           `json:"timezone"`
+	ReleaseTime               string           `json:"releaseTime"`
+	ReleaseDaysBefore         int              `json:"releaseDaysBefore"`
+	AllDayPassURL             string           `json:"allDayPassURL"`
+	HalfDayPassURL            string           `json:"halfDayPassURL"`
+	ReleasePolicy             string           `json:"releasePolicy"`
+	Passes                    []lakePassOption `json:"passes"`
+	PreferredPasses           []string         `json:"preferredPasses"`
+	PrepMinutesBefore         int              `json:"prepMinutesBefore"`
+	AuthDeadlineMinutesBefore int              `json:"authDeadlineMinutesBefore"`
+	PollDeadlineSeconds       int              `json:"pollDeadlineSeconds"`
+	PollMinSeconds            float64          `json:"pollMinSeconds"`
+	PollMaxSeconds            float64          `json:"pollMaxSeconds"`
+	Profiles                  []lakePassOption `json:"profiles"`
+	SettingsURL               string           `json:"settingsURL"`
 }
 
-func lakeSelectOption(lake destinations.Lake, selectedID string) selectOption {
+func lakeSelectOption(lake destinations.Lake, settings model.LakeSettings, selectedID string, profiles []model.Profile, currentProfileID int64) selectOption {
 	defaults := lakeFormDefaults{
-		ID: lake.ID, Timezone: lake.Timezone, ReleaseTime: lake.ReleaseTime,
-		AllDayPassURL: lake.AllDayPassURL, HalfDayPassURL: lake.HalfDayPassURL,
-		ReleasePolicy: lakeReleasePolicy(lake),
+		ID: lake.ID, Timezone: settings.Timezone, ReleaseTime: settings.ReleaseTime,
+		ReleaseDaysBefore: settings.ReleaseDaysBefore,
+		AllDayPassURL:     settings.AllDayPassURL, HalfDayPassURL: settings.HalfDayPassURL,
+		ReleasePolicy:     releaseDaysPolicy(settings.ReleaseDaysBefore),
+		PrepMinutesBefore: settings.PrepMinutesBefore, AuthDeadlineMinutesBefore: settings.AuthDeadlineMinutesBefore,
+		PollDeadlineSeconds: settings.PollDeadlineSeconds, PollMinSeconds: settings.PollMinSeconds, PollMaxSeconds: settings.PollMaxSeconds,
+		Profiles: []lakePassOption{}, SettingsURL: "/lakes/" + url.PathEscape(lake.ID),
 	}
 	for _, pass := range lake.SupportedPasses {
 		defaults.Passes = append(defaults.Passes, lakePassOption{Value: pass, Label: passOptionLabel(pass)})
 	}
-	// Only strings and slices are encoded; html/template escapes the result
+	for _, pass := range settings.PreferredPasses {
+		defaults.PreferredPasses = append(defaults.PreferredPasses, string(pass))
+	}
+	for _, profile := range profiles {
+		if profile.EffectiveLakeID() == lake.ID && (profile.Enabled || profile.ID == currentProfileID) {
+			defaults.Profiles = append(defaults.Profiles, lakePassOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name})
+		}
+	}
+	// Only values and slices are encoded; html/template escapes the result
 	// as an attribute, and the external client parses it as data, never code.
 	encoded, _ := json.Marshal(defaults)
 	return selectOption{Value: lake.ID, Label: lake.Name, Selected: lake.ID == selectedID, LakeDefaults: string(encoded)}
@@ -235,6 +259,9 @@ func (s *Server) bookingUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	request, err := s.bookingInput(r, id)
 	if err == nil {
+		if !r.Form.Has("release_days_before") && request.EffectiveLakeID() == current.EffectiveLakeID() {
+			request.ReleaseDaysBefore = current.ReleaseDaysBefore
+		}
 		_, err = s.userStore(r).UpdateBookingRequest(r.Context(), request)
 	}
 	if err != nil {
@@ -325,6 +352,14 @@ func (s *Server) bookingRunFailure(w http.ResponseWriter, r *http.Request, booki
 func (s *Server) bookingInput(r *http.Request, id int64) (model.BookingRequest, error) {
 	intField := func(name string) (int, error) { return strconv.Atoi(strings.TrimSpace(r.Form.Get(name))) }
 	floatField := func(name string) (float64, error) { return strconv.ParseFloat(strings.TrimSpace(r.Form.Get(name)), 64) }
+	var releaseDaysBefore *int
+	if r.Form.Has("release_days_before") {
+		days, err := intField("release_days_before")
+		if err != nil {
+			return model.BookingRequest{}, errors.New("release days before visit must be a number")
+		}
+		releaseDaysBefore = &days
+	}
 	prep, err := intField("prep_minutes_before")
 	if err != nil {
 		return model.BookingRequest{}, errors.New("prep minutes must be a number")
@@ -355,6 +390,7 @@ func (s *Server) bookingInput(r *http.Request, id int64) (model.BookingRequest, 
 		TargetDate:                r.Form.Get("target_date"),
 		Timezone:                  r.Form.Get("timezone"),
 		ReleaseTime:               r.Form.Get("release_time"),
+		ReleaseDaysBefore:         releaseDaysBefore,
 		PrepMinutesBefore:         prep,
 		AuthDeadlineMinutesBefore: authDeadline,
 		PollDeadlineSeconds:       pollDeadline,
@@ -390,10 +426,6 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		return
 	}
 	creating := booking == nil
-	defaultYodelOrigin := config.DefaultYodelOrigin
-	if len(s.config.YodelOrigins) > 0 {
-		defaultYodelOrigin = s.config.YodelOrigins[0]
-	}
 	lakeID := r.URL.Query().Get("lake_id")
 	if booking != nil {
 		lakeID = booking.EffectiveLakeID()
@@ -401,44 +433,35 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	if r.Method == http.MethodPost {
 		lakeID = r.Form.Get("lake_id")
 	}
-	lake, err := destinations.Resolve(lakeID)
-	if err != nil {
+	if _, err := destinations.Resolve(lakeID); err != nil {
 		if r.Method == http.MethodGet {
 			http.Error(w, "unsupported lake", http.StatusBadRequest)
 			return
 		}
 		// Keep the rejected choice visible while rendering validation errors.
-		lake, _ = destinations.Resolve(destinations.DefaultLakeID)
+		lakeID = destinations.DefaultLakeID
 	}
-	lake = lake.WithOrigin(defaultYodelOrigin)
-	localTimezone, err := time.LoadLocation(lake.Timezone)
+	lake, settings, _, err := s.effectiveLakeSettings(r, lakeID)
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	localTimezone, err := time.LoadLocation(settings.Timezone)
 	if err != nil {
 		localTimezone = time.Local
 	}
-	value := model.BookingRequest{
-		LakeID:                    lake.ID,
-		Enabled:                   true,
-		TargetDate:                time.Now().In(localTimezone).AddDate(0, 0, 1).Format(time.DateOnly),
-		Timezone:                  lake.Timezone,
-		ReleaseTime:               lake.ReleaseTime,
-		PrepMinutesBefore:         30,
-		AuthDeadlineMinutesBefore: 5,
-		PollDeadlineSeconds:       120,
-		PollMinSeconds:            1.4,
-		PollMaxSeconds:            3.6,
-		ConfirmationMode:          model.RunModeManual,
-		AllDayPassURL:             lake.AllDayPassURL,
-		HalfDayPassURL:            lake.HalfDayPassURL,
-	}
-	for _, pass := range lake.SupportedPasses {
-		value.PreferredPasses = append(value.PreferredPasses, model.PassType(pass))
-	}
+	value := settings.ApplyTo(model.BookingRequest{
+		LakeID:           lake.ID,
+		Enabled:          true,
+		TargetDate:       time.Now().In(localTimezone).AddDate(0, 0, 1).Format(time.DateOnly),
+		ConfirmationMode: model.RunModeManual,
+	})
 	if booking != nil {
 		value = *booking
 	} else if r.Method == http.MethodGet {
 		selectedID := parseInt64(r.URL.Query().Get("profile_id"))
 		for _, profile := range profiles {
-			if profile.Enabled && profile.ID == selectedID {
+			if profile.Enabled && profile.ID == selectedID && profile.EffectiveLakeID() == lake.ID {
 				value.ProfileID = selectedID
 				break
 			}
@@ -447,20 +470,45 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	if r.Method == http.MethodPost {
 		parsed, _ := s.bookingInput(r, value.ID)
 		value = parsed
+		// The full parser can stop at an earlier invalid field. Keep the
+		// visible policy in sync with a valid submitted day offset regardless.
+		if r.Form.Has("release_days_before") {
+			if days, err := strconv.Atoi(strings.TrimSpace(r.Form.Get("release_days_before"))); err == nil && days >= 0 && days <= model.MaxReleaseDaysBefore {
+				value.ReleaseDaysBefore = &days
+			}
+		} else if booking != nil && lake.ID == booking.EffectiveLakeID() {
+			value.ReleaseDaysBefore = booking.ReleaseDaysBefore
+		}
+	}
+	selectedLakeID, selectedProfileID := value.EffectiveLakeID(), value.ProfileID
+	if r.Method == http.MethodPost {
+		selectedLakeID, selectedProfileID = r.Form.Get("lake_id"), parseInt64(r.Form.Get("profile_id"))
+		if selectedLakeID == "" {
+			selectedLakeID = destinations.DefaultLakeID
+		}
+	}
+	currentProfileID := int64(0)
+	if booking != nil {
+		currentProfileID = booking.ProfileID
 	}
 	lakeOptions := make([]selectOption, 0, len(destinations.List()))
 	for _, supported := range destinations.List() {
-		lakeOptions = append(lakeOptions, lakeSelectOption(supported.WithOrigin(defaultYodelOrigin), value.EffectiveLakeID()))
+		definition, defaults, _, err := s.effectiveLakeSettings(r, supported.ID)
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		lakeOptions = append(lakeOptions, lakeSelectOption(definition, defaults, selectedLakeID, profiles, currentProfileID))
 	}
-	if _, err := destinations.Resolve(value.LakeID); err != nil {
-		lakeOptions = append(lakeOptions, selectOption{Value: value.LakeID, Label: "Unsupported lake — choose a supported lake", Selected: true})
+	if _, err := destinations.Resolve(selectedLakeID); err != nil {
+		lakeOptions = append(lakeOptions, selectOption{Value: selectedLakeID, Label: "Unsupported lake — choose a supported lake", Selected: true})
 	}
-	profileOptions := []selectOption{{Value: "", Label: "Choose a profile", Selected: value.ProfileID == 0}}
+	profileOptions := []selectOption{{Value: "", Label: "Choose a lake profile", Selected: selectedProfileID == 0}}
 	for _, profile := range profiles {
-		if !profile.Enabled && (booking == nil || profile.ID != booking.ProfileID) {
+		if profile.EffectiveLakeID() != selectedLakeID || (!profile.Enabled && profile.ID != currentProfileID) {
 			continue
 		}
-		profileOptions = append(profileOptions, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name, Selected: profile.ID == value.ProfileID})
+		profileOptions = append(profileOptions, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name, Selected: profile.ID == selectedProfileID})
 	}
 	passFields := make([]formField, 3)
 	order := value.PassOrder()
@@ -484,15 +532,16 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		actionURL, heading, submit = fmt.Sprintf("/bookings/%d", booking.ID), "Edit booking request", "Save booking"
 	}
 	data := formData{
-		BaseData:      base(r, heading),
-		Eyebrow:       "Bookings",
-		Heading:       heading,
-		Description:   lakeReleasePolicy(lake),
-		CancelURL:     "/bookings",
-		ActionURL:     actionURL,
-		SubmitLabel:   submit,
-		FormError:     formError,
-		LakeSelection: true,
+		BaseData:        base(r, heading),
+		Eyebrow:         "Bookings",
+		Heading:         heading,
+		Description:     releaseDaysPolicy(value.EffectiveReleaseDaysBefore()),
+		CancelURL:       "/bookings",
+		ActionURL:       actionURL,
+		SubmitLabel:     submit,
+		FormError:       formError,
+		LakeSelection:   true,
+		LakeSettingsURL: "/lakes/" + url.PathEscape(lake.ID),
 	}
 	autoQueueHelp := "Turning this off does not cancel jobs already queued; cancel them from Jobs."
 	if !s.config.SchedulesEnabled {
@@ -504,7 +553,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 			Fields: []formField{
 				{Name: "lake_id", Label: "Lake", Type: "select", Required: true, Options: lakeOptions, Help: "Choose where you want to book a pass."},
 				{Name: "name", Label: "Request name", Type: "text", Value: value.Name, Required: true},
-				{Name: "profile_id", Label: "Yodel profile", Type: "select", Required: true, Options: profileOptions},
+				{Name: "profile_id", Label: "Lake profile", Type: "select", Required: true, Options: profileOptions, Help: "Manage sign-in and vehicle details in Lake settings."},
 				{Name: "target_date", Label: "Visit date", Type: "date", Value: value.TargetDate, Required: true},
 			},
 		},
@@ -516,10 +565,11 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		},
 		{
 			Title: "Release settings",
-			Help:  "The timezone and release time are set by your lake selection. Adjust them only if the release schedule changes.",
+			Help:  "These values are copied from your lake defaults. Changes here apply only to this request.",
 			Fields: []formField{
 				{Name: "timezone", Label: "Timezone", Type: "text", Value: value.Timezone, Required: true},
 				{Name: "release_time", Label: "Release time", Type: "time", Value: value.ReleaseTime, Required: true},
+				{Name: "release_days_before", Label: "Days before visit", Type: "number", Value: strconv.Itoa(value.EffectiveReleaseDaysBefore()), Required: true, Min: "0", Max: strconv.Itoa(model.MaxReleaseDaysBefore), Step: "1", Help: "How many days before your visit passes become available."},
 				{
 					Name:     "confirmation_mode",
 					Label:    "Booking confirmation",
@@ -590,8 +640,8 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 					Type:     "number",
 					Value:    strconv.FormatFloat(value.PollMinSeconds, 'f', -1, 64),
 					Required: true,
-					Step:     "0.1",
-					Min:      "0.1",
+					Step:     "0.05",
+					Min:      "0.05",
 					Max:      "60",
 				},
 				{
@@ -600,8 +650,8 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 					Type:     "number",
 					Value:    strconv.FormatFloat(value.PollMaxSeconds, 'f', -1, 64),
 					Required: true,
-					Step:     "0.1",
-					Min:      "0.1",
+					Step:     "0.05",
+					Min:      "0.05",
 					Max:      "60",
 				},
 			},
@@ -621,6 +671,9 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				} else if field.Type == "checkbox" {
 					field.Checked = checked(r, field.Name)
 				} else {
+					if field.Name == "release_days_before" && !r.Form.Has(field.Name) {
+						continue // Older clients predate the per-request policy field.
+					}
 					field.Value = r.Form.Get(field.Name)
 				}
 			}

@@ -19,7 +19,21 @@ import (
 )
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/#otp-sources", http.StatusSeeOther)
+	sources, err := s.userStore(r).ListOTPSources(r.Context())
+	if err != nil {
+		s.internal(w)
+		return
+	}
+	data := listData{BaseData: base(r, "OTP sources"), Eyebrow: "Your connections", Heading: "OTP sources", Description: "Manage the inboxes that receive your sign-in codes. Connect them to profiles inside each lake.", CreateURL: "/sources/new", CreateLabel: "New OTP source", EmptyMessage: "Add a BlueBubbles or Twilio inbox, then link it to a lake profile."}
+	for _, source := range sources {
+		card, err := s.sourceCard(r.Context(), s.userStore(r).UserID(), source)
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		data.Cards = append(data.Cards, card)
+	}
+	s.render(w, http.StatusOK, "list", data)
 }
 
 func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPSource) (listCard, error) {
@@ -98,7 +112,7 @@ func (s *Server) sourceCreate(w http.ResponseWriter, r *http.Request) {
 		s.sourceForm(w, r, nil, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/?ok=created#otp-sources", http.StatusSeeOther)
+	http.Redirect(w, r, "/sources?ok=created", http.StatusSeeOther)
 }
 
 func (s *Server) sourceEdit(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +146,7 @@ func (s *Server) sourceUpdate(w http.ResponseWriter, r *http.Request) {
 		s.sourceForm(w, r, &current, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/?ok=updated#otp-sources", http.StatusSeeOther)
+	http.Redirect(w, r, "/sources?ok=updated", http.StatusSeeOther)
 }
 
 func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
@@ -153,11 +167,11 @@ func (s *Server) sourceHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("OTP provider health check failed", "source_id", source.ID, "provider", source.Provider, "error", err)
-		redirectNotice(w, r, "/#otp-sources", "provider-unavailable")
+		redirectNotice(w, r, "/sources", "provider-unavailable")
 		return
 	}
 	slog.Info("OTP provider health check succeeded", "source_id", source.ID, "provider", source.Provider)
-	http.Redirect(w, r, "/?ok=healthy#otp-sources", http.StatusSeeOther)
+	http.Redirect(w, r, "/sources?ok=healthy", http.StatusSeeOther)
 }
 
 func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +190,7 @@ func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrResourceLimit) {
 			code = "queue-full"
 		}
-		redirectNotice(w, r, "/#otp-sources", code)
+		redirectNotice(w, r, "/sources", code)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/jobs/%d?ok=queued", job.ID), http.StatusSeeOther)
@@ -310,7 +324,7 @@ func (s *Server) sourceForm(w http.ResponseWriter, r *http.Request, source *mode
 		Eyebrow:         "Provider configuration",
 		Heading:         heading,
 		Description:     "Saved credentials stay hidden. When editing, leave credential fields blank to keep the saved values.",
-		CancelURL:       "/#otp-sources",
+		CancelURL:       "/sources",
 		ActionURL:       actionURL,
 		SubmitLabel:     submit,
 		FormError:       formError,

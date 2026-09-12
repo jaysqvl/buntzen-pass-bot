@@ -35,7 +35,7 @@ func TestSavedProviderCannotReachUnapprovedDestination(t *testing.T) {
 	if requests.Load() != 0 {
 		t.Fatal("saved provider sent credential-bearing request to unapproved destination")
 	}
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/?notice=provider-unavailable#otp-sources" {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/sources?notice=provider-unavailable" {
 		t.Fatal("destination denial did not return safe provider notice")
 	}
 }

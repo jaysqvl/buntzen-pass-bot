@@ -1,13 +1,21 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"regexp"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func TestLakeSelectorCarriesApprovedCatalogDefaults(t *testing.T) {
@@ -37,10 +45,178 @@ func TestLakeSelectorCarriesApprovedCatalogDefaults(t *testing.T) {
 		if len(defaults.Passes) != len(lake.SupportedPasses) {
 			t.Fatalf("pass choices missing from selector defaults: %+v", defaults)
 		}
+		if !slices.Equal(defaults.PreferredPasses, lake.SupportedPasses) || defaults.ReleaseDaysBefore != lake.ReleaseDaysBefore {
+			t.Fatalf("catalog pass order or release days missing: %+v", defaults)
+		}
 		for index, pass := range defaults.Passes {
 			if pass.Value != lake.SupportedPasses[index] || pass.Label != passOptionLabel(pass.Value) {
 				t.Fatalf("pass choices changed order or lost labels: %+v", defaults)
 			}
 		}
+	}
+}
+
+func bookingDefaultsValues(profileID int64, settings model.LakeSettings) url.Values {
+	values := url.Values{
+		"name": {"Personal defaults snapshot"}, "lake_id": {settings.LakeID}, "profile_id": {strconv.FormatInt(profileID, 10)},
+		"target_date": {"2030-07-20"}, "timezone": {settings.Timezone}, "release_time": {settings.ReleaseTime},
+		"release_days_before": {strconv.Itoa(settings.ReleaseDaysBefore)}, "enabled": {"1"}, "confirmation_mode": {"manual"},
+		"all_day_pass_url": {settings.AllDayPassURL}, "half_day_pass_url": {settings.HalfDayPassURL},
+		"prep_minutes_before": {strconv.Itoa(settings.PrepMinutesBefore)}, "auth_deadline_minutes_before": {strconv.Itoa(settings.AuthDeadlineMinutesBefore)},
+		"poll_deadline_seconds": {strconv.Itoa(settings.PollDeadlineSeconds)}, "poll_min_seconds": {strconv.FormatFloat(settings.PollMinSeconds, 'f', -1, 64)},
+		"poll_max_seconds": {strconv.FormatFloat(settings.PollMaxSeconds, 'f', -1, 64)},
+	}
+	for slot := 0; slot < 3; slot++ {
+		pass := ""
+		if slot < len(settings.PreferredPasses) {
+			pass = string(settings.PreferredPasses[slot])
+		}
+		values.Set(fmt.Sprintf("pass_priority_%d", slot+1), pass)
+	}
+	return values
+}
+
+func TestPersonalLakeDefaultsAffectNewBookingsAndPreserveSavedSnapshots(t *testing.T) {
+	fixture := newWebFixture(t)
+	ctx := context.Background()
+	profile, existing := createImmediateWebBooking(t, fixture, fixture.admin.ID, "Existing lake visit", true)
+	lake, _ := destinations.Resolve(destinations.DefaultLakeID)
+	settings := model.DefaultLakeSettings(lake.WithOrigin(fixture.cfg.YodelOrigins[0]))
+	settings.Timezone, settings.ReleaseTime, settings.ReleaseDaysBefore = "Europe/London", "09:45", 3
+	settings.AllDayPassURL, settings.HalfDayPassURL = "https://example.test/personal-all", "https://example.test/personal-half"
+	settings.PreferredPasses = []model.PassType{model.PassMorning, model.PassAllDay}
+	settings.PrepMinutesBefore, settings.AuthDeadlineMinutesBefore = 45, 10
+	settings.PollDeadlineSeconds, settings.PollMinSeconds, settings.PollMaxSeconds = 300, 2, 4
+	if _, err := fixture.store.ForUser(fixture.admin.ID).SaveLakeSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	member, err := fixture.store.CreateMember(ctx, store.CreateUserInput{Username: "other-lake-defaults", Password: "another long password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, _ := createImmediateWebBooking(t, fixture, member.ID, "Private other account", true)
+	cookies := loginCookies(t, fixture)
+	page := serveForm(fixture, http.MethodGet, "/bookings/new?lake_id=buntzen", cookies, nil)
+	if page.Code != http.StatusOK {
+		t.Fatalf("new form=%d %s", page.Code, page.Body.String())
+	}
+	body := page.Body.String()
+	for name, values := range bookingDefaultsValues(profile.ID, settings) {
+		if name == "profile_id" || name == "name" || name == "target_date" || name == "lake_id" || name == "enabled" || name == "confirmation_mode" || strings.HasPrefix(name, "pass_priority_") {
+			continue
+		}
+		if !strings.Contains(body, `name="`+name+`" value="`+values[0]+`"`) {
+			t.Errorf("new form missing personal default %s=%s", name, values[0])
+		}
+	}
+	assertBookingPassChoices(t, body, []string{"morning", "all_day", ""})
+	if strings.Contains(body, foreign.Name) || !strings.Contains(body, profile.Name) {
+		t.Fatal("lake selector profile defaults did not stay scoped to the current account")
+	}
+	var defaults lakeFormDefaults
+	encoded := regexp.MustCompile(`data-lake-defaults="([^"]+)"`).FindStringSubmatch(body)
+	if len(encoded) != 2 || json.Unmarshal([]byte(html.UnescapeString(encoded[1])), &defaults) != nil {
+		t.Fatalf("missing selector data: %v", encoded)
+	}
+	if defaults.Timezone != settings.Timezone || defaults.ReleaseDaysBefore != 3 || !slices.Equal(defaults.PreferredPasses, []string{"morning", "all_day"}) || len(defaults.Passes) != 3 {
+		t.Fatalf("personal selector defaults lost preferences or supported alternatives: %+v", defaults)
+	}
+	otherCookies := loginCookiesAs(t, fixture, member.Username, "another long password")
+	otherPage := serveForm(fixture, http.MethodGet, "/bookings/new", otherCookies, nil)
+	if otherPage.Code != http.StatusOK || strings.Contains(otherPage.Body.String(), "personal-all") || !strings.Contains(otherPage.Body.String(), `name="timezone" value="America/Vancouver"`) {
+		t.Fatal("personal lake defaults leaked to another account")
+	}
+	existingPage := serveForm(fixture, http.MethodGet, fmt.Sprintf("/bookings/%d", existing.ID), cookies, nil)
+	if existingPage.Code != http.StatusOK || !strings.Contains(existingPage.Body.String(), `name="timezone" value="UTC"`) || !strings.Contains(existingPage.Body.String(), `name="release_days_before" value="1"`) {
+		t.Fatal("saved booking was changed by personal defaults")
+	}
+	assertBookingPassChoices(t, existingPage.Body.String(), []string{"all_day", "", ""})
+
+	values := bookingDefaultsValues(profile.ID, settings)
+	values.Set("csrf_token", csrfFrom(cookies))
+	response := serveForm(fixture, http.MethodPost, "/bookings/new", cookies, values)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("create snapshot=%d %s", response.Code, response.Body.String())
+	}
+	bookings, err := fixture.store.ForUser(fixture.admin.ID).ListBookingRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot model.BookingRequest
+	for _, booking := range bookings {
+		if booking.Name == values.Get("name") {
+			snapshot = booking
+		}
+	}
+	if snapshot.ID == 0 || snapshot.ReleaseDaysBefore == nil || *snapshot.ReleaseDaysBefore != 3 || snapshot.Timezone != settings.Timezone {
+		t.Fatalf("personal settings did not persist as a booking snapshot: %+v", snapshot)
+	}
+	settings.Timezone, settings.ReleaseDaysBefore = "UTC", 0
+	if _, err := fixture.store.ForUser(fixture.admin.ID).SaveLakeSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/bookings/%d", snapshot.ID)
+	page = serveForm(fixture, http.MethodGet, path, cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `name="timezone" value="Europe/London"`) || !strings.Contains(page.Body.String(), `name="release_days_before" value="3"`) {
+		t.Fatal("changing lake defaults changed a saved request snapshot")
+	}
+	values.Del("release_days_before") // A pre-settings client may still submit its old form.
+	values.Set("name", "Legacy client edit")
+	response = serveForm(fixture, http.MethodPost, path, cookies, values)
+	updated, err := fixture.store.ForUser(fixture.admin.ID).GetBookingRequest(ctx, snapshot.ID)
+	if response.Code != http.StatusSeeOther || err != nil || updated.EffectiveReleaseDaysBefore() != 3 {
+		t.Fatalf("legacy edit reset a saved policy: status=%d booking=%+v err=%v", response.Code, updated, err)
+	}
+	values.Set("release_days_before", "0")
+	response = serveForm(fixture, http.MethodPost, path, cookies, values)
+	updated, err = fixture.store.ForUser(fixture.admin.ID).GetBookingRequest(ctx, snapshot.ID)
+	if response.Code != http.StatusSeeOther || err != nil || updated.ReleaseDaysBefore == nil || *updated.ReleaseDaysBefore != 0 {
+		t.Fatalf("explicit same-day release not saved: status=%d booking=%+v err=%v", response.Code, updated, err)
+	}
+}
+
+func TestBookingValidationKeepsSubmittedLakeOverrides(t *testing.T) {
+	fixture := newWebFixture(t)
+	profile, booking := createImmediateWebBooking(t, fixture, fixture.admin.ID, "Validation visit", true)
+	lake, _ := destinations.Resolve(destinations.DefaultLakeID)
+	settings := model.DefaultLakeSettings(lake.WithOrigin(fixture.cfg.YodelOrigins[0]))
+	cookies := loginCookies(t, fixture)
+	values := bookingDefaultsValues(profile.ID, settings)
+	values.Set("csrf_token", csrfFrom(cookies))
+	values.Set("timezone", "Europe/London")
+	values.Set("release_days_before", "12")
+	values.Set("prep_minutes_before", "not a number")
+	values.Set("pass_priority_1", "morning")
+	values.Set("pass_priority_2", "")
+	values.Set("pass_priority_3", "all_day")
+	response := serveForm(fixture, http.MethodPost, fmt.Sprintf("/bookings/%d", booking.ID), cookies, values)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid booking=%d %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`name="timezone" value="Europe/London"`, `name="release_days_before" value="12"`, `name="prep_minutes_before" value="not a number"`, `value="buntzen" selected`, `value="` + strconv.FormatInt(profile.ID, 10) + `" selected`, "Passes release 12 days before your visit"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("validation did not preserve %q", want)
+		}
+	}
+	assertBookingPassChoices(t, body, []string{"morning", "", "all_day"})
+}
+
+func TestLakeSelectorScopesProfilesAndKeepsCurrentDisabledProfile(t *testing.T) {
+	lake, _ := destinations.Resolve(destinations.DefaultLakeID)
+	settings := model.DefaultLakeSettings(lake)
+	profiles := []model.Profile{
+		{ID: 1, Name: "Legacy profile", Enabled: true},
+		{ID: 2, LakeID: "another-lake", Name: "Other lake", Enabled: true},
+		{ID: 3, LakeID: lake.ID, Name: "Disabled", Enabled: false},
+		{ID: 4, LakeID: lake.ID, Name: "Current disabled", Enabled: false},
+	}
+	option := lakeSelectOption(lake, settings, lake.ID, profiles, 4)
+	var defaults lakeFormDefaults
+	if err := json.Unmarshal([]byte(option.LakeDefaults), &defaults); err != nil {
+		t.Fatal(err)
+	}
+	if len(defaults.Profiles) != 2 || defaults.Profiles[0].Value != "1" || defaults.Profiles[1].Value != "4" {
+		t.Fatalf("lake defaults offered incompatible or unrelated disabled profiles: %+v", defaults.Profiles)
 	}
 }

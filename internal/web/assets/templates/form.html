@@ -1,23 +1,10 @@
-{{define "form-section"}}
-<fieldset class="form-section"{{if .Provider}} data-source-provider="{{.Provider}}"{{end}}><legend>{{.Title}}</legend>{{if .Help}}<p class="field-help">{{.Help}}</p>{{end}}
-  <div class="form-grid{{if .Class}} {{.Class}}{{end}}">
-  {{range .Fields}}
-    {{if eq .Type "checkbox"}}
-    <label class="check{{if .Wide}} field-wide{{end}}" for="field-{{.Name}}"><input type="checkbox" name="{{.Name}}" value="1" id="field-{{.Name}}"{{if .Help}} aria-describedby="help-{{.Name}}"{{end}} {{if .Checked}}checked{{end}}><span>{{.Label}}{{if .Help}}<small class="field-help" id="help-{{.Name}}">{{.Help}}</small>{{end}}</span></label>
-    {{else if eq .Type "select"}}
-    <label class="field{{if .Wide}} field-wide{{end}}" for="field-{{.Name}}"><span>{{.Label}}</span><select name="{{.Name}}" id="field-{{.Name}}"{{if .Help}} aria-describedby="help-{{.Name}}"{{end}} {{if .Required}}required{{end}}>{{range .Options}}<option{{if .LakeDefaults}} data-lake-defaults="{{.LakeDefaults}}"{{end}} value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}</select>{{if .Help}}<small class="field-help" id="help-{{.Name}}">{{.Help}}</small>{{end}}</label>
-    {{else}}
-    <label class="field{{if .Wide}} field-wide{{end}}" for="field-{{.Name}}"><span>{{.Label}}</span><input type="{{.Type}}" name="{{.Name}}" value="{{.Value}}" id="field-{{.Name}}"{{if .Help}} aria-describedby="help-{{.Name}}"{{end}} placeholder="{{.Placeholder}}" {{if .Required}}required{{end}} {{if .Step}}step="{{.Step}}"{{end}} {{if .Min}}min="{{.Min}}"{{end}} {{if .Max}}max="{{.Max}}"{{end}}>{{if .Help}}<small class="field-help" id="help-{{.Name}}">{{.Help}}</small>{{end}}</label>
-    {{end}}
-  {{end}}
-  </div>
-</fieldset>
-{{end}}
 {{define "content"}}
 <section class="section-head"><div><p class="eyebrow">{{.Eyebrow}}</p><h1>{{.Heading}}</h1><p{{if .LakeSelection}} id="lake-release-policy" aria-live="polite"{{end}}>{{.Description}}</p></div><a class="button" href="{{.CancelURL}}">Cancel</a></section>
 {{if .FormError}}<div class="flash error" role="alert">{{.FormError}}</div>{{end}}
 <form{{if .LakeSelection}} id="booking-form"{{else if .SourceSelection}} id="source-form"{{end}} method="post" action="{{.ActionURL}}" class="form-card" autocomplete="off">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  {{range .HiddenFields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+  {{if .LakeSelection}}<div class="form-context"><p>Lake defaults are copied into each request. Apply them again to refresh this request’s settings.</p><div class="actions"><a id="lake-settings-link" class="button" href="{{.LakeSettingsURL}}">Lake settings</a><button id="use-lake-defaults" type="button" hidden>Use lake defaults</button></div></div>{{end}}
   {{$hasAdvanced := false}}
   {{range .Sections}}
     {{if .Advanced}}{{$hasAdvanced = true}}{{else}}{{template "form-section" .}}{{end}}
@@ -25,7 +12,7 @@
   {{if $hasAdvanced}}
   <details class="form-advanced"{{if .FormError}} open{{end}}>
     <summary>Advanced settings</summary>
-    <p class="field-help">Booking site URLs and preparation timing. The defaults work for most requests.</p>
+    <p class="field-help">{{if .AdvancedHelp}}{{.AdvancedHelp}}{{else}}Booking site URLs and preparation timing. The defaults work for most requests.{{end}}</p>
     {{range .Sections}}{{if .Advanced}}{{template "form-section" .}}{{end}}{{end}}
   </details>
   {{end}}

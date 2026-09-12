@@ -24,12 +24,19 @@ func TestLakeMigrationPreservesBookingsCredentialsAndReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Reconstruct the exact pre-selection schema from populated state. The
-	// migration adds only this column, so all v6 constraints/triggers remain.
-	if _, err := database.db.ExecContext(ctx, `ALTER TABLE booking_requests DROP COLUMN lake_id`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 7`); err != nil {
+	// Reconstruct the pre-selection schema from populated state. Remove only
+	// the newer additions so all v6 constraints and execution records remain.
+	if _, err := database.db.ExecContext(ctx, `
+		DROP TRIGGER booking_profile_lake_insert;
+		DROP TRIGGER booking_profile_lake_update;
+		DROP TRIGGER profiles_lake_immutable;
+		DROP TABLE lake_settings;
+		DROP TABLE account_settings;
+		ALTER TABLE profiles DROP COLUMN lake_id;
+		ALTER TABLE booking_requests DROP COLUMN release_days_before;
+		ALTER TABLE booking_requests DROP COLUMN lake_id;
+		DELETE FROM schema_migrations WHERE version >= 7;
+	`); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -44,6 +51,10 @@ func TestLakeMigrationPreservesBookingsCredentialsAndReservation(t *testing.T) {
 	gotCredentials, err := database.GetProfileCredentials(ctx, testUserID, profile.ID)
 	if err != nil || !reflect.DeepEqual(gotCredentials, credentials) {
 		t.Fatalf("profile credentials changed: %v", err)
+	}
+	gotProfile, err := database.GetProfile(ctx, testUserID, profile.ID)
+	if err != nil || !reflect.DeepEqual(gotProfile, profile) {
+		t.Fatalf("profile changed during upgrade: before=%+v after=%+v err=%v", profile, gotProfile, err)
 	}
 	gotJob, err := database.GetJob(ctx, testUserID, job.ID)
 	if err != nil || !reflect.DeepEqual(gotJob, job) {

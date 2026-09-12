@@ -38,33 +38,64 @@
       if (section) section.open = true;
     }, true);
     const lakeSelector = bookingForm.elements.namedItem('lake_id');
+    const useLakeDefaults = document.getElementById('use-lake-defaults');
+    const lakeSettingsLink = document.getElementById('lake-settings-link');
+    const releasePolicy = document.getElementById('lake-release-policy');
     let selectedLake = lakeSelector.value;
-    lakeSelector.addEventListener('change', () => {
-      if (lakeSelector.value === selectedLake) return;
+    const replaceOptions = (field, options, value) => {
+      const choices = options.map(option => {
+        const choice = document.createElement('option');
+        choice.value = option.value; choice.textContent = option.label;
+        return choice;
+      });
+      field.replaceChildren(...choices);
+      field.value = value;
+    };
+    const applyLakeDefaults = () => {
       const option = lakeSelector.selectedOptions[0];
-      if (!option?.dataset.lakeDefaults) return;
+      if (!option?.dataset.lakeDefaults) return false;
       let defaults;
       try { defaults = JSON.parse(option.dataset.lakeDefaults); }
-      catch { showNotification('Lake settings could not be loaded. Reload this page before saving.'); return; }
-      if (defaults.id !== lakeSelector.value) return;
+      catch { showNotification('Lake settings could not be loaded. Reload this page before saving.'); return false; }
+      if (defaults.id !== lakeSelector.value) return false;
       for (const [name, value] of Object.entries({
         timezone: defaults.timezone, release_time: defaults.releaseTime,
+        release_days_before: defaults.releaseDaysBefore,
         all_day_pass_url: defaults.allDayPassURL, half_day_pass_url: defaults.halfDayPassURL,
+        prep_minutes_before: defaults.prepMinutesBefore,
+        auth_deadline_minutes_before: defaults.authDeadlineMinutesBefore,
+        poll_deadline_seconds: defaults.pollDeadlineSeconds,
+        poll_min_seconds: defaults.pollMinSeconds, poll_max_seconds: defaults.pollMaxSeconds,
       })) {
-        bookingForm.elements.namedItem(name).value = value;
+        bookingForm.elements.namedItem(name).value = String(value);
       }
       for (let index = 0; index < 3; index++) {
         const field = bookingForm.elements.namedItem(`pass_priority_${index + 1}`);
-        const choices = [...defaults.passes, {value: '', label: 'None'}].map(pass => {
-          const choice = document.createElement('option');
-          choice.value = pass.value; choice.textContent = pass.label;
-          return choice;
-        });
-        field.replaceChildren(...choices);
-        field.value = defaults.passes[index]?.value || '';
+        replaceOptions(field, [...defaults.passes, {value: '', label: 'None'}], defaults.preferredPasses[index] || '');
       }
-      document.getElementById('lake-release-policy').textContent = defaults.releasePolicy;
+      const profile = bookingForm.elements.namedItem('profile_id');
+      const profileID = defaults.profiles.some(option => option.value === profile.value) ? profile.value : '';
+      replaceOptions(profile, [{value: '', label: 'Choose a lake profile'}, ...defaults.profiles], profileID);
+      releasePolicy.textContent = defaults.releasePolicy;
+      if (lakeSettingsLink) lakeSettingsLink.setAttribute('href', defaults.settingsURL);
       selectedLake = lakeSelector.value;
+      return true;
+    };
+    lakeSelector.addEventListener('change', () => {
+      if (lakeSelector.value !== selectedLake) applyLakeDefaults();
+    });
+    if (useLakeDefaults) {
+      useLakeDefaults.addEventListener('click', () => {
+        if (applyLakeDefaults()) showNotification('Lake defaults applied. Save this request to keep these changes.', 'success');
+      });
+      useLakeDefaults.hidden = false;
+    }
+    const releaseDays = bookingForm.elements.namedItem('release_days_before');
+    releaseDays.addEventListener('input', () => {
+      const days = Number(releaseDays.value);
+      if (releaseDays.value.trim() !== '' && Number.isInteger(days) && days >= 0 && days <= 365) {
+        releasePolicy.textContent = `Passes release ${days} ${days === 1 ? 'day' : 'days'} before your visit at the configured local time.`;
+      }
     });
   }
 

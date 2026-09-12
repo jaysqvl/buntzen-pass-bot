@@ -39,18 +39,29 @@ func TestHomeShowsSetupOrderAndOnlyOwnedLinkedResources(t *testing.T) {
 		t.Fatalf("home=%d %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	sourceSection, profileSection := strings.Index(body, `id="otp-sources"`), strings.Index(body, `id="profiles"`)
-	if sourceSection < 0 || profileSection <= sourceSection {
-		t.Fatal("home does not show OTP sources before profiles")
-	}
-	for _, text := range []string{"Owned inbox", "Owned vehicle", "Linked OTP source", "3. Pair with Yodel", "4. Booking request", "Already queued jobs remain scheduled", `href="/bookings/new?profile_id=1"`} {
+	for _, text := range []string{"1. Connect an inbox", "2. Set up a lake", "3. Plan your visit", "4. Follow the booking", "Already queued jobs remain scheduled", `href="/lakes"`, `href="/sources"`, `href="/settings"`} {
 		if !strings.Contains(body, text) {
 			t.Fatalf("home missing %q", text)
 		}
 	}
-	for _, text := range []string{"Private inbox", "Private vehicle", "secret-never-rendered", "5559876543"} {
-		if strings.Contains(body, text) {
-			t.Fatalf("home exposed %q", text)
+	for _, target := range []string{"/sources", "/lakes/buntzen"} {
+		response = httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, "http://example.test"+target, loginCookies(t, fixture), nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s=%d %s", target, response.Code, response.Body.String())
+		}
+		body = response.Body.String()
+		expected := "Owned inbox"
+		if target == "/lakes/buntzen" {
+			expected = "Owned vehicle"
+		}
+		if !strings.Contains(body, expected) {
+			t.Fatalf("%s missing owned resource", target)
+		}
+		for _, text := range []string{"Private inbox", "Private vehicle", "secret-never-rendered", "5559876543"} {
+			if strings.Contains(body, text) {
+				t.Fatalf("%s exposed %q", target, text)
+			}
 		}
 	}
 }
