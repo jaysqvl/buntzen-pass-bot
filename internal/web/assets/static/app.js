@@ -33,6 +33,10 @@
 
   const bookingForm = document.getElementById('booking-form');
   if (bookingForm) {
+    bookingForm.addEventListener('invalid', event => {
+      const section = event.target.closest('.form-advanced');
+      if (section) section.open = true;
+    }, true);
     const lakeSelector = bookingForm.elements.namedItem('lake_id');
     let selectedLake = lakeSelector.value;
     lakeSelector.addEventListener('change', () => {
@@ -62,6 +66,21 @@
       document.getElementById('lake-release-policy').textContent = defaults.releasePolicy;
       selectedLake = lakeSelector.value;
     });
+  }
+
+  const sourceForm = document.getElementById('source-form');
+  if (sourceForm) {
+    const providerSelector = sourceForm.elements.namedItem('provider');
+    const providerSections = sourceForm.querySelectorAll('[data-source-provider]');
+    const updateProviderSections = () => {
+      for (const section of providerSections) {
+        const inactive = section.dataset.sourceProvider !== providerSelector.value;
+        section.hidden = inactive;
+        section.disabled = inactive;
+      }
+    };
+    providerSelector.addEventListener('change', updateProviderSections);
+    updateProviderSections();
   }
 
   const root = document.getElementById('live-job');

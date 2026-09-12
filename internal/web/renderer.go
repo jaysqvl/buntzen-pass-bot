@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/jaysqvl/lake-pass-bot/internal/buildinfo"
 )
@@ -60,6 +61,12 @@ func newRenderer(version, revision string) (*Renderer, error) {
 	functions := template.FuncMap{
 		"assetURL": func(name string) string { return assetURLs[name] },
 		"appBuild": func() buildDisplay { return build },
+		"navCurrent": func(path, section string) bool {
+			if section == "/" {
+				return path == "/" || strings.HasPrefix(path, "/profiles") || strings.HasPrefix(path, "/sources")
+			}
+			return path == section || strings.HasPrefix(path, section+"/")
+		},
 	}
 	definitions := map[string][]string{
 		"error":     {"assets/templates/base.html", "assets/templates/error.html"},

@@ -485,7 +485,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	}
 	data := formData{
 		BaseData:      base(r, heading),
-		Eyebrow:       "Booking policy",
+		Eyebrow:       "Bookings",
 		Heading:       heading,
 		Description:   lakeReleasePolicy(lake),
 		CancelURL:     "/bookings",
@@ -500,48 +500,63 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	}
 	data.Sections = []formSection{
 		{
-			Title: "Request",
+			Title: "Request details",
 			Fields: []formField{
 				{Name: "lake_id", Label: "Lake", Type: "select", Required: true, Options: lakeOptions, Help: "Choose where you want to book a pass."},
-				{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true},
+				{Name: "name", Label: "Request name", Type: "text", Value: value.Name, Required: true},
 				{Name: "profile_id", Label: "Yodel profile", Type: "select", Required: true, Options: profileOptions},
-				{Name: "target_date", Label: "Target date", Type: "date", Value: value.TargetDate, Required: true},
+				{Name: "target_date", Label: "Visit date", Type: "date", Value: value.TargetDate, Required: true},
+			},
+		},
+		{
+			Title:  "Pass preferences",
+			Help:   "Try choices in order. Choose None to skip a slot; select each pass only once.",
+			Class:  "form-grid-pass-preferences",
+			Fields: passFields,
+		},
+		{
+			Title: "Release settings",
+			Help:  "The timezone and release time are set by your lake selection. Adjust them only if the release schedule changes.",
+			Fields: []formField{
 				{Name: "timezone", Label: "Timezone", Type: "text", Value: value.Timezone, Required: true},
 				{Name: "release_time", Label: "Release time", Type: "time", Value: value.ReleaseTime, Required: true},
 				{
 					Name:     "confirmation_mode",
-					Label:    "Final confirmation for release jobs",
+					Label:    "Booking confirmation",
 					Help:     "Automatic confirms the booking without asking. Manual waits for your approval. Book now always requires approval.",
 					Type:     "select",
 					Required: true,
+					Wide:     true,
 					Options: []selectOption{
 						{Value: "manual", Label: "Manual approval", Selected: value.ConfirmationMode == model.RunModeManual},
 						{Value: "auto", Label: "Automatic final confirmation", Selected: value.ConfirmationMode == model.RunModeAuto},
 					},
 				},
-				{Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled},
-				{Name: "schedule_enabled", Label: "Automatically create a job when preparation starts", Type: "checkbox", Checked: value.ScheduleEnabled, Help: autoQueueHelp},
 			},
 		},
 		{
-			Title: "Pass URLs",
-			Help:  "Defaults come from the selected lake. Custom URLs must stay on an operator-approved booking site.",
+			Title: "Automation",
+			Fields: []formField{
+				{Name: "enabled", Label: "Enable this request", Type: "checkbox", Checked: value.Enabled, Wide: true},
+				{Name: "schedule_enabled", Label: "Automatically queue at preparation time", Type: "checkbox", Checked: value.ScheduleEnabled, Help: autoQueueHelp, Wide: true},
+			},
+		},
+		{
+			Title:    "Booking site URLs",
+			Help:     "Defaults come from the selected lake. Custom URLs must stay on an operator-approved booking site.",
+			Advanced: true,
 			Fields: []formField{
 				{Name: "all_day_pass_url", Label: "All-day pass URL", Type: "url", Value: value.AllDayPassURL},
 				{Name: "half_day_pass_url", Label: "Half-day pass URL", Type: "url", Value: value.HalfDayPassURL},
 			},
 		},
 		{
-			Title:  "Pass order",
-			Help:   "Try choices in order. Choose None to skip a slot; select each pass only once.",
-			Fields: passFields,
-		},
-		{
-			Title: "Timing",
+			Title:    "Preparation and retry timing",
+			Advanced: true,
 			Fields: []formField{
 				{
 					Name:     "prep_minutes_before",
-					Label:    "Prep minutes before",
+					Label:    "Start preparation (minutes before release)",
 					Type:     "number",
 					Value:    strconv.Itoa(value.PrepMinutesBefore),
 					Required: true,
@@ -551,7 +566,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				},
 				{
 					Name:     "auth_deadline_minutes_before",
-					Label:    "Auth deadline minutes before",
+					Label:    "Sign-in deadline (minutes before release)",
 					Type:     "number",
 					Value:    strconv.Itoa(value.AuthDeadlineMinutesBefore),
 					Required: true,
@@ -561,7 +576,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				},
 				{
 					Name:     "poll_deadline_seconds",
-					Label:    "Poll deadline seconds",
+					Label:    "Availability check window (seconds)",
 					Type:     "number",
 					Value:    strconv.Itoa(value.PollDeadlineSeconds),
 					Required: true,
@@ -571,7 +586,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				},
 				{
 					Name:     "poll_min_seconds",
-					Label:    "Minimum poll delay",
+					Label:    "Minimum retry delay (seconds)",
 					Type:     "number",
 					Value:    strconv.FormatFloat(value.PollMinSeconds, 'f', -1, 64),
 					Required: true,
@@ -581,7 +596,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 				},
 				{
 					Name:     "poll_max_seconds",
-					Label:    "Maximum poll delay",
+					Label:    "Maximum retry delay (seconds)",
 					Type:     "number",
 					Value:    strconv.FormatFloat(value.PollMaxSeconds, 'f', -1, 64),
 					Required: true,

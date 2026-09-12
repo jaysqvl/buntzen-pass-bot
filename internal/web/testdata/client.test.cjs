@@ -46,7 +46,7 @@ class Element {
   closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector); }
 }
 
-function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, flash, booking} = {}) {
+function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, flash, booking, sourceForm} = {}) {
   const ids = ['live-job', 'otp-code', 'otp-panel', 'pairing-candidates', 'pairing-panel',
     'job-message', 'job-pill', 'approval-panel', 'job-events', 'job-status', 'job-started',
     'job-finished', 'job-confirmation', 'cancel-job', 'notifications'];
@@ -55,6 +55,7 @@ function openPage({fetchResult = async () => new Response(null, {status: 204}), 
     nodes['booking-form'] = booking.form;
     nodes['lake-release-policy'] = booking.policy;
   }
+  if (sourceForm) nodes['source-form'] = sourceForm;
   if (flash) nodes.notifications.append(flash);
   nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf', lastEventId: '7'};
   nodes['job-status'].textContent = 'queued';
@@ -91,6 +92,45 @@ function openPage({fetchResult = async () => new Response(null, {status: 204}), 
 }
 
 function openJob(fetchResult) { return openPage({fetchResult}); }
+
+test('source provider selection excludes inactive fields and preserves values when switching back', () => {
+  const form = new Element('form');
+  const selector = new Element('select');
+  selector.value = 'twilio';
+  form.elements = {namedItem: name => name === 'provider' ? selector : null};
+  const bluebubbles = new Element('fieldset');
+  bluebubbles.dataset.sourceProvider = 'bluebubbles';
+  const serverURL = new Element('input');
+  serverURL.value = 'unfinished URL';
+  bluebubbles.append(serverURL);
+  const twilio = new Element('fieldset');
+  twilio.dataset.sourceProvider = 'twilio';
+  const token = new Element('input');
+  token.value = 'synthetic-unsaved-token';
+  twilio.append(token);
+  form.append(selector, bluebubbles, twilio);
+  const page = openPage({liveJob: false, supportsEvents: false, sourceForm: form});
+  assert.equal(bluebubbles.hidden, true);
+  assert.equal(bluebubbles.disabled, true, 'inactive fieldset must not block validation or submit values');
+  assert.equal(twilio.hidden, false);
+  assert.equal(twilio.disabled, false);
+  selector.value = 'bluebubbles';
+  selector.listeners.change();
+  assert.equal(bluebubbles.hidden, false);
+  assert.equal(bluebubbles.disabled, false);
+  assert.equal(serverURL.value, 'unfinished URL');
+  assert.equal(twilio.hidden, true);
+  assert.equal(twilio.disabled, true);
+  selector.value = 'twilio';
+  selector.listeners.change();
+  assert.equal(twilio.hidden, false);
+  assert.equal(twilio.disabled, false);
+  assert.equal(token.value, 'synthetic-unsaved-token');
+  assert.equal(bluebubbles.hidden, true);
+  assert.equal(bluebubbles.disabled, true);
+  assert.equal(page.requests.length, 0);
+  assert.equal(page.connections, 0);
+});
 
 function bookingFixture() {
   const values = {

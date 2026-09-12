@@ -3,9 +3,10 @@
   <div><p class="eyebrow">Administrator</p><h1>User accounts</h1><p>Members have their own profiles, OTP sources, bookings, and job history.</p></div>
   <a class="button primary" href="/admin/users/new">New user</a>
 </section>
-<div class="table-wrap">
+<p class="table-hint">Scroll horizontally to see all columns.</p>
+<div class="table-wrap" role="region" aria-label="User accounts" tabindex="0">
   <table>
-    <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Password</th><th>Created</th><th></th></tr></thead>
+    <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col">Actions</th></tr></thead>
     <tbody>
     {{range .Users}}
       <tr>

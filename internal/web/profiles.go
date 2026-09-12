@@ -178,9 +178,9 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 			Title: "Browser",
 			Help:  "Use Chrome for native macOS or bundled Chromium for Docker. Custom browser installations are managed by your host operator.",
 			Fields: []formField{
-				{Name: "headless", Label: "Run headless", Type: "checkbox", Checked: value.Headless},
 				{Name: "browser_channel", Label: "Browser channel", Type: "select", Options: browserChannelOptions(value.BrowserChannel)},
 				{Name: "default_timeout_ms", Label: "Action timeout (ms)", Type: "number", Value: strconv.Itoa(value.DefaultTimeoutMS), Required: true, Step: "1000"},
+				{Name: "headless", Label: "Run without a visible browser window", Type: "checkbox", Checked: value.Headless, Wide: true},
 			},
 		},
 	}

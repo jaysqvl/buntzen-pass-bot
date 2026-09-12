@@ -1,7 +1,8 @@
 {{define "jobs_table"}}
-<div class="table-wrap">
+<p class="table-hint">Scroll horizontally to see all columns.</p>
+<div class="table-wrap" role="region" aria-label="Job history" tabindex="0">
 <table>
-  <thead><tr><th>Job</th><th>Profile</th><th>Action</th><th>Status</th><th>Confirmation</th><th>Earliest start</th><th>Created</th></tr></thead>
+  <thead><tr><th scope="col">Job</th><th scope="col">Profile</th><th scope="col">Action</th><th scope="col">Status</th><th scope="col">Confirmation</th><th scope="col">Earliest start</th><th scope="col">Created</th></tr></thead>
   <tbody>
   {{range .Jobs}}
     <tr><td><a href="/jobs/{{.ID}}">{{.ShortID}}</a></td><td>{{.ProfileName}}</td><td>{{.Command}}</td><td><span class="pill {{.StatusClass}}">{{.StatusLabel}}</span></td><td>{{.ModeLabel}}</td><td>{{.DueLabel}}</td><td>{{.CreatedLabel}}</td></tr>

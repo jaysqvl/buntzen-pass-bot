@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -100,7 +101,7 @@ func TestLakeSelectionCreateEditAndRejectUnknown(t *testing.T) {
 	profile, _ := createImmediateWebBooking(t, fixture, fixture.admin.ID, "lake owner", true)
 	cookies := loginCookies(t, fixture)
 	page := serveForm(fixture, http.MethodGet, "/bookings/new", cookies, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `<select name="lake_id" required>`) || !strings.Contains(page.Body.String(), `value="buntzen" selected>Buntzen Lake`) {
+	if page.Code != http.StatusOK || !regexp.MustCompile(`<select\b[^>]*name="lake_id"[^>]*\brequired(?:\s|>)`).MatchString(page.Body.String()) || !strings.Contains(page.Body.String(), `value="buntzen" selected>Buntzen Lake`) {
 		t.Fatal("new booking does not expose the supported lake selector")
 	}
 	form := url.Values{

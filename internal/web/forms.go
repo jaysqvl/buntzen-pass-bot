@@ -37,17 +37,20 @@ type selectOption struct {
 type formField struct {
 	Name, Label, Type, Value, Placeholder, Help, Step, Min, Max string
 	Required, Checked                                           bool
+	Wide                                                        bool
 	Options                                                     []selectOption
 }
 type formSection struct {
-	Title, Help string
-	Fields      []formField
+	Title, Help, Class, Provider string
+	Fields                       []formField
+	Advanced                     bool
 }
 type formData struct {
 	BaseData
 	Eyebrow, Heading, Description, CancelURL, ActionURL, SubmitLabel, FormError string
 	Sections                                                                    []formSection
 	LakeSelection                                                               bool
+	SourceSelection                                                             bool
 }
 
 func checked(r *http.Request, name string) bool {

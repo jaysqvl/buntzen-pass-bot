@@ -306,14 +306,15 @@ func (s *Server) sourceForm(w http.ResponseWriter, r *http.Request, source *mode
 		actionURL, heading, submit = fmt.Sprintf("/sources/%d", source.ID), "Edit OTP source", "Save source"
 	}
 	data := formData{
-		BaseData:    base(r, heading),
-		Eyebrow:     "Provider configuration",
-		Heading:     heading,
-		Description: "Only the selected adapter can read this inbox. Secrets are encrypted in SQLite and are never rendered back into this form.",
-		CancelURL:   "/#otp-sources",
-		ActionURL:   actionURL,
-		SubmitLabel: submit,
-		FormError:   formError,
+		BaseData:        base(r, heading),
+		Eyebrow:         "Provider configuration",
+		Heading:         heading,
+		Description:     "Saved credentials stay hidden. When editing, leave credential fields blank to keep the saved values.",
+		CancelURL:       "/#otp-sources",
+		ActionURL:       actionURL,
+		SubmitLabel:     submit,
+		FormError:       formError,
+		SourceSelection: true,
 	}
 	data.Sections = []formSection{
 		{
@@ -333,16 +334,18 @@ func (s *Server) sourceForm(w http.ResponseWriter, r *http.Request, source *mode
 			},
 		},
 		{
-			Title: "BlueBubbles",
-			Help:  "Used only when BlueBubbles is selected. The password is write-only.",
+			Title:    "BlueBubbles",
+			Help:     "Use these fields when BlueBubbles receives your login codes.",
+			Provider: "bluebubbles",
 			Fields: []formField{
 				{Name: "bb_base_url", Label: "Server URL", Type: "url", Value: bbURL, Placeholder: "http://bluebubbles.example:1234"},
 				{Name: "bb_password", Label: "Server password", Type: "password", Placeholder: secretPlaceholder(creating)},
 			},
 		},
 		{
-			Title: "Twilio",
-			Help:  "Used only when Twilio is selected. This adapter reads inbound messages only.",
+			Title:    "Twilio",
+			Help:     "Use these fields when Twilio receives your login codes. Only incoming messages are read.",
+			Provider: "twilio",
 			Fields: []formField{
 				{Name: "twilio_account_sid", Label: "Account SID", Type: "password", Placeholder: secretPlaceholder(creating)},
 				{Name: "twilio_auth_token", Label: "Auth token", Type: "password", Placeholder: secretPlaceholder(creating)},
