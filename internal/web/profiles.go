@@ -166,14 +166,22 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 	if !creating {
 		actionURL, heading = fmt.Sprintf("/profiles/%d", profile.ID), "Edit Yodel sign-in"
 	}
+	phonePlaceholder := "Enter mobile number"
+	phoneHelp := "Enter the 10-digit Canadian or US mobile number you use with Yodel. A leading +1 is accepted."
+	if !creating {
+		phonePlaceholder = secretPlaceholder(false)
+		phoneHelp = "Leave blank to keep your saved mobile number. Enter a new number only to replace it."
+	}
 	data := formData{
 		BaseData: base(r, heading), Eyebrow: "Your account", Heading: heading,
-		Description: "Connect the mobile number used by your Yodel account. Sign-in is shared across supported lakes.",
+		Description: "Save your Yodel account once and use it across supported lakes.",
 		CancelURL:   "/#yodel-sign-in", ActionURL: actionURL, SubmitLabel: submit, FormError: formError,
-		Sections: []formSection{{Title: "Yodel sign-in", Help: "Use a 10-digit Canadian or US mobile number. A leading +1 and common separators are accepted.", Fields: []formField{
-			{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true},
-			{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: secretPlaceholder(creating), Required: creating},
-			{Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled},
+		SubmitHelp:     "Saving does not start a sign-in. Use Sign in to Yodel on Home when you’re ready.",
+		SubmitDisabled: creating && source.ID == 0,
+		Sections: []formSection{{Title: "Account details", Fields: []formField{
+			{Name: "name", Label: "Sign-in name", Type: "text", Value: value.Name, Required: true, Help: "Use a name you’ll recognize when choosing a booking account."},
+			{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: phonePlaceholder, Required: creating, Help: phoneHelp},
+			{Name: "enabled", Label: "Enable this sign-in", Type: "checkbox", Checked: value.Enabled, Wide: true, Help: "Allow this account to sign in and run booking jobs."},
 		}}},
 	}
 	message := "Choose a default OTP source on the OTP sources page before adding a Yodel sign-in."
@@ -181,7 +189,34 @@ func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *mo
 		message = "Default OTP source: " + source.Name + ". Manage the inbox used for login codes on OTP sources."
 	}
 	data.Flash = &Flash{Kind: "info", Message: message, ActionLabel: "OTP sources", ActionURL: "/sources"}
+	if !creating {
+		job, err := s.pendingResourceJob(r, func(job model.Job) bool { return job.ProfileID == profile.ID })
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		if job != nil {
+			data.SubmitDisabled = true
+			data.SubmitHelp = "This sign-in cannot be changed while its job is pending."
+			data.Flash = &Flash{Kind: "info", Message: "A pending job is using this sign-in. View the job to follow progress or cancel before editing.", ActionLabel: "View job", ActionURL: fmt.Sprintf("/jobs/%d", job.ID)}
+		}
+	}
 	s.render(w, formStatus(formError), "form", data)
+}
+
+func (s *Server) pendingResourceJob(r *http.Request, matches func(model.Job) bool) (*model.Job, error) {
+	// Read the complete account history so an older scheduled job still blocks
+	// editing when newer completed jobs appear first in the recent jobs list.
+	jobs, err := s.userStore(r).ListJobs(r.Context(), store.MaxRetainedJobsPerUser)
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		if !job.Status.Terminal() && matches(job) {
+			return &job, nil
+		}
+	}
+	return nil, nil
 }
 
 func browserChannelOptions(selected string) []selectOption {

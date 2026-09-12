@@ -1,22 +1,23 @@
 {{define "content"}}
-<section class="section-head"><div><p class="eyebrow">{{.Eyebrow}}</p><h1>{{.Heading}}</h1><p{{if .LakeSelection}} id="lake-release-policy" aria-live="polite"{{end}}>{{.Description}}</p></div><a class="button" href="{{.CancelURL}}">Cancel</a></section>
-{{if .FormError}}<div class="flash error" role="alert">{{.FormError}}</div>{{end}}
+<section class="section-head"><div><p class="eyebrow">{{.Eyebrow}}</p><h1>{{.Heading}}</h1><p{{if .LakeSelection}} id="lake-release-policy" aria-live="polite"{{end}}>{{.Description}}</p></div></section>
+{{if .FormError}}<div class="flash error" id="form-error" tabindex="-1" role="alert">{{.FormError}}</div>{{end}}
 <form{{if .LakeSelection}} id="booking-form"{{else if .SourceSelection}} id="source-form"{{end}} method="post" action="{{.ActionURL}}" class="form-card" autocomplete="off">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   {{range .HiddenFields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
-  {{if .LakeSelection}}<div class="form-context"><p>Lake defaults are copied into each request. Apply them again to refresh this request’s settings.</p><div class="actions"><a id="lake-settings-link" class="button" href="{{.LakeSettingsURL}}">Lake settings</a><button id="use-lake-defaults" type="button" hidden>Use lake defaults</button></div></div>{{end}}
+  {{$form := .}}
   {{$hasAdvanced := false}}
-  {{range .Sections}}
+  {{range $index, $section := .Sections}}
     {{if .Advanced}}{{$hasAdvanced = true}}{{else}}{{template "form-section" .}}{{end}}
+    {{if and $form.LakeSelection (eq $index 0)}}<div class="form-context"><p class="field-help">Use saved lake defaults for vehicle selection, pass preferences, and release rules. Changes here apply only to this request.</p><div class="actions"><button id="use-lake-defaults" type="button" hidden>Use lake defaults</button><a id="lake-settings-link" class="button ghost" href="{{$form.LakeSettingsURL}}">Lake settings</a></div></div>{{end}}
   {{end}}
   {{if $hasAdvanced}}
   <details class="form-advanced"{{if .FormError}} open{{end}}>
     <summary>Advanced settings</summary>
-    <p class="field-help">{{if .AdvancedHelp}}{{.AdvancedHelp}}{{else}}Booking site URLs and preparation timing. The defaults work for most requests.{{end}}</p>
+    <p class="field-help">{{if .AdvancedHelp}}{{.AdvancedHelp}}{{else}}Review the defaults or adjust them for this request.{{end}}</p>
     {{range .Sections}}{{if .Advanced}}{{template "form-section" .}}{{end}}{{end}}
   </details>
   {{end}}
-  <div class="actions sticky"><button class="primary" type="submit">{{.SubmitLabel}}</button><a class="button" href="{{.CancelURL}}">Cancel</a></div>
+  <div class="form-actions">{{if .SubmitHelp}}<p class="field-help">{{.SubmitHelp}}</p>{{end}}<div class="actions"><button class="primary" type="submit"{{if .SubmitDisabled}} disabled{{end}}>{{.SubmitLabel}}</button><a class="button ghost" href="{{.CancelURL}}">Cancel</a></div></div>
 </form>
 {{end}}
 {{template "base" .}}

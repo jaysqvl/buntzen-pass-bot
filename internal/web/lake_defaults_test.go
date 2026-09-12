@@ -224,7 +224,7 @@ func TestPersonalLakeDefaultsAffectNewBookingsAndPreserveSavedSnapshots(t *testi
 	}
 	values.Set("vehicle_keyword", "")
 	response = serveForm(fixture, http.MethodPost, path, cookies, values)
-	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "vehicle is required") {
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "Enter a vehicle keyword.") {
 		t.Fatalf("explicitly empty vehicle was silently replaced: %d %s", response.Code, response.Body.String())
 	}
 }

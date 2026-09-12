@@ -43,10 +43,14 @@ func TestPendingJobPagesAndStreamExplainStartAndConfirmation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			rows := fixture.server.jobRows(ctx, resources, []model.Job{job})
+			if len(rows) != 1 || rows[0].RequestName != booking.Name || rows[0].Command != "Book pass" {
+				t.Fatalf("pending job did not identify its locked booking request: %+v", rows)
+			}
 			path := fmt.Sprintf("/jobs/%d", job.ID)
 			for _, path := range []string{path, "/jobs"} {
 				page := serveForm(fixture, http.MethodGet, path, cookies, nil)
-				for _, want := range []string{"Waiting to start", "Earliest start", test.localLabel, test.confirmation} {
+				for _, want := range []string{"Book pass", "Waiting to start", "Earliest start", test.localLabel, test.confirmation} {
 					if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), want) {
 						t.Fatalf("%s missing %q: status=%d body=%q", path, want, page.Code, page.Body.String())
 					}
@@ -65,8 +69,17 @@ func TestPendingJobPagesAndStreamExplainStartAndConfirmation(t *testing.T) {
 				t.Fatal(err)
 			}
 			booking.Timezone = "Asia/Tokyo"
+			booking.Name = "Renamed after cancellation " + test.name
 			if _, err := resources.UpdateBookingRequest(ctx, booking); err != nil {
 				t.Fatal(err)
+			}
+			terminalJob, err := resources.GetJob(ctx, job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows = fixture.server.jobRows(ctx, resources, []model.Job{terminalJob})
+			if len(rows) != 1 || rows[0].RequestName != "" {
+				t.Fatalf("terminal history presented a mutable request name as historical context: %+v", rows)
 			}
 			page := serveForm(fixture, http.MethodGet, path, cookies, nil)
 			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), test.utcLabel) ||

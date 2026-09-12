@@ -16,10 +16,13 @@ class Element {
     this._text = '';
     this.hidden = true;
     this.disabled = false;
+    this.focusCount = 0;
+    this.textUpdates = 0;
   }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
   get selectedOptions() { return this.children.filter(child => child.tagName === 'OPTION' && child.value === this.value); }
-  set textContent(value) { this.replaceChildren(); this._text = value; }
+  set textContent(value) { this.replaceChildren(); this._text = value; this.textUpdates++; }
+  focus() { this.focusCount++; }
   setAttribute(name, value) { this.attributes[name] = value; }
   getAttribute(name) { return this.attributes[name]; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
@@ -46,10 +49,10 @@ class Element {
   closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector); }
 }
 
-function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, flash, booking, sourceForm} = {}) {
+function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, terminal = false, flash, booking, sourceForm, formError} = {}) {
   const ids = ['live-job', 'otp-code', 'otp-panel', 'pairing-candidates', 'pairing-panel',
     'job-message', 'job-pill', 'approval-panel', 'job-events', 'job-status', 'job-started',
-    'job-finished', 'job-confirmation', 'cancel-job', 'notifications'];
+    'job-finished', 'job-confirmation', 'job-connection', 'job-attention', 'cancel-job', 'notifications'];
   const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
   if (booking) {
     nodes['booking-form'] = booking.form;
@@ -58,8 +61,9 @@ function openPage({fetchResult = async () => new Response(null, {status: 204}), 
     nodes['lake-settings-link'] = booking.settingsLink;
   }
   if (sourceForm) nodes['source-form'] = sourceForm;
+  if (formError) nodes['form-error'] = formError;
   if (flash) nodes.notifications.append(flash);
-  nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf', lastEventId: '7'};
+  nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf', lastEventId: '7', terminal: String(terminal)};
   nodes['job-status'].textContent = 'queued';
   nodes['cancel-job'].hidden = false;
   nodes['cancel-job'].dataset.decision = 'cancel-job';
@@ -94,6 +98,16 @@ function openPage({fetchResult = async () => new Response(null, {status: 204}), 
 }
 
 function openJob(fetchResult) { return openPage({fetchResult}); }
+
+test('a returned form error receives focus without needing a live job or EventSource', () => {
+  const formError = new Element();
+  formError.textContent = 'Choose a valid retry interval.';
+  const page = openPage({liveJob: false, supportsEvents: false, formError});
+  assert.equal(formError.focusCount, 1);
+  assert.equal(page.nodes['otp-code'].focusCount, 0);
+  assert.equal(page.connections, 0);
+  assert.equal(page.requests.length, 0);
+});
 
 test('source provider selection excludes inactive fields and preserves values when switching back', () => {
   const form = new Element('form');
@@ -300,6 +314,74 @@ function assertSensitiveStateCleared(job) {
   assert.equal(job.nodes['pairing-candidates'].children.length, 0);
 }
 
+test('stream loss marks retained progress stale, reconnects, and still receives final events', () => {
+  const job = openJob();
+  const connection = job.nodes['job-connection'];
+  assert.equal(connection.dataset.connection, 'connecting');
+  job.emit('open', {});
+  assert.equal(connection.dataset.connection, 'connected');
+  assert.match(connection.textContent, /refreshing progress/);
+  const running = {status: 'running', label: 'Running', message: 'Checking passes', terminal: false, can_cancel: true};
+  job.emit('state', running);
+  assert.equal(connection.textContent, 'Connected · live updates.');
+  showSensitiveState(job);
+  job.emit('error', {});
+  assertSensitiveStateCleared(job);
+  assert.equal(connection.dataset.connection, 'reconnecting');
+  assert.match(connection.textContent, /progress may be out of date/);
+  assert.equal(job.nodes['job-message'].textContent, 'Checking passes', 'retain the last known progress with an explicit stale warning');
+  assert.equal(job.closed, false, 'EventSource should reconnect without replaying any decision');
+  assert.equal(job.requests.length, 0);
+  job.emit('open', {});
+  assert.match(connection.textContent, /refreshing progress/);
+  job.emit('state', {...running, message: 'Found a pass'});
+  assert.equal(connection.textContent, 'Connected · live updates.');
+  assert.equal(job.nodes['job-message'].textContent, 'Found a pass');
+  job.emit('state', {...running, status: 'succeeded', terminal: true, can_cancel: false});
+  assert.equal(connection.dataset.connection, 'completed');
+  assert.equal(job.closed, false);
+  job.emit('error', {});
+  assert.match(connection.textContent, /job has finished; waiting for final events/);
+  job.emit('job_event', {id: 8, time: '12:00:00', type: 'job.succeeded', message: 'Booking confirmed'});
+  assert.equal(job.nodes['job-events'].children.length, 1);
+  job.emit('complete', {});
+  assert.equal(connection.dataset.connection, 'completed');
+  assert.equal(connection.textContent, 'Completed · live updates ended.');
+  assert.equal(job.closed, true);
+  job.emit('error', {});
+  assert.equal(connection.dataset.connection, 'completed', 'a closed stream must not look like a new connection failure');
+});
+
+test('approval and pairing attention is announced without codes, sender details, repeated messages, or focus changes', () => {
+  const job = openJob();
+  const attention = job.nodes['job-attention'];
+  const approval = {terminal: false, awaiting_approval: true, message: 'Provider content stays in Progress'};
+  job.emit('state', approval);
+  assert.match(attention.textContent, /Approval needed/);
+  const updates = attention.textUpdates;
+  job.emit('state', approval);
+  assert.equal(attention.textUpdates, updates, 'polling the same state should not repeat its announcement');
+  showSensitiveState(job);
+  assert.match(attention.textContent, /Pairing needs your attention/);
+  assert.doesNotMatch(attention.textContent, /123456|654321|1234|SMS/);
+  assert.equal(job.nodes['otp-code'].focusCount, 0);
+  assert.equal(job.nodes['pairing-candidates'].children[0].focusCount, 0);
+  job.emit('pairing', {active: false});
+  assert.match(attention.textContent, /Approval needed/);
+  job.emit('state', {terminal: true, awaiting_approval: false});
+  assert.equal(attention.textContent, '');
+});
+
+test('terminal server-rendered jobs reject transient codes and actions before the first stream snapshot', async () => {
+  const job = openPage({terminal: true});
+  assert.equal(job.nodes['job-connection'].dataset.connection, 'completed');
+  job.emit('otp', {active: true, code: '123456'});
+  job.emit('pairing', {active: true, candidates: [{id: 'late', code: '654321'}]});
+  assertSensitiveStateCleared(job);
+  await job.click(job.nodes['cancel-job']);
+  assert.equal(job.requests.length, 0);
+});
+
 for (const signal of ['error', 'terminal', 'auth_expired', 'pagehide']) {
   test(`${signal} removes already displayed OTPs and pairing candidates`, () => {
     const job = openJob();
@@ -365,6 +447,24 @@ test('live completion updates all details and controls before waiting for the fi
   assert.equal(job.nodes['job-events'].children[0].children[1].children[1].textContent, 'Booking confirmed');
   job.emit('complete', {});
   assert.equal(job.closed, true);
+});
+
+test('approval shows its own cancel action and restores generic cancellation after approval ends', async () => {
+  const job = openJob();
+  const running = {status: 'running', can_cancel: true, awaiting_approval: false, terminal: false};
+  job.emit('state', running);
+  assert.equal(job.nodes['cancel-job'].hidden, false);
+  job.emit('state', {...running, status: 'awaiting_approval', awaiting_approval: true});
+  assert.equal(job.nodes['approval-panel'].hidden, false);
+  assert.equal(job.nodes['cancel-job'].hidden, true, 'approval should not display two competing cancel actions');
+  const approvalCancel = new Element('button');
+  approvalCancel.dataset.decision = 'cancel';
+  await job.click(approvalCancel);
+  assert.equal(job.requests[0][1].body.get('decision'), 'cancel', 'the approval action must keep its existing decision semantics');
+  job.emit('state', running);
+  assert.equal(job.nodes['approval-panel'].hidden, true);
+  assert.equal(job.nodes['cancel-job'].hidden, false);
+  assert.equal(job.nodes['cancel-job'].disabled, false);
 });
 
 test('replayed events do not duplicate server-rendered or already received history', () => {

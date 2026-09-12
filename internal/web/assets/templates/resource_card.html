@@ -2,7 +2,7 @@
 <article class="card">
   <div class="card-title"><div><h3><a href="{{.URL}}">{{.Title}}</a></h3><p>{{.Subtitle}}</p></div><span class="pill {{.StatusClass}}">{{.Status}}</span></div>
   {{if .Description}}<p>{{.Description}}</p>{{end}}
-  <dl>{{range .Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>
+  {{if .Fields}}<dl>{{range .Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>{{end}}
   <div class="actions">{{range .Actions}}<a class="button {{.Class}}" href="{{.URL}}">{{.Label}}</a>{{end}}{{range .PostActions}}<form method="post" action="{{.URL}}"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">{{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<button class="{{.Class}}" type="submit">{{.Label}}</button></form>{{end}}</div>
 </article>
 {{end}}

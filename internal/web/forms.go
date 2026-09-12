@@ -12,8 +12,10 @@ import (
 type cardAction struct{ Label, URL, Class string }
 type hiddenField struct{ Name, Value string }
 type postAction struct {
-	Label, URL, Class string
-	Fields            []hiddenField
+	Label, URL, Class       string
+	Fields                  []hiddenField
+	SelectName, SelectLabel string
+	SelectOptions           []selectOption
 }
 type listCard struct {
 	Title, Subtitle, Status, StatusClass, URL string
@@ -21,6 +23,7 @@ type listCard struct {
 	Fields                                    []labelValue
 	Actions                                   []cardAction
 	PostActions                               []postAction
+	Default                                   bool
 }
 type listData struct {
 	BaseData
@@ -42,6 +45,7 @@ type formField struct {
 }
 type formSection struct {
 	Title, Help, Class, Provider string
+	HelpURL, HelpLabel           string
 	Fields                       []formField
 	Advanced                     bool
 }
@@ -50,6 +54,8 @@ type formData struct {
 	HiddenFields                                                                []hiddenField
 	LakeSettingsURL                                                             string
 	AdvancedHelp                                                                string
+	SubmitHelp                                                                  string
+	SubmitDisabled                                                              bool
 	Eyebrow, Heading, Description, CancelURL, ActionURL, SubmitLabel, FormError string
 	Sections                                                                    []formSection
 	LakeSelection                                                               bool
@@ -85,5 +91,10 @@ func safeFormError(err error) string {
 			return "The submitted provider or credential values were not accepted."
 		}
 	}
-	return message
+	return strings.NewReplacer(
+		"poll timing must fit the worker bounds", "Use an availability window of 1–900 seconds and retry delays of 0.05–60 seconds. The minimum retry delay cannot exceed the maximum.",
+		"auth deadline must fall within the preparation window", "The sign-in deadline must be within the preparation window.",
+		"profile is required", "Choose a booking sign-in.",
+		"vehicle is required", "Enter a vehicle keyword.",
+	).Replace(message)
 }

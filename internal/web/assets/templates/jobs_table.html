@@ -1,17 +1,16 @@
 {{define "jobs_table"}}
 {{if .Jobs}}
-<p class="table-hint">Scroll horizontally to see all columns.</p>
 <div class="table-wrap" role="region" aria-label="Job history" tabindex="0">
-<table>
-  <thead><tr><th scope="col">Job</th><th scope="col">Sign-in</th><th scope="col">Action</th><th scope="col">Status</th><th scope="col">Confirmation</th><th scope="col">Earliest start</th><th scope="col">Created</th></tr></thead>
+<table class="jobs-table">
+  <thead><tr><th scope="col">Job / sign-in</th><th scope="col">Action</th><th scope="col">Status</th><th scope="col">Earliest start</th><th scope="col">Created</th></tr></thead>
   <tbody>
   {{range .Jobs}}
-    <tr><td><a href="/jobs/{{.ID}}">{{.ShortID}}</a></td><td>{{.ProfileName}}</td><td>{{.Command}}</td><td><span class="pill {{.StatusClass}}">{{.StatusLabel}}</span></td><td>{{.ModeLabel}}</td><td>{{.DueLabel}}</td><td>{{.CreatedLabel}}</td></tr>
+    <tr><td data-label="Job"><a href="/jobs/{{.ID}}">{{.ShortID}}{{if .RequestName}} · {{.RequestName}}{{end}}</a><span class="cell-secondary">{{.ProfileName}}</span></td><td data-label="Action">{{.Command}}<span class="cell-secondary">{{.ModeLabel}}</span></td><td data-label="Status"><span class="pill {{.StatusClass}}">{{.StatusLabel}}</span></td><td data-label="Earliest start">{{.DueLabel}}</td><td data-label="Created">{{.CreatedLabel}}</td></tr>
   {{end}}
   </tbody>
 </table>
 </div>
 {{else}}
-<section class="empty-card" aria-label="Job history"><p>No jobs yet. Sign in to Yodel or queue a booking to see its progress here.</p></section>
+<section class="empty-card" aria-label="Job history"><h3>No jobs yet</h3><p>Jobs appear when you sign in to Yodel or queue a booking request.</p><a class="text-link" href="/bookings">Open booking requests →</a></section>
 {{end}}
 {{end}}

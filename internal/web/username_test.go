@@ -50,7 +50,7 @@ func TestAccountUsernameChangeKeepsSessionAndUsesAuthenticatedOwner(t *testing.T
 				t.Fatalf("another account changed=%+v err=%v", unchanged, err)
 			}
 			page = serveForm(fixture, http.MethodGet, response.Header().Get("Location"), cookies, nil)
-			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "<h1>"+newName+"</h1>") || !strings.Contains(page.Body.String(), "Username changed.") || strings.Contains(page.Body.String(), password) {
+			if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "You are signed in as <strong>"+newName+"</strong>") || !strings.Contains(page.Body.String(), "Username changed.") || strings.Contains(page.Body.String(), password) {
 				t.Fatalf("existing session account page = %d: %s", page.Code, page.Body.String())
 			}
 			// Exercise both HTTP login paths after the rename, including normal case folding.

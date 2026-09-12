@@ -1,25 +1,28 @@
 {{define "content"}}
+<div class="settings-page">
 <section class="section-head">
-  <div><p class="eyebrow">Administrator</p><h1>User accounts</h1><p>Members have their own Yodel sign-ins, OTP sources, bookings, and job history.</p></div>
+  <div><p class="eyebrow">Settings</p><h1>Users</h1><p>Manage access to Lake Pass Bot. Each member has their own sign-ins, sources, and bookings.</p></div>
   <a class="button primary" href="/admin/users/new">New user</a>
 </section>
-<p class="table-hint">Scroll horizontally to see all columns.</p>
+{{template "settings-nav" .}}
+
 <div class="table-wrap" role="region" aria-label="User accounts" tabindex="0">
-  <table>
+  <table class="jobs-table users-table">
     <thead><tr><th scope="col">Username</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col">Actions</th></tr></thead>
     <tbody>
     {{range .Users}}
       <tr>
-        <td>{{.Username}}</td>
-        <td>{{.Role}}</td>
-        <td><span class="pill {{.StatusClass}}">{{.Status}}</span></td>
-        <td>{{.PasswordState}}</td>
-        <td>{{.CreatedLabel}}</td>
-        <td>{{if .Editable}}<a class="button" href="/admin/users/{{.ID}}">Manage</a>{{else}}<a class="button" href="/account">Your account</a>{{end}}</td>
+        <td data-label="Username">{{.Username}}</td>
+        <td data-label="Role">{{.Role}}</td>
+        <td data-label="Status"><span class="pill {{.StatusClass}}">{{.Status}}</span></td>
+        <td data-label="Password">{{.PasswordState}}</td>
+        <td data-label="Created">{{.CreatedLabel}}</td>
+        <td data-label="Actions">{{if .Editable}}<a class="button" href="/admin/users/{{.ID}}">Manage</a>{{else}}<a class="button" href="/account">Your account</a>{{end}}</td>
       </tr>
     {{else}}<tr><td colspan="6" class="empty">No accounts exist.</td></tr>{{end}}
     </tbody>
   </table>
+</div>
 </div>
 {{end}}
 {{template "base" .}}

@@ -17,6 +17,7 @@ type jobRow struct {
 	ID           int64
 	ShortID      string
 	ProfileName  string
+	RequestName  string
 	Command      string
 	StatusLabel  string
 	StatusClass  string
@@ -54,14 +55,20 @@ func (s *Server) jobRows(ctx context.Context, userStore store.UserStore, jobs []
 	rows := make([]jobRow, 0, len(jobs))
 	for _, job := range jobs {
 		location := time.UTC
+		requestName := ""
 		if job.BookingRequestID != nil {
-			location = pendingJobLocation(job, bookingsByID[*job.BookingRequestID])
+			booking := bookingsByID[*job.BookingRequestID]
+			location = pendingJobLocation(job, booking)
+			if !job.Status.Terminal() && booking.ID == *job.BookingRequestID && booking.UserID == job.UserID && booking.ProfileID == job.ProfileID {
+				requestName = booking.Name
+			}
 		}
 		rows = append(rows, jobRow{
 			ID:           job.ID,
 			ShortID:      fmt.Sprintf("#%06d", job.ID),
 			ProfileName:  names[job.ProfileID],
-			Command:      string(job.Command),
+			RequestName:  requestName,
+			Command:      jobCommandLabel(job.Command),
 			StatusLabel:  jobStatusLabel(job),
 			StatusClass:  statusClass(job.Status),
 			ModeLabel:    jobModeLabel(job),
@@ -143,7 +150,7 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		ID:                job.ID,
 		ShortID:           fmt.Sprintf("#%06d", job.ID),
 		ProfileName:       profile.Name,
-		Command:           string(job.Command),
+		Command:           jobCommandLabel(job.Command),
 		StatusLabel:       jobStatusLabel(job),
 		StatusClass:       statusClass(job.Status),
 		CreatedLabel:      formatJobTime(job.CreatedAt, location),
@@ -388,6 +395,19 @@ func statusLabel(status model.JobStatus) string {
 		return "Waiting to start"
 	}
 	return strings.ReplaceAll(string(status), "_", " ")
+}
+
+func jobCommandLabel(command model.JobCommand) string {
+	switch command {
+	case model.CommandAuthCheck:
+		return "Sign-in check"
+	case model.CommandDryRun:
+		return "Booking rehearsal"
+	case model.CommandBook:
+		return "Book pass"
+	default:
+		return "Job"
+	}
 }
 
 func jobStatusLabel(job model.Job) string {

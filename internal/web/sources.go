@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
 	"github.com/jaysqvl/lake-pass-bot/internal/egress"
 	"github.com/jaysqvl/lake-pass-bot/internal/engine"
 	"github.com/jaysqvl/lake-pass-bot/internal/model"
@@ -37,7 +39,7 @@ func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if source.ID == defaultSource.ID {
-			card.Status = "Default · " + card.Status
+			card.Default = true
 		} else {
 			card.PostActions = append(card.PostActions, postAction{Label: "Make default", URL: fmt.Sprintf("/sources/%d/default", source.ID)})
 		}
@@ -67,13 +69,14 @@ func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPS
 		providerName = "Twilio"
 	}
 	card := listCard{
-		Title: source.Name, Subtitle: providerName, Status: "Ready", StatusClass: "ok", URL: fmt.Sprintf("/sources/%d", source.ID),
+		Title: source.Name, Subtitle: providerName, Status: "Configured", StatusClass: "", URL: fmt.Sprintf("/sources/%d", source.ID),
 		Actions:     []cardAction{{"Edit", fmt.Sprintf("/sources/%d", source.ID), ""}},
 		PostActions: []postAction{{Label: "Test connection", URL: fmt.Sprintf("/sources/%d/health", source.ID)}},
 	}
 	if source.Provider != model.OTPProviderBlueBubbles {
 		return card, nil
 	}
+	card.Status, card.StatusClass = "Paired", "ok"
 	card.Fields = append(card.Fields, labelValue{"Paired sender", maskStoredSender(source.PairingSender)})
 	if source.PairingChatGUID == "" || source.PairingSender == "" || source.PairingService == "" {
 		card.Status, card.StatusClass = "Needs pairing", "warn"
@@ -83,6 +86,26 @@ func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPS
 		card.Fields = append(card.Fields, labelValue{"Yodel sign-in", setup.ProfileName})
 	}
 	if err != nil {
+		if errors.Is(err, engine.ErrPairingProfileAmbiguous) {
+			profiles, listErr := s.store.ForUser(userID).ListProfiles(ctx)
+			if listErr != nil {
+				return listCard{}, listErr
+			}
+			options := []selectOption{{Label: "Choose a Yodel sign-in", Selected: true}}
+			for _, profile := range profiles {
+				if profile.Enabled && profile.EffectiveProviderID() == destinations.ProviderYodel && profile.ValidateForOrigins(s.config.YodelOrigins) == nil {
+					options = append(options, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name})
+				}
+			}
+			if len(options) > 1 {
+				card.Description = "Choose the Yodel sign-in to pair with this inbox. Your default OTP source stays unchanged."
+				card.PostActions = append(card.PostActions, postAction{
+					Label: sourcePairLabel(source), URL: fmt.Sprintf("/sources/%d/pair", source.ID), Class: "primary",
+					SelectName: "profile_id", SelectLabel: "Yodel sign-in for pairing", SelectOptions: options,
+				})
+				return card, nil
+			}
+		}
 		action := cardAction{Class: "primary"}
 		switch {
 		case errors.Is(err, engine.ErrPairingProfileRequired), errors.Is(err, engine.ErrPairingProfileAmbiguous):
@@ -101,12 +124,15 @@ func (s *Server) sourceCard(ctx context.Context, userID int64, source model.OTPS
 		}
 		return card, nil
 	}
-	pairLabel := "Pair with Yodel"
-	if card.Status == "Ready" {
-		pairLabel = "Re-pair"
-	}
-	card.PostActions = append(card.PostActions, postAction{Label: pairLabel, URL: fmt.Sprintf("/sources/%d/pair", source.ID), Class: "primary"})
+	card.PostActions = append(card.PostActions, postAction{Label: sourcePairLabel(source), URL: fmt.Sprintf("/sources/%d/pair", source.ID), Class: "primary"})
 	return card, nil
+}
+
+func sourcePairLabel(source model.OTPSource) string {
+	if source.PairingChatGUID != "" && source.PairingSender != "" && source.PairingService != "" {
+		return "Re-pair"
+	}
+	return "Pair with Yodel"
 }
 
 func maskStoredSender(value string) string {
@@ -212,8 +238,21 @@ func (s *Server) sourcePair(w http.ResponseWriter, r *http.Request) {
 		s.notFoundOrInternal(w, err)
 		return
 	}
-	job, err := s.engine.QueuePairing(r.Context(), requestAuth(r).Authenticated.User.ID, id)
+	var selectedProfile []int64
+	if r.Form.Has("profile_id") {
+		profileID, err := strconv.ParseInt(strings.TrimSpace(r.Form.Get("profile_id")), 10, 64)
+		if err != nil || profileID <= 0 {
+			redirectNotice(w, r, "/sources", "pairing-unavailable")
+			return
+		}
+		selectedProfile = []int64{profileID}
+	}
+	job, err := s.engine.QueuePairing(r.Context(), requestAuth(r).Authenticated.User.ID, id, selectedProfile...)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.notFoundOrInternal(w, err)
+			return
+		}
 		slog.Warn("supervised pairing could not be queued", "source_id", id, "error", err)
 		code := "pairing-unavailable"
 		if errors.Is(err, store.ErrResourceLimit) {
@@ -350,20 +389,20 @@ func (s *Server) sourceForm(w http.ResponseWriter, r *http.Request, source *mode
 	}
 	data := formData{
 		BaseData:        base(r, heading),
-		Eyebrow:         "Provider configuration",
+		Eyebrow:         "OTP sources",
 		Heading:         heading,
-		Description:     "Saved credentials stay hidden. When editing, leave credential fields blank to keep the saved values.",
+		Description:     "Connect the inbox that receives your Yodel login codes. Your sources work across all lakes.",
 		CancelURL:       "/sources",
 		ActionURL:       actionURL,
 		SubmitLabel:     submit,
+		SubmitHelp:      "After saving, test the connection from OTP sources. BlueBubbles also needs pairing with a Yodel sign-in.",
 		FormError:       formError,
 		SourceSelection: true,
 	}
 	data.Sections = []formSection{
 		{
-			Title: "Identity",
+			Title: "Source details",
 			Fields: []formField{
-				{Name: "name", Label: "Name", Type: "text", Value: name, Required: true},
 				{
 					Name:     "provider",
 					Label:    "Provider",
@@ -374,28 +413,41 @@ func (s *Server) sourceForm(w http.ResponseWriter, r *http.Request, source *mode
 						{Value: "twilio", Label: "Twilio", Selected: provider == "twilio"},
 					},
 				},
+				{Name: "name", Label: "Source name", Type: "text", Value: name, Required: true, Help: "A name you will recognize when choosing your default inbox."},
 			},
 		},
 		{
 			Title:    "BlueBubbles",
-			Help:     "Use these fields when BlueBubbles receives your login codes.",
+			Help:     "Use the server that receives your Messages. Saved passwords stay hidden; leave the password blank to keep it when editing this provider.",
 			Provider: "bluebubbles",
 			Fields: []formField{
-				{Name: "bb_base_url", Label: "Server URL", Type: "url", Value: bbURL, Placeholder: "http://bluebubbles.example:1234"},
+				{Name: "bb_base_url", Label: "Server URL", Type: "url", Value: bbURL, Placeholder: "http://bluebubbles.example:1234", Help: "Use the server root. Re-enter the password if you change this address."},
 				{Name: "bb_password", Label: "Server password", Type: "password", Placeholder: secretPlaceholder(creating)},
 			},
 		},
 		{
 			Title:    "Twilio",
-			Help:     "Use these fields when Twilio receives your login codes. Only incoming messages are read.",
+			Help:     "Only incoming messages are read. Saved credentials stay hidden; leave them blank to keep them when editing this provider. Changing providers requires new credentials.",
 			Provider: "twilio",
 			Fields: []formField{
+				{Name: "twilio_to_number", Label: "Receiving number", Type: "tel", Value: twilioTo, Placeholder: "+15550100123"},
+				{Name: "twilio_sender", Label: "Expected sender (optional)", Type: "text", Value: twilioSender, Help: "Limit codes to this sender. Leave blank to keep the saved sender when editing."},
 				{Name: "twilio_account_sid", Label: "Account SID", Type: "password", Placeholder: secretPlaceholder(creating)},
 				{Name: "twilio_auth_token", Label: "Auth token", Type: "password", Placeholder: secretPlaceholder(creating)},
-				{Name: "twilio_to_number", Label: "Receiving number", Type: "text", Value: twilioTo, Placeholder: "+15550100123"},
-				{Name: "twilio_sender", Label: "Expected sender (optional)", Type: "text", Value: twilioSender},
 			},
 		},
+	}
+	if !creating {
+		job, err := s.pendingResourceJob(r, func(job model.Job) bool { return job.OTPSourceID == source.ID })
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		if job != nil {
+			data.SubmitDisabled = true
+			data.SubmitHelp = "This OTP source cannot be changed while its job is pending."
+			data.Flash = &Flash{Kind: "info", Message: "A pending job is using this OTP source. View the job to follow progress or cancel before editing.", ActionLabel: "View job", ActionURL: fmt.Sprintf("/jobs/%d", job.ID)}
+		}
 	}
 	s.render(w, formStatus(formError), "form", data)
 }

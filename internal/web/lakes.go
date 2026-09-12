@@ -66,7 +66,7 @@ func (s *Server) lakesPage(w http.ResponseWriter, r *http.Request) {
 			s.internal(w)
 			return
 		}
-		status := "Built-in defaults"
+		status := "Default preferences"
 		if saved {
 			status = "Personal defaults"
 		}

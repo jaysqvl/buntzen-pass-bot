@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,28 +26,20 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 		s.internal(w)
 		return
 	}
-	profiles, _ := userStore.ListProfiles(r.Context())
-	jobs, err := userStore.ListPendingBookingJobs(r.Context())
+	profiles, err := userStore.ListProfiles(r.Context())
 	if err != nil {
 		s.internal(w)
 		return
 	}
-	pending := make(map[int64]*model.Job, len(jobs))
-	for i := range jobs {
-		job := &jobs[i]
-		if job.BookingRequestID != nil && pending[*job.BookingRequestID] == nil {
-			pending[*job.BookingRequestID] = job
-		}
-	}
-	names := map[int64]string{}
+	profilesByID := map[int64]model.Profile{}
 	for _, profile := range profiles {
-		names[profile.ID] = profile.Name
+		profilesByID[profile.ID] = profile
 	}
 	data := listData{
 		BaseData:     base(r, "Bookings"),
 		Eyebrow:      "Pass bookings",
 		Heading:      "Booking requests",
-		Description:  "Queue for release creates a job that waits until preparation starts. Book now checks already released passes and requires your approval; it expires after 15 minutes.",
+		Description:  "Choose a lake and visit date, then queue your request for release or check passes that are already available.",
 		CreateURL:    "/bookings/new",
 		CreateLabel:  "New booking",
 		EmptyMessage: "Add a Yodel sign-in on Home, then create a booking request.",
@@ -65,8 +58,14 @@ func (s *Server) bookings(w http.ResponseWriter, r *http.Request) {
 	if !s.config.SchedulesEnabled {
 		data.Notice = autoQueueOffNotice
 	}
+	now := time.Now()
 	for _, booking := range bookings {
-		data.Cards = append(data.Cards, bookingCard(booking, names[booking.ProfileID], s.config.SchedulesEnabled, pending[booking.ID]))
+		conflict, err := bookingPresentationConflict(r.Context(), userStore, booking.ID)
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		data.Cards = append(data.Cards, bookingCard(booking, profilesByID[booking.ProfileID], s.config.SchedulesEnabled, conflict, now))
 	}
 	s.render(w, http.StatusOK, "list", data)
 }
@@ -143,7 +142,7 @@ func lakeSelectOption(lake destinations.Lake, settings model.LakeSettings, selec
 	}
 	for _, profile := range profiles {
 		if profile.EffectiveProviderID() == lake.ProviderID && (profile.Enabled || profile.ID == currentProfileID) {
-			defaults.Profiles = append(defaults.Profiles, lakePassOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name})
+			defaults.Profiles = append(defaults.Profiles, lakePassOption{Value: strconv.FormatInt(profile.ID, 10), Label: bookingProfileLabel(profile)})
 		}
 	}
 	// Only values and slices are encoded; html/template escapes the result
@@ -152,7 +151,29 @@ func lakeSelectOption(lake destinations.Lake, settings model.LakeSettings, selec
 	return selectOption{Value: lake.ID, Label: lake.Name, Selected: lake.ID == selectedID, LakeDefaults: string(encoded)}
 }
 
-func bookingCard(booking model.BookingRequest, profileName string, schedulesEnabled bool, job *model.Job) listCard {
+func bookingProfileLabel(profile model.Profile) string {
+	if !profile.Enabled {
+		return profile.Name + " · disabled"
+	}
+	return profile.Name
+}
+
+func bookingPresentationConflict(ctx context.Context, resources store.UserStore, bookingID int64) (store.BookingConflict, error) {
+	bookingConflict, err := resources.BookingConflict(ctx, bookingID, model.CommandBook)
+	if err != nil || (bookingConflict.Job != nil && !bookingConflict.Job.Status.Terminal()) {
+		return bookingConflict, err
+	}
+	for _, command := range []model.JobCommand{model.CommandDryRun, model.CommandAuthCheck} {
+		conflict, err := resources.BookingConflict(ctx, bookingID, command)
+		if err != nil || conflict.Job != nil {
+			return conflict, err
+		}
+	}
+	return bookingConflict, nil
+}
+
+func bookingCard(booking model.BookingRequest, profile model.Profile, schedulesEnabled bool, conflict store.BookingConflict, now time.Time) listCard {
+	job := conflict.Job
 	status, class := "No booking queued", ""
 	autoQueue := "Off for this booking"
 	if !booking.Enabled {
@@ -164,19 +185,20 @@ func bookingCard(booking model.BookingRequest, profileName string, schedulesEnab
 		autoQueue = "On for this booking"
 	}
 	confirmation := jobModeLabel(model.Job{Command: model.CommandBook, RunMode: booking.ConfirmationMode})
-	if job != nil {
+	if job != nil && !job.Status.Terminal() && job.Command == model.CommandBook {
 		// The saved job controls checkout. Book now always requires approval,
 		// even when the booking request specifies automatic confirmation.
 		confirmation = jobModeLabel(*job)
 	}
 	release := booking.ReleaseTime + " · " + booking.Timezone
-	if window, err := scheduler.WindowFor(booking); err == nil {
+	window, windowErr := scheduler.WindowFor(booking)
+	if windowErr == nil {
 		release = formatJobTime(window.ReleaseAt, window.ReleaseAt.Location())
 	}
 	url := fmt.Sprintf("/bookings/%d", booking.ID)
 	card := listCard{
 		Title:       booking.Name,
-		Subtitle:    profileName,
+		Subtitle:    profile.Name,
 		Status:      status,
 		StatusClass: class,
 		URL:         url,
@@ -189,31 +211,73 @@ func bookingCard(booking model.BookingRequest, profileName string, schedulesEnab
 			{"Pass order", strings.Join(passNames(booking.PassOrder()), " → ")},
 		},
 		Actions: []cardAction{{"Edit", url, ""}},
-		PostActions: []postAction{
-			{Label: "Auth check", URL: url + "/run", Fields: []hiddenField{{"command", "auth-check"}}},
-			{Label: "Dry run", URL: url + "/run", Fields: []hiddenField{{"command", "dry-run"}}},
-			{Label: "Queue for release", URL: url + "/run", Fields: []hiddenField{{"command", "book"}}},
-			{
-				Label: "Book now · manual approval", URL: url + "/run", Class: "primary",
-				Fields: []hiddenField{{"command", "book"}, {"timing", "now"}},
-			},
-		},
 	}
-	if job != nil {
+	if job != nil && !job.Status.Terminal() {
 		card.Status, card.StatusClass = jobStatusLabel(*job), statusClass(job.Status)
 		card.Fields = append(card.Fields,
-			labelValue{"Booking job", fmt.Sprintf("Job %d · %s", job.ID, card.Status)},
+			labelValue{"Current job", fmt.Sprintf("Job %d · %s", job.ID, card.Status)},
 			labelValue{"Earliest start", formatJobTime(job.DueAt, pendingJobLocation(*job, booking))},
 		)
-		card.Actions = append(card.Actions, cardAction{"View job", fmt.Sprintf("/jobs/%d", job.ID), ""})
+		card.URL = fmt.Sprintf("/jobs/%d", job.ID)
+		card.Actions = []cardAction{{"View job", card.URL, "primary"}}
+		card.Description = "This request has a pending job. View it to follow progress or cancel before making changes."
+		return card
 	}
+	if conflict.Reservation {
+		card.Description = "This sign-in already has a confirmed or unresolved booking for this visit date. Review it before trying again."
+		if job != nil {
+			card.Status, card.StatusClass = jobStatusLabel(*job), statusClass(job.Status)
+			card.Actions = append(card.Actions, cardAction{"View booking job", fmt.Sprintf("/jobs/%d", job.ID), "primary"})
+		} else {
+			card.Status, card.StatusClass = "Review needed", "warn"
+		}
+		return card
+	}
+	if !booking.Enabled {
+		card.Description = "Enable this request to queue a booking."
+		return card
+	}
+	if !profile.Enabled {
+		card.Description = "Enable the booking sign-in or choose another sign-in before queueing this request."
+		card.Actions = append(card.Actions, cardAction{"Edit sign-in", fmt.Sprintf("/profiles/%d", profile.ID), ""})
+		return card
+	}
+	if windowErr != nil {
+		card.Description = "Review the request settings before queueing a job."
+		return card
+	}
+	if now.In(window.ReleaseAt.Location()).Format(time.DateOnly) > booking.TargetDate {
+		card.Status, card.StatusClass = "Visit date passed", ""
+		card.Description = "Choose a new visit date to use this request again."
+		return card
+	}
+	if now.Before(window.ReleaseAt) {
+		card.Description = "Passes have not released yet. Queue now to start preparation at the scheduled time."
+		card.PostActions = append(card.PostActions, postAction{Label: "Queue for release", URL: url + "/run", Class: "primary", Fields: []hiddenField{{"command", "book"}}})
+	} else {
+		card.Description = "Check released passes now. Final confirmation requires your approval; the job expires after 15 minutes."
+		card.PostActions = append(card.PostActions, postAction{Label: "Book now · manual approval", URL: url + "/run", Class: "primary", Fields: []hiddenField{{"command", "book"}, {"timing", "now"}}})
+	}
+	card.PostActions = append(card.PostActions,
+		postAction{Label: "Booking rehearsal", URL: url + "/run", Fields: []hiddenField{{"command", "dry-run"}}},
+		postAction{Label: "Sign-in check", URL: url + "/run", Fields: []hiddenField{{"command", "auth-check"}}},
+	)
 	return card
 }
 
 func passNames(values []model.PassType) []string {
 	result := make([]string, len(values))
 	for i, value := range values {
-		result[i] = strings.ReplaceAll(string(value), "_", " ")
+		switch value {
+		case model.PassAllDay:
+			result[i] = "All-day"
+		case model.PassMorning:
+			result[i] = "Morning"
+		case model.PassAfternoon:
+			result[i] = "Afternoon"
+		default:
+			result[i] = strings.ReplaceAll(string(value), "_", " ")
+		}
 	}
 	return result
 }
@@ -525,7 +589,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		if profile.EffectiveProviderID() != lake.ProviderID || (!profile.Enabled && profile.ID != currentProfileID) {
 			continue
 		}
-		profileOptions = append(profileOptions, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: profile.Name, Selected: profile.ID == selectedProfileID})
+		profileOptions = append(profileOptions, selectOption{Value: strconv.FormatInt(profile.ID, 10), Label: bookingProfileLabel(profile), Selected: profile.ID == selectedProfileID})
 	}
 	passFields := make([]formField, 3)
 	order := value.PassOrder()
@@ -544,9 +608,9 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		}
 		passFields[i] = formField{Name: fmt.Sprintf("pass_priority_%d", i+1), Label: label, Type: "select", Options: options}
 	}
-	actionURL, heading, submit := "/bookings/new", "New booking request", "Create booking"
+	actionURL, heading, submit := "/bookings/new", "New booking request", "Create request"
 	if !creating {
-		actionURL, heading, submit = fmt.Sprintf("/bookings/%d", booking.ID), "Edit booking request", "Save booking"
+		actionURL, heading, submit = fmt.Sprintf("/bookings/%d", booking.ID), "Edit booking request", "Save changes"
 	}
 	data := formData{
 		BaseData:        base(r, heading),
@@ -559,6 +623,32 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 		FormError:       formError,
 		LakeSelection:   true,
 		LakeSettingsURL: "/lakes/" + url.PathEscape(lake.ID),
+		AdvancedHelp:    "Release rules, preparation timing, and booking URLs are copied from your defaults. Override them here for this request only.",
+		SubmitHelp:      "Save this request, then manage its jobs from Bookings.",
+	}
+	if len(profileOptions) == 1 {
+		data.Flash = &Flash{Kind: "info", Message: "Add or enable a Yodel sign-in on Home before saving a booking request.", ActionLabel: "Manage sign-ins", ActionURL: "/#yodel-sign-in"}
+	}
+	if creating {
+		hasEnabledSignIn := false
+		for _, profile := range profiles {
+			hasEnabledSignIn = hasEnabledSignIn || profile.Enabled
+		}
+		data.SubmitDisabled = !hasEnabledSignIn
+		if data.SubmitDisabled {
+			data.SubmitHelp = "Add or enable a booking sign-in on Home, then return to create this request."
+		}
+	} else {
+		conflict, err := bookingPresentationConflict(r.Context(), s.userStore(r), booking.ID)
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		if job := conflict.Job; job != nil && !job.Status.Terminal() && job.BookingRequestID != nil && *job.BookingRequestID == booking.ID {
+			data.SubmitDisabled = true
+			data.SubmitHelp = "This request cannot be changed while its job is pending."
+			data.Flash = &Flash{Kind: "info", Message: "A pending job is using this request. View the job to follow progress or cancel before editing.", ActionLabel: "View job", ActionURL: fmt.Sprintf("/jobs/%d", job.ID)}
+		}
 	}
 	autoQueueHelp := "Turning this off does not cancel jobs already queued; cancel them from Jobs."
 	if !s.config.SchedulesEnabled {
@@ -566,13 +656,20 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 	}
 	data.Sections = []formSection{
 		{
-			Title: "Request details",
+			Title: "Visit details",
 			Fields: []formField{
-				{Name: "lake_id", Label: "Lake", Type: "select", Required: true, Options: lakeOptions, Help: "Choose where you want to book a pass."},
-				{Name: "name", Label: "Request name", Type: "text", Value: value.Name, Required: true},
-				{Name: "profile_id", Label: "Booking sign-in", Type: "select", Required: true, Options: profileOptions, Help: "Manage your Yodel sign-in on Home."},
+				{Name: "lake_id", Label: "Lake", Type: "select", Required: true, Options: lakeOptions},
 				{Name: "target_date", Label: "Visit date", Type: "date", Value: value.TargetDate, Required: true},
-				{Name: "vehicle_keyword", Label: "Vehicle keyword", Type: "text", Value: value.VehicleKeyword, Required: true, Help: "Copied from this lake’s settings. Use a unique vehicle name or licence plate."},
+				{Name: "name", Label: "Request name", Type: "text", Value: value.Name, Required: true, Wide: true, Help: "A name to help you recognize this visit in Bookings."},
+			},
+		},
+		{
+			Title:   "Booking account and vehicle",
+			Help:    "Choose the account to book with and a vehicle saved in that account.",
+			HelpURL: "/#yodel-sign-in", HelpLabel: "Manage Yodel sign-ins",
+			Fields: []formField{
+				{Name: "profile_id", Label: "Booking sign-in", Type: "select", Required: true, Options: profileOptions},
+				{Name: "vehicle_keyword", Label: "Vehicle keyword", Type: "text", Value: value.VehicleKeyword, Required: true, Help: "Use a unique vehicle name or licence plate. Your lake default is filled in automatically."},
 			},
 		},
 		{
@@ -582,16 +679,22 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 			Fields: passFields,
 		},
 		{
-			Title: "Release settings",
-			Help:  "These values are copied from your lake defaults. Changes here apply only to this request.",
+			Title:    "Release rules",
+			Help:     "Copied from the selected lake. Use its local timezone and pass release schedule.",
+			Advanced: true,
 			Fields: []formField{
 				{Name: "timezone", Label: "Timezone", Type: "text", Value: value.Timezone, Required: true},
 				{Name: "release_time", Label: "Release time", Type: "time", Value: value.ReleaseTime, Required: true},
 				{Name: "release_days_before", Label: "Days before visit", Type: "number", Value: strconv.Itoa(value.EffectiveReleaseDaysBefore()), Required: true, Min: "0", Max: strconv.Itoa(model.MaxReleaseDaysBefore), Step: "1", Help: "How many days before your visit passes become available."},
+			},
+		},
+		{
+			Title: "Automation and confirmation",
+			Fields: []formField{
 				{
 					Name:     "confirmation_mode",
 					Label:    "Booking confirmation",
-					Help:     "Automatic confirms the booking without asking. Manual waits for your approval. Book now always requires approval.",
+					Help:     "For release jobs: wait for your approval or confirm automatically. Book now always requires approval.",
 					Type:     "select",
 					Required: true,
 					Wide:     true,
@@ -600,12 +703,7 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 						{Value: "auto", Label: "Automatic final confirmation", Selected: value.ConfirmationMode == model.RunModeAuto},
 					},
 				},
-			},
-		},
-		{
-			Title: "Automation",
-			Fields: []formField{
-				{Name: "enabled", Label: "Enable this request", Type: "checkbox", Checked: value.Enabled, Wide: true},
+				{Name: "enabled", Label: "Enable this request", Type: "checkbox", Checked: value.Enabled, Wide: true, Help: "Enabled requests can be queued manually or automatically."},
 				{Name: "schedule_enabled", Label: "Automatically queue at preparation time", Type: "checkbox", Checked: value.ScheduleEnabled, Help: autoQueueHelp, Wide: true},
 			},
 		},
@@ -619,8 +717,9 @@ func (s *Server) bookingForm(w http.ResponseWriter, r *http.Request, booking *mo
 			},
 		},
 		{
-			Title:    "Preparation and retry timing",
-			Help:     "Copied from your general Settings when this request is created. Changes here apply only to this request.",
+			Title:   "Preparation and retry timing",
+			Help:    "Copied from your general Settings when this request is created. Changes here apply only to this request.",
+			HelpURL: "/settings", HelpLabel: "Manage global defaults",
 			Advanced: true,
 			Fields: []formField{
 				{

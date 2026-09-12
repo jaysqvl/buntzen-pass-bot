@@ -12,24 +12,33 @@
   <script defer src="{{assetURL "htmx.min.js"}}"></script>
   <script defer src="{{assetURL "app.js"}}"></script>
 </head>
-<body>
+<body{{if .Authenticated}} class="app-layout"{{end}}>
   <a class="button skip-link" href="#main-content">Skip to content</a>
   {{if .Authenticated}}
   <header class="topbar">
     <a class="brand" href="/">Lake Pass <span>Bot</span></a>
+    <button id="nav-toggle" class="nav-toggle ghost" type="button" aria-expanded="false" aria-controls="app-navigation" hidden>Menu</button>
+    <div class="navigation-content" id="app-navigation">
     <nav aria-label="Main navigation">
+      <div class="nav-group"><p class="nav-label">Workspace</p>
       <a href="/"{{if navCurrent .CurrentPath "/"}} aria-current="page"{{end}}>Home</a>
-      <a href="/lakes"{{if navCurrent .CurrentPath "/lakes"}} aria-current="page"{{end}}>Lakes</a>
       <a href="/bookings"{{if navCurrent .CurrentPath "/bookings"}} aria-current="page"{{end}}>Bookings</a>
       <a href="/jobs"{{if navCurrent .CurrentPath "/jobs"}} aria-current="page"{{end}}>Jobs</a>
+      </div>
+      <div class="nav-group"><p class="nav-label">Configuration</p>
+      <a href="/lakes"{{if navCurrent .CurrentPath "/lakes"}} aria-current="page"{{end}}>Lakes</a>
       <a href="/sources"{{if navCurrent .CurrentPath "/sources"}} aria-current="page"{{end}}>OTP sources</a>
       <a href="/settings"{{if navCurrent .CurrentPath "/settings"}} aria-current="page"{{end}}>Settings</a>
+      </div>
     </nav>
-	<a class="account-link" href="/account"{{if eq .CurrentPath "/account"}} aria-current="page"{{end}} aria-label="Account settings for {{.Username}}">{{.Username}}</a>
+    <div class="nav-account">
+	<a class="account-link" href="/account" aria-label="Account settings for {{.Username}}"><span class="nav-label">Signed in as</span><strong>{{.Username}}</strong></a>
     <form action="/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <button class="ghost" type="submit">Sign out</button>
     </form>
+    </div>
+    </div>
   </header>
   {{end}}
   <main id="main-content" class="shell" tabindex="-1">

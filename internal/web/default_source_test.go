@@ -63,7 +63,7 @@ func TestDefaultOTPSourcePageSelectionIsOwnerScopedAndKeepsQueuedSource(t *testi
 	}
 	page := serveForm(f, http.MethodGet, "/sources", cookies, nil)
 	body := page.Body.String()
-	if page.Code != http.StatusOK || !strings.Contains(body, "Default · Ready") || !strings.Contains(body, fmt.Sprintf(`action="/sources/%d/default"`, original.ID)) || strings.Contains(body, fmt.Sprintf(`action="/sources/%d/default"`, alternate.ID)) || strings.Contains(body, foreign.Name) {
+	if page.Code != http.StatusOK || !strings.Contains(body, ">Default</span>") || !strings.Contains(body, ">Configured</span>") || !strings.Contains(body, fmt.Sprintf(`action="/sources/%d/default"`, original.ID)) || strings.Contains(body, fmt.Sprintf(`action="/sources/%d/default"`, alternate.ID)) || strings.Contains(body, foreign.Name) {
 		t.Fatalf("default source page=%d %s", page.Code, body)
 	}
 	denied := serveForm(f, http.MethodPost, fmt.Sprintf("/sources/%d/default", foreign.ID), cookies, url.Values{"csrf_token": {csrfFrom(cookies)}})

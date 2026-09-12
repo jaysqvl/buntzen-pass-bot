@@ -221,7 +221,7 @@ func TestSettingsAndLakePagesSavePersonalDefaultsAndResetOnlyTheirOwner(t *testi
 		t.Fatalf("reset touched another account: %+v %v", memberDefaults, err)
 	}
 	page := serveForm(f, http.MethodGet, "/lakes/buntzen", adminCookies, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `name="timezone" value="America/Vancouver"`) || !strings.Contains(page.Body.String(), `name="all_day_pass_url" value="https://example.test/`) || !strings.Contains(page.Body.String(), "Built-in defaults") || strings.Contains(page.Body.String(), `action="/lakes/buntzen/reset"`) {
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `name="timezone" value="America/Vancouver"`) || !strings.Contains(page.Body.String(), `name="all_day_pass_url" value="https://example.test/`) || !strings.Contains(page.Body.String(), "Default preferences") || strings.Contains(page.Body.String(), `action="/lakes/buntzen/reset"`) {
 		t.Fatalf("reset did not restore approved built-in values: %d %s", page.Code, page.Body.String())
 	}
 	for _, owner := range owners {
@@ -341,13 +341,13 @@ func TestPersonalSettingsValidationPreservesInput(t *testing.T) {
 	for _, test := range []struct{ name, value, message string }{
 		{"default_timeout_ms", "not-a-number", "Action timeout must be a whole number"},
 		{"prep_minutes_before", "not-a-number", "Preparation time must be a whole number"},
-		{"auth_deadline_minutes_before", "100", "auth deadline must fall within the preparation window"},
+		{"auth_deadline_minutes_before", "100", "The sign-in deadline must be within the preparation window."},
 		{"poll_deadline_seconds", "1.5", "Availability check window must be a whole number"},
 		{"poll_min_seconds", "not-a-number", "Minimum retry delay must be a number"},
 		{"poll_max_seconds", "not-a-number", "Maximum retry delay must be a number"},
-		{"poll_min_seconds", "NaN", "poll timing must fit the worker bounds"},
-		{"poll_max_seconds", "+Inf", "poll timing must fit the worker bounds"},
-		{"poll_max_seconds", "0.1", "poll timing must fit the worker bounds"},
+		{"poll_min_seconds", "NaN", "retry delays of 0.05–60 seconds"},
+		{"poll_max_seconds", "+Inf", "retry delays of 0.05–60 seconds"},
+		{"poll_max_seconds", "0.1", "The minimum retry delay cannot exceed the maximum."},
 	} {
 		t.Run(test.name+"="+test.value, func(t *testing.T) {
 			values := accountSettingsPageValues(settings)

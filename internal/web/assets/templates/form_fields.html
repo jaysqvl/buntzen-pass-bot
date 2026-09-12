@@ -1,5 +1,5 @@
 {{define "form-section"}}
-<fieldset class="form-section"{{if .Provider}} data-source-provider="{{.Provider}}"{{end}}><legend>{{.Title}}</legend>{{if .Help}}<p class="field-help">{{.Help}}</p>{{end}}
+<fieldset class="form-section"{{if .Provider}} data-source-provider="{{.Provider}}"{{end}}><legend>{{.Title}}</legend>{{if or .Help .HelpURL}}<p class="field-help">{{.Help}}{{if .HelpURL}} <a href="{{.HelpURL}}">{{.HelpLabel}}</a>{{end}}</p>{{end}}
   <div class="form-grid{{if .Class}} {{.Class}}{{end}}">
   {{range .Fields}}
     {{if eq .Type "checkbox"}}

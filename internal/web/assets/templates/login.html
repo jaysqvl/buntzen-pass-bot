@@ -1,10 +1,10 @@
 {{define "content"}}
 <section class="login-card">
-  <p class="eyebrow">Local sign in</p>
+  <p class="eyebrow">Your app account</p>
   <h1>Lake Pass Bot</h1>
-  <p>Access your saved Yodel sign-ins, OTP sources, and booking jobs.</p>
-  {{if .Message}}<div class="flash success">{{.Message}}</div>{{end}}
-  {{if .Error}}<div class="flash error">{{.Error}}</div>{{end}}
+  <p>Sign in to Lake Pass Bot to manage your visits. Yodel sign-in is available on Home.</p>
+  {{if .Message}}<div class="flash success" role="status">{{.Message}}</div>{{end}}
+  {{if .Error}}<div id="form-error" class="flash error" role="alert" tabindex="-1">{{.Error}}</div>{{end}}
   <form method="post" action="/login" class="stack" autocomplete="on">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
     <label>Username<input type="text" name="username" value="{{.Username}}" required autofocus autocomplete="username" autocapitalize="none" spellcheck="false"></label>

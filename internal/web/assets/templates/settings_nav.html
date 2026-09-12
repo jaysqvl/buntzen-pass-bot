@@ -1,0 +1,7 @@
+{{define "settings-nav"}}
+<nav class="settings-nav" aria-label="Settings sections">
+  <a href="/settings"{{if eq .CurrentPath "/settings"}} aria-current="page"{{end}}>General</a>
+  <a href="/account"{{if navCurrent .CurrentPath "/account"}} aria-current="page"{{end}}>Account</a>
+  {{if .IsAdmin}}<a href="/admin/users"{{if navCurrent .CurrentPath "/admin/users"}} aria-current="page"{{end}}>Users</a>{{end}}
+</nav>
+{{end}}

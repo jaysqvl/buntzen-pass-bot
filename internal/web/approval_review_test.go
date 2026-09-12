@@ -35,6 +35,7 @@ func TestApprovalPageShowsRequestedDateVehicleAndSelectedPass(t *testing.T) {
 	for _, want := range []string{
 		"Waiting for approval: all-day pass.", booking.TargetDate + " · UTC", "Vehicle keyword", booking.VehicleKeyword,
 		"Pass preference order", "Book now · manual approval", "Expires", `id="approval-panel" class="approval" >`,
+		`id="cancel-job" class="danger" data-decision="cancel-job" hidden`,
 	} {
 		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), want) {
 			t.Fatalf("approval page missing %q: status=%d body=%q", want, page.Code, page.Body.String())

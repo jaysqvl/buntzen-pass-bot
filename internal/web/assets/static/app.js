@@ -1,4 +1,24 @@
 (() => {
+  const formError = document.getElementById('form-error');
+  if (formError) formError.focus();
+  const navigationToggle = document.getElementById('nav-toggle');
+  if (navigationToggle) {
+    const navigation = navigationToggle.closest('.topbar');
+    navigation.classList.add('navigation-collapsible');
+    navigationToggle.hidden = false;
+    const closeNavigation = () => {
+      navigation.classList.remove('navigation-open');
+      navigationToggle.setAttribute('aria-expanded', 'false');
+    };
+    navigationToggle.addEventListener('click', () => {
+      const expanded = navigationToggle.getAttribute('aria-expanded') === 'true';
+      navigation.classList.toggle('navigation-open', !expanded);
+      navigationToggle.setAttribute('aria-expanded', String(!expanded));
+    });
+    navigation.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { closeNavigation(); navigationToggle.focus(); }
+    });
+  }
   const notifications = document.getElementById('notifications');
   const enableDismiss = notification => {
     const button = notification.querySelector('[data-dismiss-notification]');
@@ -116,7 +136,21 @@
   const jobID = root.dataset.jobId;
   const csrf = root.dataset.csrf;
   const source = new EventSource(`/jobs/${encodeURIComponent(jobID)}/events?after=${encodeURIComponent(root.dataset.lastEventId || '0')}`);
-  let terminal = false;
+  let terminal = root.dataset.terminal === 'true';
+  let completed = false;
+  let awaitingApproval = !document.getElementById('approval-panel').hidden;
+  let pairingActive = false;
+  const connection = document.getElementById('job-connection');
+  const attention = document.getElementById('job-attention');
+  const setConnection = (state, message) => {
+    connection.dataset.connection = state;
+    if (connection.textContent !== message) connection.textContent = message;
+  };
+  const updateAttention = () => {
+    const message = terminal ? '' : pairingActive ? 'Pairing needs your attention. Choose the matching message to continue.' : awaitingApproval ? 'Approval needed. Review the booking details before continuing.' : '';
+    if (attention.textContent !== message) attention.textContent = message;
+  };
+  setConnection(terminal ? 'completed' : 'connecting', terminal ? 'Completed · loading final events.' : 'Connecting to live updates…');
   let lastEventID = Number(root.dataset.lastEventId || 0);
   const clearSensitive = () => {
     const code = document.getElementById('otp-code');
@@ -127,12 +161,28 @@
     if (candidates) candidates.replaceChildren();
     const pairingPanel = document.getElementById('pairing-panel');
     if (pairingPanel) pairingPanel.hidden = true;
+    pairingActive = false;
+    updateAttention();
   };
   source.addEventListener('auth_expired', () => {
     clearSensitive(); source.close(); window.location.replace('/login');
   });
-  source.addEventListener('error', clearSensitive);
-  source.addEventListener('complete', () => { clearSensitive(); source.close(); });
+  source.addEventListener('open', () => {
+    if (completed) return;
+    setConnection(terminal ? 'completed' : 'connected', terminal ? 'Completed · loading final events.' : 'Connected · refreshing progress…');
+  });
+  source.addEventListener('error', () => {
+    clearSensitive();
+    if (completed) return;
+    setConnection('reconnecting', terminal ? 'Reconnecting · the job has finished; waiting for final events.' : 'Reconnecting · progress may be out of date. The job may still be running.');
+  });
+  source.addEventListener('complete', () => {
+    terminal = true;
+    completed = true;
+    clearSensitive();
+    setConnection('completed', 'Completed · live updates ended.');
+    source.close();
+  });
   source.addEventListener('state', event => {
     const data = JSON.parse(event.data);
     document.getElementById('job-message').textContent = data.message || '';
@@ -144,10 +194,13 @@
     document.getElementById('job-finished').textContent = data.finished;
     document.getElementById('job-confirmation').textContent = data.confirmation_started;
     const cancel = document.getElementById('cancel-job');
-    cancel.hidden = !data.can_cancel;
+    cancel.hidden = !data.can_cancel || Boolean(data.awaiting_approval);
     if (!data.can_cancel) cancel.disabled = true;
     document.getElementById('approval-panel').hidden = !data.awaiting_approval;
     terminal = data.terminal;
+    awaitingApproval = Boolean(data.awaiting_approval);
+    updateAttention();
+    setConnection(terminal ? 'completed' : 'connected', terminal ? 'Completed · receiving final events.' : 'Connected · live updates.');
     if (terminal) clearSensitive();
   });
   source.addEventListener('otp', event => {
@@ -164,6 +217,8 @@
     const panel = document.getElementById('pairing-panel');
     const candidates = document.getElementById('pairing-candidates');
     candidates.replaceChildren();
+    pairingActive = Boolean(data.active);
+    updateAttention();
     if (!data.active) { panel.hidden = true; return; }
     for (const candidate of data.candidates || []) {
       const button = document.createElement('button');
