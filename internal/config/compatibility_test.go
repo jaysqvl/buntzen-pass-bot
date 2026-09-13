@@ -40,6 +40,30 @@ func TestLegacyConfigurationAndNeutralPrecedence(t *testing.T) {
 	}
 }
 
+func TestLegacyHostCheckEnabledAndNeutralPrecedence(t *testing.T) {
+	isolateEnvironment(t)
+	unsetForTest(t, "LAKE_PASS_HOST_CHECK_ENABLED")
+	t.Setenv("BUNTZEN_HOST_CHECK_ENABLED", "false")
+	cfg, err := Load()
+	if err != nil || cfg.HostCheckEnabled {
+		t.Fatalf("legacy host check setting = %t, error = %v", cfg.HostCheckEnabled, err)
+	}
+
+	t.Setenv("BUNTZEN_HOST_CHECK_ENABLED", "true")
+	t.Setenv("LAKE_PASS_HOST_CHECK_ENABLED", "false")
+	cfg, err = Load()
+	if err != nil || cfg.HostCheckEnabled {
+		t.Fatalf("canonical false must override legacy true: setting = %t, error = %v", cfg.HostCheckEnabled, err)
+	}
+
+	t.Setenv("BUNTZEN_HOST_CHECK_ENABLED", "false")
+	t.Setenv("LAKE_PASS_HOST_CHECK_ENABLED", "")
+	cfg, err = Load()
+	if err != nil || !cfg.HostCheckEnabled {
+		t.Fatalf("canonical empty must preserve the default: setting = %t, error = %v", cfg.HostCheckEnabled, err)
+	}
+}
+
 func TestDatabaseDiscoveryPreservesExistingState(t *testing.T) {
 	for _, test := range []struct {
 		name, existing, want string

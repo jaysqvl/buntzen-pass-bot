@@ -24,7 +24,8 @@ networks broader than IPv4 `/24` or IPv6 `/64`. These are connector addresses,
 not Cloudflare edge IP ranges; never trust an entire LAN or shared container
 network unless every host on it is authorized to supply visitor identity.
 
-Public mode requires the original public `Host` header. Leave Tunnel's optional
+Public mode requires the original public `Host` header, even when
+`LAKE_PASS_HOST_CHECK_ENABLED=false`. Leave Tunnel's optional
 `httpHostHeader` unset, or set it to the public hostname. The app accepts
 `X-Forwarded-Proto: https` and a single `CF-Connecting-IP` only from a configured
 connector socket. Missing, duplicated, malformed or insecure values are
@@ -60,6 +61,25 @@ That mode must not be exposed publicly. These transport controls complement
 application authentication, ownership checks, provider restrictions, resource
 limits, private storage, and release verification; they do not make a browser
 worker or dependency inherently trustworthy.
+
+## Private HTTP hostnames
+
+The supplied Compose and Portainer templates set
+`LAKE_PASS_HOST_CHECK_ENABLED=false`: private HTTP accepts any syntactically valid
+Host, so a LAN address or reverse proxy hostname can change without an app
+allowlist update. To restrict private hostnames, set the toggle to `true` and
+configure exact `LAKE_PASS_ALLOWED_HOSTS` entries, including ports where needed.
+Localhost and loopback remain accepted; hostnames from `LAKE_PASS_ALLOWED_ORIGINS`
+also join the allowed list. The private hostname list is ignored while the toggle
+is `false`. The application defaults to enabled checks when the setting is
+absent or empty, preserving older stacks that update only their image.
+
+This toggle controls hostname validation only. Authentication, CSRF tokens, and
+browser-origin checks remain active. A private reverse proxy should preserve
+the original Host; if it rewrites Host, configure the browser-facing origin in
+`LAKE_PASS_ALLOWED_ORIGINS`. Public HTTPS always enforces its configured origin,
+trusted connector requirements, and limited health-check authorities regardless
+of this toggle.
 
 ## Authentication admission
 

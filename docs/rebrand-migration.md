@@ -42,20 +42,27 @@ An existing saved stack can keep its Compose file and `BUNTZEN_*` variables when
 updating only the image. The runtime aliases remain supported.
 
 When replacing the saved Compose file with the current `deploy/portainer.yml`,
-rename these four Portainer variables while preserving their exact values:
+rename these three Portainer variables while preserving their exact values:
 
 | Previous variable | Required variable in the current template |
 | --- | --- |
 | `BUNTZEN_WEB_PORT` | `LAKE_PASS_WEB_PORT` |
 | `BUNTZEN_APPDATA_PATH` | `LAKE_PASS_APPDATA_PATH` |
 | `BUNTZEN_SECCOMP_PROFILE_PATH` | `LAKE_PASS_SECCOMP_PROFILE_PATH` |
-| `BUNTZEN_ALLOWED_HOSTS` | `LAKE_PASS_ALLOWED_HOSTS` |
 
 Each canonical value must be nonempty. These required fields use direct Compose
 validation so missing configuration is rejected on older Portainer parsers as
 well. Optional settings still accept their legacy names, and unprefixed settings
 such as `BLUEBUBBLES_URL` retain their names. Keep the existing service identity,
 host paths, and runtime settings when applying the template.
+
+The current Compose templates default `LAKE_PASS_HOST_CHECK_ENABLED=false`, so
+private HTTP accepts any valid hostname. Set it to `true` to preserve an existing
+hostname restriction, and retain `LAKE_PASS_ALLOWED_HOSTS` (or its legacy
+`BUNTZEN_ALLOWED_HOSTS` fallback). The list is ignored for private HTTP while the
+toggle is `false`. An image-only update of an older stack keeps hostname checks
+enabled when the new setting is absent. Configured public HTTPS boundaries and
+CSRF checks remain enforced in either case.
 
 ## Isolated source builds and release images
 

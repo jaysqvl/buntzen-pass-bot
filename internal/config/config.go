@@ -41,6 +41,7 @@ type Config struct {
 	YodelOrigins      []string
 	AllowedOrigins    []string
 	AllowedHosts      []string
+	HostCheckEnabled  bool
 	PublicOrigin      string
 	TrustedProxies    []netip.Prefix
 	SetupToken        string
@@ -112,6 +113,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	hostCheckEnabled, err := boolValue("LAKE_PASS_HOST_CHECK_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
 	seenHosts := make(map[string]struct{}, len(allowedHosts)+len(allowedOrigins))
 	for _, host := range allowedHosts {
 		seenHosts[host] = struct{}{}
@@ -157,6 +162,7 @@ func Load() (Config, error) {
 		YodelOrigins:      yodelOrigins,
 		AllowedOrigins:    allowedOrigins,
 		AllowedHosts:      allowedHosts,
+		HostCheckEnabled:  hostCheckEnabled,
 		SetupToken:        strings.TrimSpace(Env("LAKE_PASS_SETUP_TOKEN")),
 		LogLevel:          logLevel,
 	}

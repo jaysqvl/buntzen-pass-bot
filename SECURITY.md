@@ -13,7 +13,7 @@ The complete router is in `internal/web/server.go`. GET routes also accept HEAD.
 
 | Surface | Access and protections |
 | --- | --- |
-| `/healthz` | Anonymous database-availability check; no cookies or application records. Limited Host/HTTP health exception. |
+| `/healthz` | Anonymous database-availability check; no cookies or application records. Public mode has a limited Host/HTTP health exception. |
 | `/static/…` | Anonymous embedded assets; no filesystem or appdata serving. Public UI transport rules apply. |
 | GET/POST `/login` | Anonymous sign-in, public-form CSRF and browser-origin checks, Argon2id password verification, persistent username/visitor failure limits and bounded expensive work. |
 | GET/POST `/setup` | One-time administrator setup requiring a host-generated token, CSRF and browser-origin checks. Public mode refuses an uninitialized database; initialized setup redirects to sign-in. |
@@ -25,6 +25,13 @@ The complete router is in `internal/web/server.go`. GET routes also accept HEAD.
 No public registration, password-recovery link, webhook, file upload, diagnostic
 archive download, or separate public JSON API is registered. Administrator status
 does not bypass ownership of another account's sources, profiles, bookings or jobs.
+
+Private HTTP hostname enforcement is optional through
+`LAKE_PASS_HOST_CHECK_ENABLED`. The supplied Compose templates disable it for
+trusted LAN hosting; older stacks without this setting retain enforcement.
+Disabling it accepts any syntactically valid Host and ignores the private host
+allowlist. Authentication, CSRF, and browser-origin checks remain active. The
+toggle does not relax public HTTPS or public health-check authority validation.
 
 Public mode requires an exact HTTPS origin and trusts visitor headers only from
 explicit connector socket addresses. Session and CSRF cookies use `__Host-`
