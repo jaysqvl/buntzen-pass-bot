@@ -1,6 +1,6 @@
-# Buntzen Bot
+# Lake Pass Bot
 
-Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking passes through Yodel. A Go service provides the web UI, scheduling, job state, and encrypted storage; separate supervised Python/Playwright processes perform the browser actions.
+Lake Pass Bot is a self-hosted app for planning and booking lake passes. Choose a supported lake, connect its booking provider, and manage requests from one place. A Go service provides the web UI, scheduling, job state, and encrypted storage; separate supervised Python/Playwright processes perform the browser actions.
 
 > [!WARNING]
 > The default private HTTP mode sends traffic, including temporary OTPs, without encryption. Before exposing the app through an HTTPS tunnel, complete setup privately and configure [public HTTPS mode](docs/public-exposure.md). The app uses its own accounts; Cloudflare Access is optional. See [Security](SECURITY.md) for account boundaries and remaining runtime trust.
@@ -9,17 +9,36 @@ Buntzen Bot is a self-hosted control plane for booking Buntzen Lake parking pass
 
 - Scheduled and on-demand bookings with dry-run, manual approval, and automatic confirmation modes.
 - Configurable pass priority and an immediate, manually approved checkout for passes already released.
-- Administrator and member accounts with isolated OTP sources, Yodel profiles, requests, and job history. Change your own username or password from Account.
+- Administrator and member accounts with isolated Yodel sign-ins, OTP sources, personal defaults, requests, and job history. Change your own username or password from Account.
+- Lake connection status on Home, provider sign-in within each lake, an independent OTP sources page, and general defaults in Settings.
 - Read-only inbound OTP retrieval through either BlueBubbles or Twilio, with no provider fallback or outbound messaging.
 - Durable jobs, restart recovery, and an `outcome_unknown` state that prevents unsafe retries after an ambiguous confirmation.
 
-Only one booking attempt may reserve a Yodel profile and visit date, across
+Only one booking attempt may reserve a Yodel sign-in and visit date, across
 manual and scheduled runs. Success and unknown outcomes keep that reservation
 even when job history is pruned. A cancellation or failure before confirmation
 allows another attempt. Inspect the Yodel wallet after an unknown outcome;
 creating another request or changing confirmation mode will not bypass the guard.
 
+## Supported lakes
+
+| Lake | Provider | Support |
+| --- | --- | --- |
+| Buntzen Lake | Yodel | Parking passes, authentication, dry runs, and bookings |
+
+The destination catalog supplies each lake's supported passes, URLs, and release
+defaults. **Lakes** lets each account choose its vehicle keyword and customize
+the lake's booking rules. Each lake owns its provider connection and booking preferences.
+Provider browser behavior is kept in its adapter.
+See [lake settings and provider extension](docs/lakes.md).
+Only the lake listed above is currently supported.
+
 ## Quick start with Docker Compose
+
+Build this checkout locally with the steps below. For registry-based installs,
+choose an image from a completed [release publication](docs/release-and-deployment.md#release-publication).
+Existing installs should read the [rebrand migration notes](docs/rebrand-migration.md)
+first.
 
 1. Create the local configuration:
 
@@ -29,11 +48,11 @@ creating another request or changing confirmation mode will not bypass the guard
 
    Edit `.env` and:
 
-   - set `BUNTZEN_ALLOWED_HOSTS` to the exact host and port users will open, such as `buntzen.example:8080`;
-   - if using BlueBubbles, set `BLUEBUBBLES_URL` and approve its origin/network with `BUNTZEN_BLUEBUBBLES_ENDPOINTS` as described in [provider access](docs/public-exposure.md#outbound-provider-access); and
+   - set `LAKE_PASS_ALLOWED_HOSTS` to the exact host and port users will open, such as `lake-pass.example:8080`;
+   - if using BlueBubbles, set `BLUEBUBBLES_URL` and approve its origin/network with `LAKE_PASS_BLUEBUBBLES_ENDPOINTS` as described in [provider access](docs/public-exposure.md#outbound-provider-access); and
    - leave `SCHEDULES_ENABLED=false` until onboarding is complete.
 
-   In private mode, if a reverse proxy rewrites the `Host` header, add the rewritten authority to `BUNTZEN_ALLOWED_HOSTS` and the browser-facing origin to `BUNTZEN_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`. Public mode instead requires its configured public Host and trusted connector settings from the linked guide.
+   In private mode, if a reverse proxy rewrites the `Host` header, add the rewritten authority to `LAKE_PASS_ALLOWED_HOSTS` and the browser-facing origin to `LAKE_PASS_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`. Public mode instead requires its configured public Host and trusted connector settings from the linked guide.
 
 2. Create the persistent data directory for the container's non-root user:
 
@@ -48,44 +67,63 @@ creating another request or changing confirmation mode will not bypass the guard
    docker compose up -d --build
    ```
 
-4. If you did not set `BUNTZEN_SETUP_TOKEN`, read the generated one-time token from the startup log:
+4. If you did not set `LAKE_PASS_SETUP_TOKEN`, read the generated one-time token from the startup log:
 
    ```bash
-   docker compose logs buntzen-pass-bot
+   docker compose logs lake-pass-bot
    ```
 
 5. Open `http://<docker-host>:8080`, enter the setup token, and create the permanent administrator account. Passwords must be at least 12 characters.
 
-Treat `appdata` as sensitive: it contains the database and browser profiles. The default encryption key is beside the database, so copying the whole directory also copies its decryption key. For a separate read-only key mount and matching backup/recovery procedure, see [key storage](docs/public-exposure.md#key-storage-and-recovery). Only one Buntzen instance may use an appdata directory.
+Treat `appdata` as sensitive: it contains the database and browser profiles. The default encryption key is beside the database, so copying the whole directory also copies its decryption key. For a separate read-only key mount and matching backup/recovery procedure, see [key storage](docs/public-exposure.md#key-storage-and-recovery). Only one Lake Pass Bot instance may use an appdata directory.
 
 ## Portainer installs and updates
 
-Use [deploy/portainer.yml](deploy/portainer.yml) for the published image. It defaults
-to `ghcr.io/jaysqvl/buntzen-pass-bot:latest`, which advances after a stable release
-passes the build, browser smoke test, vulnerability scan, and signature checks.
-GitHub publishes the image; you choose when to update the existing stack in
-Portainer with **Update the stack** and **Re-pull image and redeploy** enabled.
-The app footer shows the version and build actually running.
+[deploy/portainer.yml](deploy/portainer.yml) targets
+`ghcr.io/jaysqvl/lake-pass-bot:latest`. Verify that the selected release's image
+publication completed before updating an existing stack. GitHub builds and
+verifies release images; you choose when to deploy them in Portainer.
 
-See [Release and Portainer deployment](docs/release-and-deployment.md) for the
-stack settings, upgrade notes, and optional version pinning. No GitHub deployment
-runner or Portainer API key is needed.
+Existing saved stacks can keep their variable names when updating the image.
+When adopting the current template, set its four required canonical variables:
+`LAKE_PASS_WEB_PORT`, `LAKE_PASS_APPDATA_PATH`, `LAKE_PASS_SECCOMP_PROFILE_PATH`,
+and `LAKE_PASS_ALLOWED_HOSTS`. Preserve the existing values; see the
+[template migration table](docs/rebrand-migration.md#adopting-the-portainer-template).
+
+The app footer shows the build actually running. See
+[Release and Portainer deployment](docs/release-and-deployment.md) for stack
+settings and version pinning, and [rebrand migration](docs/rebrand-migration.md)
+for existing data and configuration compatibility. The source-build Compose
+instructions above also support isolated local review.
 
 ## Set up and test a booking
 
 Keep `SCHEDULES_ENABLED=false` while completing these steps:
 
-1. Create an OTP source. For BlueBubbles, enter its operator-approved server URL and password, then use **Test connection**.
-2. Create an enabled Yodel profile with its login URL, 10-digit Canadian or US mobile number, vehicle, and linked OTP source.
-3. For BlueBubbles, return to the OTP source and choose **Pair with Yodel**. Select the fresh OTP candidate after Yodel sends a code. Pairing uses the linked profile and does not require a booking request.
-4. Open **Bookings** and create an enabled request with a visit date. Choose up to three pass priorities: All-day, Afternoon, Morning, or None. The bot tries them in your saved order; select at least one pass without duplicates.
-5. Run **Auth check**, then **Dry run**, from the booking card. Neither proves a pass can be issued.
+1. Open **Lakes**, choose **Buntzen Lake**, and follow its connection setup. Open **OTP sources** and configure BlueBubbles or Twilio. For BlueBubbles, enter its operator-approved server URL and password, then use **Test connection**. The first source becomes your default; use **Make default** to select another source.
+2. Return to **Lakes → Buntzen Lake**, choose **Add Yodel account**, enter a name and the 10-digit Canadian or US mobile number used by Yodel, and save it enabled. Set your preferred browser defaults in **Settings** before adding a sign-in if needed.
+3. Choose **Sign in to Yodel** in that lake’s Connection section. With BlueBubbles, select the fresh OTP candidate after Yodel sends a code. This signs in without creating a booking request or reserving a pass.
+4. Open **Lakes**, choose a lake, and save its vehicle keyword and booking rules. Then create a request in **Bookings**, choosing the lake, Yodel sign-in, and visit date. Choose up to three pass priorities: All-day, Afternoon, Morning, or None. The bot tries them in your saved order; select at least one pass without duplicates.
+5. Run **Sign-in check**, then **Booking rehearsal**, from the booking card. Neither proves a pass can be issued.
 6. For already released passes, choose **Book now · manual approval**. Approve only the intended reservation, then verify the issued pass in Yodel. See [Testing a live booking](docs/live-testing.md) for timing, expiry, cancellation and retry behavior.
 7. Test **Queue for release** separately before relying on release timing or automatic confirmation. Verify the OTP provider still works after its host restarts before enabling unattended schedules.
 
-The **Setup** tab opens Home with OTP sources first and profiles second,
-with their links and setup order. Booking dates, pass URLs and priorities stay on the separate Bookings
-page; the login URL belongs to the profile.
+**Home** shows lake connection status, upcoming visits, and recent jobs. Accounts without a configured lake connection are directed to **Lakes** to begin setup. **OTP sources** is an independent page for
+configuring inbox connections and choosing the account's default source.
+**Settings** holds personal preparation and retry timing shared across lakes,
+browser defaults, and links to account management.
+**Lakes** holds each lake’s provider connection, vehicle keyword, release schedule, pass preferences,
+and booking URLs. Sign-in URLs are managed internally. The visit date,
+Yodel sign-in, vehicle snapshot, and confirmation choice belong to the request.
+
+New Yodel sign-ins copy the account's browser defaults. New booking requests copy the
+selected lake's defaults and the account's preparation and retry timing. Each
+request can override those values for that visit. Changing defaults
+does not change existing sign-ins, requests, or queued jobs. Resetting lake
+defaults removes only that account's saved lake overrides. Newly queued jobs
+capture the selected default OTP source; changing that default does not reroute
+already queued jobs. Multiple Yodel sign-ins can use one owned source, with
+browser and inbox locks preventing concurrent use of the same resources.
 
 Before a booking, the Yodel cart must be empty. The bot checks that adding the
 selected pass produces exactly one item of quantity one, then rechecks it before
@@ -103,15 +141,15 @@ brew install go uv
 uv sync --project actions --locked --python 3.12
 
 export APPDATA_DIR="$PWD/.native-appdata"
-export BUNTZEN_PYTHON="$PWD/actions/.venv/bin/python"
+export LAKE_PASS_PYTHON="$PWD/actions/.venv/bin/python"
 export BLUEBUBBLES_URL="http://127.0.0.1:1234"
-export BUNTZEN_BLUEBUBBLES_ENDPOINTS='[{"origin":"http://127.0.0.1:1234","networks":["127.0.0.1/32"]}]'
+export LAKE_PASS_BLUEBUBBLES_ENDPOINTS='[{"origin":"http://127.0.0.1:1234","networks":["127.0.0.1/32"]}]'
 export SCHEDULES_ENABLED=false
 
-go run ./cmd/buntzen serve
+go run ./cmd/lake-pass-bot serve
 ```
 
-Open `http://127.0.0.1:8080`. Select `chrome` in a native Yodel profile, or bundled Chromium in Docker. If Chrome is installed elsewhere, the operator can set `BUNTZEN_BROWSER_EXECUTABLE` to its absolute executable path; this overrides channel choices for every worker. Members cannot supply executable paths. Edit and save any older profile with a path override to clear it before running jobs.
+Open `http://127.0.0.1:8080`. Select `chrome` in **Settings** for new native Yodel sign-ins, or bundled Chromium in Docker. Existing sign-ins keep their saved browser choice. If Chrome is installed elsewhere, the operator can set `LAKE_PASS_BROWSER_EXECUTABLE` to its absolute executable path; this overrides channel choices for every worker. User-supplied executable paths are rejected.
 
 Do not share browser profiles between Docker and macOS or run the same Yodel identity from both at once.
 
@@ -120,21 +158,21 @@ Do not share browser profiles between Docker and macOS or run the same Yodel ide
 Run CLI commands against the same appdata used by the service. In Docker Compose:
 
 ```bash
-docker compose exec buntzen-pass-bot buntzen doctor
-docker compose exec buntzen-pass-bot buntzen auth-check --booking 1
-docker compose exec buntzen-pass-bot buntzen dry-run --booking 1
-docker compose exec buntzen-pass-bot buntzen book --booking 1 --mode auto
+docker compose exec lake-pass-bot lake-pass-bot doctor
+docker compose exec lake-pass-bot lake-pass-bot auth-check --booking 1
+docker compose exec lake-pass-bot lake-pass-bot dry-run --booking 1
+docker compose exec lake-pass-bot lake-pass-bot book --booking 1 --mode auto
 ```
 
 Reset the permanent administrator's password without storing it in `.env`:
 
 ```bash
 docker compose exec \
-  -e BUNTZEN_ADMIN_PASSWORD='new-long-password' \
-  buntzen-pass-bot buntzen admin-password reset
+  -e LAKE_PASS_ADMIN_PASSWORD='new-long-password' \
+  lake-pass-bot lake-pass-bot admin-password reset
 ```
 
-For live logs, use `docker compose logs --follow --tail=300 buntzen-pass-bot`. Set `BUNTZEN_DEBUG=true` in `.env` and recreate the container only while diagnosing a problem; return it to `false` afterward.
+For live logs, use `docker compose logs --follow --tail=300 lake-pass-bot`. Set `LAKE_PASS_DEBUG=true` in `.env` and recreate the container only while diagnosing a problem; return it to `false` afterward.
 
 ## Tests
 
@@ -154,5 +192,7 @@ See [Browser integration tests](integration/README.md) for the real Go/Python/Pl
 - [Python action protocol and artifact rules](actions/README.md)
 - [Browser integration tests](integration/README.md)
 - [Testing a live booking](docs/live-testing.md)
+- [Lake settings and provider extension](docs/lakes.md)
+- [Rebrand migration and release continuity](docs/rebrand-migration.md)
 - [Release and Portainer deployment](docs/release-and-deployment.md)
 - [Changelog](CHANGELOG.md)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 type Window struct {
@@ -31,7 +31,7 @@ func WindowFor(request model.BookingRequest) (Window, error) {
 	if err != nil {
 		return Window{}, fmt.Errorf("parse release time: %w", err)
 	}
-	releaseDate := target.AddDate(0, 0, -1)
+	releaseDate := target.AddDate(0, 0, -request.EffectiveReleaseDaysBefore())
 	release := time.Date(releaseDate.Year(), releaseDate.Month(), releaseDate.Day(),
 		clock.Hour(), clock.Minute(), 0, 0, location)
 	return Window{

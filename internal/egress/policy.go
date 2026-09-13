@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
+	"github.com/jaysqvl/lake-pass-bot/internal/origin"
 )
 
 var ErrDenied = errors.New("provider destination is not approved by the operator")

@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/auth"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/control"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
+	"github.com/jaysqvl/lake-pass-bot/internal/engine"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp/bluebubbles"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 type webFixture struct {
@@ -62,7 +62,7 @@ func newWebFixtureWithSetup(t *testing.T, setup bool) webFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "buntzen_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: setupToken}
+	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "lake_pass_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: setupToken}
 	runner := engine.New(cfg, database, control.NewHub())
 	server, err := NewServer(cfg, database, runner)
 	if err != nil {
@@ -163,8 +163,8 @@ func TestLoginCookiesCSRFOriginAndNoStore(t *testing.T) {
 	request := authenticatedRequest(http.MethodGet, "http://example.test/", cookies, nil)
 	recorder := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("dashboard = %d", recorder.Code)
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/lakes" {
+		t.Fatalf("unconfigured dashboard = %d", recorder.Code)
 	}
 	if recorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("cache control = %q", recorder.Header().Get("Cache-Control"))
@@ -269,7 +269,7 @@ func TestSlowInvalidBodyDoesNotHoldPublicAuthMutex(t *testing.T) {
 
 func TestOriginAllowedForConfiguredProxyOrigin(t *testing.T) {
 	fixture := newWebFixture(t)
-	fixture.cfg.AllowedOrigins = []string{"http://buntzen.example"}
+	fixture.cfg.AllowedOrigins = []string{"http://lake-pass.example"}
 	runner := engine.New(fixture.cfg, fixture.store, control.NewHub())
 	server, err := NewServer(fixture.cfg, fixture.store, runner)
 	if err != nil {
@@ -277,7 +277,7 @@ func TestOriginAllowedForConfiguredProxyOrigin(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "http://container.internal/login", strings.NewReader("csrf_token=x"))
-	request.Header.Set("Origin", "http://buntzen.example")
+	request.Header.Set("Origin", "http://lake-pass.example")
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	recorder := httptest.NewRecorder()
 	server.Handler().ServeHTTP(recorder, request)
@@ -426,13 +426,13 @@ func TestPairingExplainsTheMissingProfilePrerequisite(t *testing.T) {
 		t.Fatal(err)
 	}
 	cookies := loginCookies(t, fixture)
-	page := serveForm(fixture, http.MethodGet, "/", cookies, nil)
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), fmt.Sprintf(`href="/profiles/new?source_id=%d"`, source.ID)) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
+	page := serveForm(fixture, http.MethodGet, "/sources", cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `href="/lakes/buntzen#connection"`) || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/sources/%d/pair"`, source.ID)) {
 		t.Fatalf("unassigned source guidance = %d body=%q", page.Code, page.Body.String())
 	}
 	form := url.Values{"csrf_token": {csrfFrom(cookies)}}
 	recorder := serveForm(fixture, http.MethodPost, fmt.Sprintf("/sources/%d/pair", source.ID), cookies, form)
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/?notice=pairing-unavailable#otp-sources" {
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/sources?notice=pairing-unavailable" {
 		t.Fatalf("pair without profile = %d location=%q", recorder.Code, recorder.Header().Get("Location"))
 	}
 }

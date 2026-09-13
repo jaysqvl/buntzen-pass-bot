@@ -22,7 +22,7 @@ def reject_hash_mismatch(command: list[str], environment: dict[str, str]) -> Non
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="buntzen-backend-integrity-") as directory:
+    with tempfile.TemporaryDirectory(prefix="lake-pass-backend-integrity-") as directory:
         root = Path(directory)
         for name in ("pyproject.toml", "uv.lock", "README.md"):
             shutil.copyfile(ROOT / "actions" / name, root / name)

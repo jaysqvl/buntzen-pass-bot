@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 
-STABLE_TAG = re.compile(r"buntzen-pass-bot-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+STABLE_TAG = re.compile(r"(?:lake-pass-bot|buntzen-pass-bot)-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
 
 def stable_version(tag: str) -> tuple[int, ...] | None:

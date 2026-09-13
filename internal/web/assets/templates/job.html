@@ -1,17 +1,19 @@
 {{define "content"}}
-<section class="section-head"><div><p class="eyebrow">Job {{.Job.ShortID}}</p><h1>{{.Job.Command}} · {{.Job.ProfileName}}</h1><p>{{.Job.CreatedLabel}}</p></div><span id="job-pill" class="pill {{.Job.StatusClass}}">{{.Job.StatusLabel}}</span></section>
+<section class="section-head"><div><p class="eyebrow">Job {{.Job.ShortID}}</p><h1>{{.Job.Command}}</h1><p>{{.Job.ProfileName}} · {{.Job.CreatedLabel}}</p></div><div class="actions"><span id="job-pill" class="pill {{.Job.StatusClass}}">{{.Job.StatusLabel}}</span><a class="button" href="/jobs">Back to Jobs</a></div></section>
 <section class="job-layout">
-  <article class="card" id="live-job" data-job-id="{{.Job.ID}}" data-csrf="{{.CSRFToken}}" data-last-event-id="{{.LastEventID}}">
-    <h2>Live state</h2>
+  <article class="card" id="live-job" data-job-id="{{.Job.ID}}" data-csrf="{{.CSRFToken}}" data-last-event-id="{{.LastEventID}}" data-terminal="{{not .Job.CanCancel}}">
+    <h2>Progress</h2>
+    <p id="job-connection" class="job-connection" role="status" aria-live="polite" aria-atomic="true" data-connection="{{if .Job.CanCancel}}disconnected{{else}}completed{{end}}">{{if .Job.CanCancel}}Live updates are unavailable. Refresh to check the latest progress.{{else}}Completed · live updates ended.{{end}}</p>
+    <p id="job-attention" class="field-help" role="status" aria-live="polite" aria-atomic="true">{{if .Job.AwaitingApproval}}Approval needed. Review the booking details before continuing.{{end}}</p>
     <p id="job-message">{{.Job.Message}}</p>
     <div id="otp-panel" class="otp-panel" hidden><span>Yodel code</span><strong id="otp-code"></strong><small>Clears after submission or expiry.</small></div>
     <div id="pairing-panel" class="approval" hidden><p>Confirm which fresh Messages candidate belongs to this Yodel challenge. Codes and sender details are held only in memory.</p><div id="pairing-candidates" class="pairing-candidates"></div></div>
     <div id="approval-panel" class="approval" {{if not .Job.AwaitingApproval}}hidden{{end}}>
-      <p>Review the selected pass above and the target date and vehicle below before approving.</p>
+      <h3>Review booking</h3><p>Check the pass described in Progress and these requested details before approving.</p>
       <dl>{{range .Job.BookingReview}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>
       <div class="actions"><button class="primary" data-decision="approve">Approve booking</button><button class="danger" data-decision="cancel">Cancel</button></div>
     </div>
-    <button id="cancel-job" class="danger" data-decision="cancel-job" {{if not .Job.CanCancel}}hidden disabled{{end}}>Cancel job</button>
+    <button id="cancel-job" class="danger" data-decision="cancel-job" {{if or (not .Job.CanCancel) .Job.AwaitingApproval}}hidden{{end}} {{if not .Job.CanCancel}}disabled{{end}}>Cancel job</button>
   </article>
   <article class="card"><h2>Details</h2><dl>
     <div><dt>Confirmation</dt><dd>{{.Job.Mode}}</dd></div>
@@ -24,7 +26,7 @@
     <div><dt>Final confirmation</dt><dd id="job-confirmation">{{.Job.ConfirmationLabel}}</dd></div>
   </dl></article>
 </section>
-<section class="section-head"><div><p class="eyebrow">Sanitized stream</p><h2>Events</h2></div></section>
+<section class="section-head"><div><p class="eyebrow">Activity log</p><h2>Events</h2></div></section>
 <ol class="event-list" id="job-events">{{range .Events}}<li><time>{{.Time}}</time><div><strong>{{.Type}}</strong><p>{{.Message}}</p></div></li>{{end}}</ol>
 {{end}}
 {{template "base" .}}

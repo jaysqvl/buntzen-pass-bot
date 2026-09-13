@@ -10,15 +10,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/origin"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 const (
-	sessionCookie   = "buntzen_session"
-	csrfCookie      = "buntzen_csrf"
-	loginCSRFCookie = "buntzen_login_csrf"
+	sessionCookie   = "lake_pass_session"
+	csrfCookie      = "lake_pass_csrf"
+	loginCSRFCookie = "lake_pass_login_csrf"
 	sessionLifetime = 24 * time.Hour
 	loginWindow     = 15 * time.Minute
 	loginUserLimit  = 5
@@ -157,7 +157,7 @@ func (s *Server) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			s.sessionFailure(w, r, err)
 			return
 		}
-		csrfValue, err := r.Cookie(s.cookieName(csrfCookie))
+		csrfValue, err := s.readCookie(r, csrfCookie)
 		if err != nil || !store.ValidateCSRF(authenticated.Session, csrfValue.Value) {
 			s.clearAuthCookies(w)
 			s.unauthorized(w, r)

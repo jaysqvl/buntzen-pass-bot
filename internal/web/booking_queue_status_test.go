@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestBookingPageSeparatesAutoQueueingFromExistingJob(t *testing.T) {
@@ -24,7 +24,7 @@ func TestBookingPageSeparatesAutoQueueingFromExistingJob(t *testing.T) {
 	}
 	cookies := loginCookies(t, fixture)
 	form := serveForm(fixture, http.MethodGet, fmt.Sprintf("/bookings/%d", booking.ID), cookies, nil)
-	for _, want := range []string{"Auto-queueing is currently off for this server", "Turning this off does not cancel jobs already queued", "Automatic confirms the booking without asking"} {
+	for _, want := range []string{"Auto-queueing is currently off for this server", "Turning this off does not cancel jobs already queued", "For release jobs: wait for your approval or confirm automatically", "Book now always requires approval"} {
 		if form.Code != http.StatusOK || !strings.Contains(form.Body.String(), want) {
 			t.Fatalf("booking form missing %q: %d %s", want, form.Code, form.Body.String())
 		}

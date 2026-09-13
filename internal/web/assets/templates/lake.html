@@ -1,0 +1,30 @@
+{{define "content"}}
+<section class="section-head">
+  <div><p class="eyebrow"><a class="text-link" href="/lakes">Lakes</a> / Connection &amp; preferences</p><h1>{{.Lake.Name}}</h1><p>Manage your connection and booking preferences for this lake.</p></div>
+  {{if .Connection.Configured}}<a class="button" href="/bookings/new?lake_id={{.Lake.ID}}">New booking</a>{{end}}
+</section>
+<section class="dashboard-panel lake-connection" id="connection" aria-labelledby="lake-connection-heading">
+  <div class="panel-heading"><div><h2 id="lake-connection-heading">Connection</h2><p>{{.Lake.Name}} uses {{.ProviderName}} for pass reservations.</p></div><span class="pill {{.Connection.StatusClass}}">{{.Connection.Status}}</span></div>
+  {{if .ConnectionError}}<div class="flash error" id="form-error" role="alert" tabindex="-1">{{.ConnectionError}}</div>{{end}}
+  {{if .Connection.DefaultSourceName}}
+    {{if .Profiles}}<div class="sign-in-list">{{range .Profiles}}{{template "resource-card" .}}{{end}}</div>{{else}}
+    <div class="empty-state"><h3>Connect your account</h3><p>Add the mobile number you use with {{.ProviderName}}, then sign in to verify the connection.</p><a class="button primary" href="/profiles/new?lake_id={{.Lake.ID}}">Add {{.ProviderName}} account</a></div>
+    {{end}}
+    <div class="panel-note connection-footer"><p>Login codes use <strong>{{.Connection.DefaultSourceName}}</strong>. <a class="text-link" href="/sources">Manage OTP sources</a></p>{{if .Profiles}}<a class="text-link" href="/profiles/new?lake_id={{.Lake.ID}}">Add another account</a>{{end}}</div>
+  {{else}}
+    <div class="empty-state"><h3>Set up login codes first</h3><p>Choose an OTP source for your account, then return here to connect through {{.ProviderName}}.</p><a class="button primary" href="/sources">Set up OTP source</a></div>
+    {{if .Profiles}}<div class="sign-in-list">{{range .Profiles}}{{template "resource-card" .}}{{end}}</div>{{end}}
+  {{end}}
+</section>
+<section class="section-head lake-preferences-heading"><div><h2>Booking preferences</h2><p>Your vehicle, release schedule, and pass choices for new requests.</p></div></section>
+{{if .FormError}}<div id="form-error" class="flash error" role="alert" tabindex="-1">{{.FormError}}</div>{{end}}
+<form action="/lakes/{{.Lake.ID}}" method="post" class="form-card" autocomplete="off" id="defaults">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <div class="form-context"><p>Defaults for new requests. Existing requests and queued jobs keep their saved values.</p><span class="pill {{if .Saved}}active{{end}}">{{if .Saved}}Personal defaults{{else}}Default preferences{{end}}</span></div>
+  {{range .Sections}}{{if ne .Title "Booking site URLs"}}{{template "form-section" .}}{{end}}{{end}}
+  <details class="form-advanced"{{if .FormError}} open{{end}}><summary>Advanced settings</summary>{{range .Sections}}{{if eq .Title "Booking site URLs"}}{{template "form-section" .}}{{end}}{{end}}</details>
+  <div class="form-actions"><div class="actions"><button type="submit" class="primary">Save lake defaults</button><a class="button ghost" href="/lakes">Cancel</a></div></div>
+</form>
+{{if .Saved}}<form action="/lakes/{{.Lake.ID}}/reset" method="post" class="reset-defaults"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><div><strong>Reset saved preferences</strong><p class="field-help">Remove your saved overrides. Lake defaults and any previously saved vehicle keyword will apply to new requests. Existing bookings stay unchanged.</p></div><button type="submit" class="ghost">Reset saved preferences</button></form>{{end}}
+{{end}}
+{{template "base" .}}

@@ -4,81 +4,110 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
-func TestHomeShowsSetupOrderAndOnlyOwnedLinkedResources(t *testing.T) {
-	fixture := newWebFixture(t)
+func TestHomeShowsLakeStatusAndLakeOwnsSignInManagement(t *testing.T) {
+	f := newWebFixture(t)
 	ctx := context.Background()
-	member, err := fixture.store.CreateMember(ctx, store.CreateUserInput{Username: "other-member", Password: "other-member-password"})
+	member, err := f.store.CreateMember(ctx, store.CreateUserInput{Username: "other-member", Password: "other-member-password"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	var own []model.Profile
 	for _, owner := range []struct {
 		id   int64
 		name string
-	}{{fixture.admin.ID, "Owned"}, {member.ID, "Private"}} {
-		resources := fixture.store.ForUser(owner.id)
-		source, err := resources.CreateOTPSource(ctx, store.OTPSourceInput{Name: owner.name + " inbox", Provider: model.OTPProviderTwilio, Identity: "twilio:" + owner.name, ProviderConfig: map[string]string{"auth_token": "secret-never-rendered"}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = resources.CreateProfile(ctx, store.ProfileInput{Name: owner.name + " vehicle", DefaultVehicle: owner.name + " car", LoginProbeURL: "https://example.test/login", OTPSourceID: source.ID, DefaultTimeoutMS: 15000, Enabled: true, Headless: true, Credentials: &model.ProfileCredentials{Phone: "5559876543"}})
-		if err != nil {
-			t.Fatal(err)
+	}{{f.admin.ID, "Owned"}, {member.ID, "Private"}} {
+		source := createDefaultSignInSource(t, f, owner.id, owner.name+" inbox")
+		for i := 1; i <= 2; i++ {
+			profile, err := f.store.ForUser(owner.id).CreateProfile(ctx, store.ProfileInput{ProviderID: "yodel", Name: fmt.Sprintf("%s sign-in %d", owner.name, i), DefaultVehicle: owner.name + " legacy vehicle", LoginProbeURL: "https://example.test/login", OTPSourceID: source.ID, DefaultTimeoutMS: 15000, Enabled: true, Headless: true, Credentials: &model.ProfileCredentials{Phone: "5559876543"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if owner.id == f.admin.ID {
+				own = append(own, profile)
+			}
 		}
 	}
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, "http://example.test/", loginCookies(t, fixture), nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("home=%d %s", response.Code, response.Body.String())
-	}
+	response := serveForm(f, http.MethodGet, "/", loginCookies(t, f), nil)
 	body := response.Body.String()
-	sourceSection, profileSection := strings.Index(body, `id="otp-sources"`), strings.Index(body, `id="profiles"`)
-	if sourceSection < 0 || profileSection <= sourceSection {
-		t.Fatal("home does not show OTP sources before profiles")
+	if response.Code != http.StatusOK {
+		t.Fatalf("home=%d %s", response.Code, body)
 	}
-	for _, text := range []string{"Owned inbox", "Owned vehicle", "Linked OTP source", "3. Pair with Yodel", "4. Booking request", "Already queued jobs remain scheduled", `href="/bookings/new?profile_id=1"`} {
+	for _, text := range []string{`id="home-lakes"`, "Your lakes", "Buntzen Lake", `href="/lakes/buntzen#connection"`, `href="/lakes"`, "Already queued jobs remain scheduled"} {
 		if !strings.Contains(body, text) {
-			t.Fatalf("home missing %q", text)
+			t.Errorf("Home missing %q", text)
 		}
 	}
-	for _, text := range []string{"Private inbox", "Private vehicle", "secret-never-rendered", "5559876543"} {
+	for _, text := range []string{`id="yodel-sign-in"`, `action="/profiles/`, "Sign in to Yodel", "Private inbox", "Private sign-in", "legacy vehicle", "5559876543", "https://example.test/login"} {
 		if strings.Contains(body, text) {
-			t.Fatalf("home exposed %q", text)
+			t.Errorf("Home exposed provider setup or private data %q", text)
+		}
+	}
+	lake := serveForm(f, http.MethodGet, "/lakes/buntzen", loginCookies(t, f), nil)
+	if lake.Code != http.StatusOK {
+		t.Fatalf("lake=%d %s", lake.Code, lake.Body.String())
+	}
+	for _, profile := range own {
+		if !strings.Contains(lake.Body.String(), fmt.Sprintf(`action="/profiles/%d/sign-in"`, profile.ID)) {
+			t.Errorf("Lake lost existing sign-in %d", profile.ID)
+		}
+	}
+	for _, text := range []string{"Private inbox", "Private sign-in", "5559876543"} {
+		if strings.Contains(lake.Body.String(), text) {
+			t.Errorf("Lake exposed %q", text)
 		}
 	}
 }
 
-func TestProfileFormOwnsLoginURLAndPreselectsOnlyOwnedSource(t *testing.T) {
-	fixture := newWebFixture(t)
-	ctx := context.Background()
-	source, err := fixture.store.ForUser(fixture.admin.ID).CreateOTPSource(ctx, store.OTPSourceInput{Name: "Saved inbox", Provider: model.OTPProviderTwilio, Identity: "twilio:profile-form", ProviderConfig: map[string]string{"auth_token": "synthetic"}})
-	if err != nil {
-		t.Fatal(err)
+func TestHomeRedirectsUnconfiguredAccountToLakes(t *testing.T) {
+	f := newWebFixture(t)
+	cookies := loginCookies(t, f)
+	response := serveForm(f, http.MethodGet, "/", cookies, nil)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/lakes" {
+		t.Fatalf("Home setup redirect=%d %s", response.Code, response.Header().Get("Location"))
 	}
-	cookies := loginCookies(t, fixture)
-	for _, requestedID := range []int64{source.ID, source.ID + 100} {
-		response := httptest.NewRecorder()
-		target := fmt.Sprintf("http://example.test/profiles/new?source_id=%d", requestedID)
-		fixture.handler.ServeHTTP(response, authenticatedRequest(http.MethodGet, target, cookies, nil))
-		if response.Code != http.StatusOK {
-			t.Fatalf("profile form=%d %s", response.Code, response.Body.String())
-		}
-		body := response.Body.String()
-		if !strings.Contains(body, `name="login_probe_url" value="https://example.test/buntzen-lake"`) {
-			t.Fatal("profile missing approved default login URL")
-		}
-		if requestedID == source.ID && !strings.Contains(body, fmt.Sprintf(`value="%d" selected`, source.ID)) {
-			t.Fatal("owned source was not preselected")
-		}
-		if requestedID != source.ID && strings.Contains(body, fmt.Sprintf(`value="%d"`, requestedID)) {
-			t.Fatal("unowned source was rendered")
-		}
+	lakes := serveForm(f, http.MethodGet, "/lakes", cookies, nil)
+	if lakes.Code != http.StatusOK || !strings.Contains(lakes.Body.String(), "Start with a lake") || !strings.Contains(lakes.Body.String(), "Buntzen Lake") || strings.Contains(lakes.Body.String(), "Yodel sign-in") {
+		t.Fatalf("lake onboarding=%d %s", lakes.Code, lakes.Body.String())
+	}
+	lake := serveForm(f, http.MethodGet, "/lakes/buntzen", cookies, nil)
+	if lake.Code != http.StatusOK || !strings.Contains(lake.Body.String(), "Set up login codes first") || !strings.Contains(lake.Body.String(), `href="/sources"`) {
+		t.Fatalf("lake connection setup=%d %s", lake.Code, lake.Body.String())
+	}
+	createDefaultSignInSource(t, f, f.admin.ID, "My inbox")
+	response = serveForm(f, http.MethodGet, "/", cookies, nil)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/lakes" {
+		t.Fatal("OTP source alone must not complete lake setup")
+	}
+}
+
+func TestUpcomingVisitsUseVisitDateAndLakeTimezone(t *testing.T) {
+	now := time.Date(2026, 9, 13, 1, 0, 0, 0, time.UTC)
+	bookings := []model.BookingRequest{
+		{ID: 1, Name: "Alphabetically first, later visit", TargetDate: "2026-09-20", Timezone: "America/Vancouver", Enabled: true},
+		{ID: 2, TargetDate: "2026-09-11", Timezone: "America/Vancouver", Enabled: true},
+		{ID: 3, TargetDate: "2026-09-12", Timezone: "America/Vancouver", Enabled: true},
+		{ID: 4, TargetDate: "2026-09-12", Timezone: "UTC", Enabled: true},
+		{ID: 5, TargetDate: "2026-09-13", Timezone: "America/Vancouver", Enabled: false},
+		{ID: 6, TargetDate: "2026-09-14", Timezone: "America/Vancouver", Enabled: true},
+		{ID: 7, TargetDate: "2026-09-15", Timezone: "America/Vancouver", Enabled: true},
+	}
+	var ids []int64
+	for _, booking := range upcomingBookings(bookings, now) {
+		ids = append(ids, booking.ID)
+	}
+	if !slices.Equal(ids, []int64{3, 6, 7}) {
+		t.Fatalf("upcoming IDs = %v, want local-today then next two enabled visits", ids)
+	}
+	if bookings[0].ID != 1 {
+		t.Fatal("dashboard ordering changed the original request list")
 	}
 }

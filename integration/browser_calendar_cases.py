@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 import unittest
@@ -15,10 +14,11 @@ from unittest.mock import patch
 
 from playwright.sync_api import sync_playwright
 
-from buntzen_actions.calendar_dates import select_target_date
-from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown
-from buntzen_actions.pass_types import PASS_PREFERENCES
-from buntzen_actions.yodel import YodelAction
+from lake_pass_actions.providers.yodel.calendar_dates import select_target_date
+from lake_pass_actions.environment import operator_env
+from lake_pass_actions.errors import ActionError, Cancelled, OutcomeUnknown
+from lake_pass_actions.lakes.buntzen import LAKE, PASS_PREFERENCES
+from lake_pass_actions.providers.yodel.action import YodelAction
 
 
 _PASS_PAGE_HANDLERS = """<script>
@@ -137,7 +137,7 @@ class CalendarBrowserTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.playwright = sync_playwright().start()
         launch = {"headless": True}
-        if executable := os.environ.get("BUNTZEN_E2E_BROWSER_EXECUTABLE"):
+        if executable := operator_env("E2E_BROWSER_EXECUTABLE"):
             launch["executable_path"] = executable
         cls.browser = cls.playwright.chromium.launch(**launch)
 
@@ -149,6 +149,7 @@ class CalendarBrowserTests(unittest.TestCase):
     def setUp(self) -> None:
         self.page = self.browser.new_page()
         self.action = object.__new__(YodelAction)
+        self.action.lake = LAKE
         self.action.page = self.page
         self.action.control = SimpleNamespace(
             inbox=SimpleNamespace(check_cancelled=lambda: None),
@@ -328,7 +329,7 @@ class CalendarBrowserTests(unittest.TestCase):
           <button onclick="document.body.dataset.clicked='yes';document.querySelector('#orderConfirmModal').style.display='block'">Yes</button>
           <div id="orderConfirmModal" style="display:none"><h2 class="heading">Confirmed</h2><a>See My Pass</a></div>
         """)
-        with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
+        with patch("lake_pass_actions.providers.yodel.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
             with self.assertRaises(OutcomeUnknown):
                 self.action._click_final_confirmation(
                     self.page.get_by_role("button", name="Yes"),
@@ -357,7 +358,7 @@ class CalendarBrowserTests(unittest.TestCase):
         events = self.prepare_confirmation(
             "<button onclick=\"document.body.dataset.clicked='yes'\">Yes</button>"
         )
-        with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
+        with patch("lake_pass_actions.providers.yodel.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
             with self.assertRaises(OutcomeUnknown) as failure:
                 self.action._click_final_confirmation(
                     self.page.get_by_role("button", name="Yes"),
@@ -376,7 +377,7 @@ class CalendarBrowserTests(unittest.TestCase):
                 raise Cancelled("synthetic cancellation after submission")
 
         self.action.control.inbox.check_cancelled = cancel_after_click
-        with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
+        with patch("lake_pass_actions.providers.yodel.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
             with self.assertRaises(OutcomeUnknown) as failure:
                 self.action._click_final_confirmation(
                     self.page.get_by_role("button", name="Yes"),
@@ -409,7 +410,7 @@ class CalendarBrowserTests(unittest.TestCase):
                 origin + "/"
             )
             started = time.monotonic()
-            with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
+            with patch("lake_pass_actions.providers.yodel.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
                 with self.assertRaises(OutcomeUnknown) as failure:
                     self.action._click_final_confirmation(
                         self.page.get_by_role("button", name="Yes"),
@@ -438,7 +439,7 @@ class CalendarBrowserTests(unittest.TestCase):
 
             self.action.control.inbox.check_cancelled = cancel_when_headers_arrive
             started = time.monotonic()
-            with patch("buntzen_actions.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
+            with patch("lake_pass_actions.providers.yodel.checkout.CONFIRMATION_TIMEOUT_SECONDS", 0.2):
                 with self.assertRaises(OutcomeUnknown) as failure:
                     self.action._click_final_confirmation(
                         self.page.get_by_role("button", name="Yes"),

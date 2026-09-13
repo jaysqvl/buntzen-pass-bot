@@ -150,7 +150,7 @@ func EqualizePasswordCheck(password string) error {
 func ValidateSetupToken(token string) error {
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(token)
 	if err != nil || len(raw) != tokenBytes || base64.RawURLEncoding.EncodeToString(raw) != token {
-		return errors.New("BUNTZEN_SETUP_TOKEN must encode 32 random bytes as unpadded URL-safe base64")
+		return errors.New("LAKE_PASS_SETUP_TOKEN must encode 32 random bytes as unpadded URL-safe base64")
 	}
 	return nil
 }

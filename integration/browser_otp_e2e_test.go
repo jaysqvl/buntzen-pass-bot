@@ -18,12 +18,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
+	"github.com/jaysqvl/lake-pass-bot/internal/actionproc"
+	"github.com/jaysqvl/lake-pass-bot/internal/control"
+	"github.com/jaysqvl/lake-pass-bot/internal/egress"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp/bluebubbles"
 )
 
 const (
@@ -45,7 +45,7 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 	}
 
 	repoRoot := repositoryRoot(t)
-	python, pythonArgs := pythonCommand(t, repoRoot, "-m", "buntzen_actions")
+	python, pythonArgs := pythonCommand(t, repoRoot, "-m", "lake_pass_actions")
 	browserExecutable := browserPath()
 	flow := &e2eFlow{}
 
@@ -123,8 +123,8 @@ func TestControlPlanePythonBrowserBlueBubblesOTP(t *testing.T) {
 				Executable: python,
 				Args:       pythonArgs,
 				Environment: []string{
-					"BUNTZEN_BROWSER_EXECUTABLE=" + browserExecutable,
-					"BUNTZEN_ACTIONPROC_HELPER=e2e-local-tls",
+					"LAKE_PASS_BROWSER_EXECUTABLE=" + browserExecutable,
+					"LAKE_PASS_ACTIONPROC_HELPER=e2e-local-tls",
 					"PYTHONDONTWRITEBYTECODE=1",
 					"PYTHONUNBUFFERED=1",
 				},

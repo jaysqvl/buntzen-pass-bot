@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 const (
@@ -510,6 +510,9 @@ func TestTerminalTransitionsAtomicallyRespectCommittedRevocation(t *testing.T) {
 			t.Fatal(err)
 		}
 		bookingID := booking.ID
+		if err := resources.SetDefaultOTPSource(ctx, profile.OTPSourceID); err != nil {
+			t.Fatal(err)
+		}
 		job, err := resources.EnqueueJob(ctx, EnqueueJobParams{
 			BookingRequestID: &bookingID, Command: command, RunMode: mode,
 		})

@@ -1,0 +1,12 @@
+{{define "content"}}
+<section class="section-head"><div><p class="eyebrow">Your destinations</p><h1>Lakes</h1><p>Choose a lake to connect your account and set your booking preferences.</p></div></section>
+{{if not .Configured}}<div class="setup-note"><strong>Start with a lake</strong><p>Open a lake below to set up its connection. Your account status will then appear on Home.</p></div>{{end}}
+<div class="resource-list lake-catalog">{{range .Connections}}
+  <article class="card">
+    <div class="card-title"><div class="lake-heading">{{template "lake-icon" .}}<div><h2><a href="{{.URL}}">{{.Lake.Name}}</a></h2><p>{{.Description}}</p></div></div><span class="pill {{.StatusClass}}">{{.Status}}</span></div>
+    <dl>{{range .Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>
+    <div class="actions"><a class="button primary" href="{{.URL}}">{{.ActionLabel}}</a>{{if .Configured}}<a class="button" href="/bookings/new?lake_id={{.Lake.ID}}">New booking</a>{{end}}</div>
+  </article>
+{{end}}</div>
+{{end}}
+{{template "base" .}}

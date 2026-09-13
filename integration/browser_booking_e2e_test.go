@@ -18,12 +18,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/actionproc"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
+	"github.com/jaysqvl/lake-pass-bot/internal/actionproc"
+	"github.com/jaysqvl/lake-pass-bot/internal/control"
+	"github.com/jaysqvl/lake-pass-bot/internal/egress"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp/bluebubbles"
 )
 
 const (
@@ -172,7 +172,7 @@ func TestControlPlanePythonBrowserBookingVehicleFailure(t *testing.T) {
 	if outcome.err != nil {
 		t.Fatalf("run coordinated booking: %v\nworker stderr:\n%s", outcome.err, strings.Join(outcome.stderr, "\n"))
 	}
-	wantMessage := "All-day pass was available, but no visible saved vehicle matched the profile's vehicle keyword."
+	wantMessage := "All-day pass was available, but no visible saved vehicle matched the booking's vehicle keyword."
 	if outcome.result.Status != model.JobFailed || outcome.result.Message != wantMessage {
 		t.Fatalf("missing vehicle result = %#v, want failed with %q", outcome.result, wantMessage)
 	}
@@ -216,7 +216,7 @@ type bookingRunOutcome struct {
 func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobCommand, mode model.RunMode, decision model.ApprovalDecision, receipt string) bookingRunOutcome {
 	t.Helper()
 	repoRoot := repositoryRoot(t)
-	python, pythonArgs := pythonCommand(t, repoRoot, "-m", "buntzen_actions")
+	python, pythonArgs := pythonCommand(t, repoRoot, "-m", "lake_pass_actions")
 	var confirmationBarrier atomic.Bool
 	flow := &bookingFlow{confirmationBarrier: &confirmationBarrier, receipt: receipt}
 	yodel := httptest.NewUnstartedServer(http.HandlerFunc(flow.serveYodel))
@@ -295,9 +295,9 @@ func runSyntheticBrowserBooking(t *testing.T, jobID int64, command model.JobComm
 				Executable: python,
 				Args:       pythonArgs,
 				Environment: []string{
-					"BUNTZEN_BROWSER_EXECUTABLE=" + browserPath(),
-					"BUNTZEN_ACTIONPROC_HELPER=e2e-local-tls",
-					"BUNTZEN_ACTION_LOG_LEVEL=debug",
+					"LAKE_PASS_BROWSER_EXECUTABLE=" + browserPath(),
+					"LAKE_PASS_ACTIONPROC_HELPER=e2e-local-tls",
+					"LAKE_PASS_ACTION_LOG_LEVEL=debug",
 					"PYTHONDONTWRITEBYTECODE=1",
 					"PYTHONUNBUFFERED=1",
 				},

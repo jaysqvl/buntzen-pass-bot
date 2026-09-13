@@ -1,21 +1,21 @@
 {{define "content"}}
 <section class="section-head">
   <div><p class="eyebrow">{{.Eyebrow}}</p><h1>{{.Heading}}</h1><p>{{.Description}}</p></div>
-  {{if .CreateURL}}<a class="button primary" href="{{.CreateURL}}">{{.CreateLabel}}</a>{{end}}
+  {{if and .CreateURL .Cards}}<a class="button primary" href="{{.CreateURL}}">{{.CreateLabel}}</a>{{end}}
 </section>
-{{if .Notice}}<p class="flash">{{.Notice}}</p>{{end}}
-<div class="card-grid">
+{{if .Notice}}<details class="context-note"><summary>Queueing information</summary><p>{{.Notice}}</p></details>{{end}}
+<div class="resource-list">
 {{range .Cards}}
   <article class="card">
-    <div class="card-title"><div><h2><a href="{{.URL}}">{{.Title}}</a></h2><p>{{.Subtitle}}</p></div><span class="pill {{.StatusClass}}">{{.Status}}</span></div>
+    <div class="card-title"><div><h2><a href="{{.URL}}">{{.Title}}</a></h2><p>{{.Subtitle}}</p></div><div class="status-group">{{if .Default}}<span class="pill active">Default</span>{{end}}<span class="pill {{.StatusClass}}">{{.Status}}</span></div></div>
     {{if .Description}}<p>{{.Description}}</p>{{end}}
-    <dl>{{range .Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>
+    {{if .Fields}}<dl>{{range .Fields}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}</dl>{{end}}
     <div class="actions">
       {{range .Actions}}<a class="button {{.Class}}" href="{{.URL}}">{{.Label}}</a>{{end}}
-      {{range .PostActions}}<form method="post" action="{{.URL}}"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">{{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<button class="{{.Class}}" type="submit">{{.Label}}</button></form>{{end}}
+      {{range .PostActions}}<form method="post" action="{{.URL}}"{{if .SelectName}} class="action-select"{{end}}><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">{{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{if .SelectName}}<label><span>{{.SelectLabel}}</span><select name="{{.SelectName}}" required>{{range .SelectOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}</select></label>{{end}}<button class="{{.Class}}" type="submit">{{.Label}}</button></form>{{end}}
     </div>
   </article>
-{{else}}<section class="empty-card"><h2>Nothing here yet</h2><p>{{$.EmptyMessage}}</p></section>{{end}}
+{{else}}<section class="empty-card"><h2>No {{.Heading}} yet</h2><p>{{.EmptyMessage}}</p>{{if .CreateURL}}<a class="button primary" href="{{.CreateURL}}">{{.CreateLabel}}</a>{{end}}</section>{{end}}
 </div>
 {{end}}
 {{template "base" .}}

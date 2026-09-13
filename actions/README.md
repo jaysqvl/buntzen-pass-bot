@@ -1,7 +1,8 @@
-# Buntzen actions protocol v2
+# Lake Pass actions protocol v2
 
-`buntzen-actions` is a fresh-process Python worker for one allowlisted action:
-Yodel browser automation. It does not read the application database, contact an
+`lake-pass-actions` is a fresh-process Python worker that dispatches validated
+lake/provider selections through an allowlisted adapter registry. Buntzen Lake
+is the first destination, using the Yodel provider. It does not read the application database, contact an
 OTP provider, or import Twilio/BlueBubbles libraries. The Go process retains all
 provider and persistence responsibility.
 
@@ -11,11 +12,29 @@ to stderr. Unknown object fields are ignored, but unknown frame types and invali
 state transitions fail the run.
 
 The control plane passes its validated log threshold to each worker through
-`BUNTZEN_ACTION_LOG_LEVEL`; operators should configure `BUNTZEN_LOG_LEVEL` or
-the `BUNTZEN_DEBUG` convenience toggle rather than setting this internal
+`LAKE_PASS_ACTION_LOG_LEVEL`; operators should configure `LAKE_PASS_LOG_LEVEL` or
+the `LAKE_PASS_DEBUG` convenience toggle rather than setting this internal
 variable directly. Worker stderr is redacted and bounded again by Go before it
 is written to the container log with a durable job ID. Protocol payloads are
 never logged.
+
+## Destinations and providers
+
+`lake_pass_actions/lakes/` owns destination-specific pass choices;
+`lake_pass_actions/providers/yodel/` owns Yodel authentication, calendar, vehicle,
+cart, and receipt handling. Go owns lake scheduling defaults and operator-approved
+URLs. Adding a destination requires registering its rules and a supported provider;
+adding a booking platform requires a separate adapter and its safety checks.
+Unknown lake/provider IDs and mismatched pairs fail before browser launch or secret
+requests. Missing IDs in older protocol-v2 clients use the existing destination;
+explicit invalid IDs never fall back.
+
+Use `python -m lake_pass_actions` or `lake-pass-actions` for new installations.
+The old `python -m buntzen_actions` and `buntzen-actions` launchers remain upgrade
+aliases. Worker environment variables use `LAKE_PASS_*`, with corresponding
+`BUNTZEN_*` names as fallbacks. A present new variable takes precedence, including
+an empty value. Stored profiles, encrypted values, and protocol markers retain
+their existing formats.
 
 ## Start and completion
 
@@ -38,6 +57,8 @@ Go then sends `run.start`:
   "command": "book",
   "mode": "manual",
   "config": {
+    "lake_id": "buntzen",
+    "provider_id": "yodel",
     "profile_dir": "/appdata/profiles/profile-42",
     "target_date": "2030-01-15",
     "timezone": "UTC",

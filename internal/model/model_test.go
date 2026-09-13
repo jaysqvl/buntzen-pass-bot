@@ -53,7 +53,8 @@ func TestPassOrder(t *testing.T) {
 
 func validBooking() BookingRequest {
 	return BookingRequest{
-		Name: "Tomorrow", ProfileID: 1, TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
+		VehicleKeyword: "Example vehicle",
+		Name:           "Tomorrow", ProfileID: 1, TargetDate: "2030-01-15", Timezone: "UTC", ReleaseTime: "07:00",
 		PrepMinutesBefore: 30, AuthDeadlineMinutesBefore: 5,
 		PollDeadlineSeconds: 120, PollMinSeconds: 0.05, PollMaxSeconds: 2,
 		ConfirmationMode: RunModeManual, LoginProbeURL: "https://example.test/login",

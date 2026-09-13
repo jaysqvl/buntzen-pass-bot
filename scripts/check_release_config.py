@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PACKAGE_NAME = "buntzen-actions"
+PACKAGE_NAME = "lake-pass-actions"
 
 
 def fail(message: str) -> None:
@@ -70,6 +70,8 @@ def main() -> int:
 
     packages_config = config.get("packages")
     root_config = packages_config.get(".") if isinstance(packages_config, dict) else None
+    if not isinstance(root_config, dict) or root_config.get("package-name") != "lake-pass-bot" or root_config.get("component") != "lake-pass-bot":
+        fail("Release Please package and component must use lake-pass-bot")
     extra_files = root_config.get("extra-files") if isinstance(root_config, dict) else None
     if not isinstance(extra_files, list):
         fail("Release Please has no root extra-files list")

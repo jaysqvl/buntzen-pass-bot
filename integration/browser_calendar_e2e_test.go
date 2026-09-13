@@ -26,7 +26,7 @@ func TestPythonBrowserCalendarAndCheckout(t *testing.T) {
 	command.Dir = repoRoot
 	command.Env = append(os.Environ(),
 		"PYTHONPATH="+filepath.Join(repoRoot, "actions", "src"),
-		"BUNTZEN_E2E_BROWSER_EXECUTABLE="+browserPath(),
+		"LAKE_PASS_E2E_BROWSER_EXECUTABLE="+browserPath(),
 	)
 	output, err := command.CombinedOutput()
 	if err != nil {

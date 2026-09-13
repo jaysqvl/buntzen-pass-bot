@@ -11,10 +11,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from buntzen_actions.config import ActionConfig
-from buntzen_actions.errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
-from buntzen_actions.worker import _chromium_user_agent, _open_context, _read_start_or_cancel, run_action
-from buntzen_actions.yodel import BookingResult
+from lake_pass_actions.config import ActionConfig
+from lake_pass_actions.errors import ActionError, Cancelled, OutcomeUnknown, ProtocolError
+from lake_pass_actions.worker import _chromium_user_agent, _open_context, _read_start_or_cancel, run_action
+from lake_pass_actions.providers.yodel.action import BookingResult
 
 
 def browser_launcher():
@@ -64,9 +64,9 @@ class WorkerTests(unittest.TestCase):
                 with (
                     tempfile.TemporaryDirectory() as directory,
                     patch("playwright.sync_api.sync_playwright"),
-                    patch("buntzen_actions.worker._open_context", return_value=context),
-                    patch("buntzen_actions.worker.SafeDiagnostics") as diagnostics,
-                    patch("buntzen_actions.worker.YodelAction") as action,
+                    patch("lake_pass_actions.worker._open_context", return_value=context),
+                    patch("lake_pass_actions.worker.SafeDiagnostics") as diagnostics,
+                    patch("lake_pass_actions.providers.yodel.action.YodelAction") as action,
                 ):
                     action.return_value.execute.side_effect = failure
                     with self.assertRaises(failure_type) as raised:
@@ -80,10 +80,10 @@ class WorkerTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch("playwright.sync_api.sync_playwright"),
-            patch("buntzen_actions.worker._open_context", return_value=context),
-            patch("buntzen_actions.worker.SafeDiagnostics") as diagnostics,
-            patch("buntzen_actions.worker.YodelAction") as action,
-            self.assertLogs("buntzen_actions.worker", level="WARNING"),
+            patch("lake_pass_actions.worker._open_context", return_value=context),
+            patch("lake_pass_actions.worker.SafeDiagnostics") as diagnostics,
+            patch("lake_pass_actions.providers.yodel.action.YodelAction") as action,
+            self.assertLogs("lake_pass_actions.worker", level="WARNING"),
         ):
             diagnostics.return_value.close.side_effect = RuntimeError("cleanup failure")
             action.return_value.execute.return_value = BookingResult(True, "Confirmed", "all_day")
@@ -96,9 +96,9 @@ class WorkerTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch("playwright.sync_api.sync_playwright"),
-            patch("buntzen_actions.worker._open_context", return_value=context),
-            patch("buntzen_actions.worker.SafeDiagnostics"),
-            patch("buntzen_actions.worker.YodelAction") as action,
+            patch("lake_pass_actions.worker._open_context", return_value=context),
+            patch("lake_pass_actions.worker.SafeDiagnostics"),
+            patch("lake_pass_actions.providers.yodel.action.YodelAction") as action,
         ):
             action.return_value.execute.return_value = BookingResult(False, "No pass available")
             with self.assertRaisesRegex(ActionError, "No pass available"):
@@ -108,7 +108,7 @@ class WorkerTests(unittest.TestCase):
     def test_browser_launch_preserves_site_compatibility_and_sandbox(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             playwright = browser_launcher()
-            with patch("buntzen_actions.worker._browser_version_output", return_value="Chromium 1.55.5010.0123"):
+            with patch("lake_pass_actions.worker._browser_version_output", return_value="Chromium 1.55.5010.0123"):
                 _open_context(playwright, make_config(Path(directory) / "profile"))
             launch = playwright.chromium.launch_persistent_context.call_args.kwargs
             self.assertIs(launch["chromium_sandbox"], True)
@@ -121,7 +121,7 @@ class WorkerTests(unittest.TestCase):
         executable = "/synthetic/Google Chrome"
         playwright = browser_launcher()
         with patch.dict(os.environ, {"BUNTZEN_BROWSER_EXECUTABLE": executable}), patch(
-            "buntzen_actions.worker._browser_version_output", return_value="Google Chrome 1.55.5010.0123"
+            "lake_pass_actions.worker._browser_version_output", return_value="Google Chrome 1.55.5010.0123"
         ) as version:
             _open_context(playwright, make_config(Path("/tmp/synthetic-profile")))
         version.assert_called_once_with(executable)
@@ -131,7 +131,7 @@ class WorkerTests(unittest.TestCase):
 
     def test_constructed_config_cannot_select_member_executable(self) -> None:
         for override in ({"executable_path": "/tmp/member-program"}, {"browser_channel": "../chrome"}):
-            with self.subTest(override=override), patch("buntzen_actions.worker.subprocess.Popen") as probe:
+            with self.subTest(override=override), patch("lake_pass_actions.worker.subprocess.Popen") as probe:
                 playwright = browser_launcher()
                 config = replace(make_config(Path("/tmp/synthetic-profile")), **override)
                 with self.assertRaises(ProtocolError):
@@ -142,9 +142,9 @@ class WorkerTests(unittest.TestCase):
     def test_supported_channels_resolve_once_for_probe_and_launch(self) -> None:
         for channel in ("chrome", "chrome-beta", "chrome-dev", "chrome-canary", " CHROME "):
             with self.subTest(channel=channel), patch.dict(os.environ, {"BUNTZEN_BROWSER_EXECUTABLE": ""}), patch(
-                "buntzen_actions.worker._browser_channel_executable", return_value="/synthetic/chrome"
+                "lake_pass_actions.worker._browser_channel_executable", return_value="/synthetic/chrome"
             ) as resolve, patch(
-                "buntzen_actions.worker._browser_version_output", return_value="Google Chrome 1.55.5010.0123"
+                "lake_pass_actions.worker._browser_version_output", return_value="Google Chrome 1.55.5010.0123"
             ) as version:
                 playwright = browser_launcher()
                 _open_context(playwright, replace(make_config(Path("/tmp/profile")), browser_channel=channel))
@@ -165,7 +165,7 @@ class WorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "Test Chrome"
             for name, (body, error) in cases.items():
-                with self.subTest(name=name), patch("buntzen_actions.worker._VERSION_TIMEOUT_SECONDS", 0.5):
+                with self.subTest(name=name), patch("lake_pass_actions.worker._VERSION_TIMEOUT_SECONDS", 0.5):
                     executable.write_text(f"#!{sys.executable}\n{body}\n")
                     executable.chmod(0o700)
                     started = time.monotonic()
@@ -187,7 +187,7 @@ class WorkerTests(unittest.TestCase):
             with patch.dict(
                 "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
             ), patch(
-                "buntzen_actions.worker._browser_version_output",
+                "lake_pass_actions.worker._browser_version_output",
                 return_value="Chromium 1.55.5010.0123",
             ):
                 _open_context(playwright, config)
@@ -203,7 +203,7 @@ class WorkerTests(unittest.TestCase):
             with patch.dict(
                 "os.environ", {"BUNTZEN_ACTIONPROC_HELPER": "e2e-local-tls"}
             ), patch(
-                "buntzen_actions.worker._browser_version_output",
+                "lake_pass_actions.worker._browser_version_output",
                 return_value="Chromium 1.55.5010.0123",
             ):
                 _open_context(playwright, remote)

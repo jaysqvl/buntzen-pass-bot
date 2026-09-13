@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestMigrateCreatesCleanSchemaAndRefusesLegacyDatabase(t *testing.T) {
@@ -29,7 +29,7 @@ func TestMigrateCreatesCleanSchemaAndRefusesLegacyDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := store.SchemaVersion(ctx)
-	if err != nil || version != 6 {
+	if err != nil || version != 10 {
 		t.Fatalf("version=%d err=%v", version, err)
 	}
 
@@ -71,7 +71,7 @@ func TestConcurrentMigrationIsSerialized(t *testing.T) {
 	}
 }
 
-func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
+func TestSecretsRoundTripAndProfilesCanShareAnOwnedSource(t *testing.T) {
 	ctx := context.Background()
 	store := ownedTestStore(t)
 	providerConfig := map[string]any{
@@ -119,7 +119,7 @@ func TestSecretsRoundTripAndProfileSourceIsExclusive(t *testing.T) {
 		DefaultTimeoutMS: 15_000, Enabled: true,
 		Credentials: &model.ProfileCredentials{Phone: "5559876544"},
 	})
-	if !errors.Is(err, ErrConflict) {
+	if err != nil {
 		t.Fatalf("second profile error = %v", err)
 	}
 
@@ -308,6 +308,13 @@ func TestJobsClaimExclusivelyAndRecoverSafely(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondID := secondBooking.ID
+	secondProfile, err := store.GetProfile(ctx, testUserID, secondBooking.ProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ForUser(testUserID).SetDefaultOTPSource(ctx, secondProfile.OTPSourceID); err != nil {
+		t.Fatal(err)
+	}
 	second, err := store.EnqueueJob(ctx, testUserID, EnqueueJobParams{
 		BookingRequestID: &secondID, Command: model.CommandBook, RunMode: model.RunModeAuto, DueAt: now,
 	})

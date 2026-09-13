@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/otp/bluebubbles"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/egress"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/otp/bluebubbles"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func TestSavedProviderCannotReachUnapprovedDestination(t *testing.T) {
@@ -35,7 +35,7 @@ func TestSavedProviderCannotReachUnapprovedDestination(t *testing.T) {
 	if requests.Load() != 0 {
 		t.Fatal("saved provider sent credential-bearing request to unapproved destination")
 	}
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/?notice=provider-unavailable#otp-sources" {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/sources?notice=provider-unavailable" {
 		t.Fatal("destination denial did not return safe provider notice")
 	}
 }

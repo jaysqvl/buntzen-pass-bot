@@ -56,7 +56,7 @@ def main():
         })
     # Read-only synthetic DB inspection establishes there really is encrypted
     # state. No provider health/pairing/booking request is ever sent.
-    with sqlite3.connect("file:/appdata/buntzen.db?mode=ro", uri=True) as database:
+    with sqlite3.connect("file:/appdata/lake-pass-bot.db?mode=ro", uri=True) as database:
         rows = database.execute("SELECT id, config_ciphertext FROM otp_sources").fetchall()
     assert len(rows) == 1 and rows[0][1]
     assert "synthetic-key-relocation-secret" not in str(rows[0][1])

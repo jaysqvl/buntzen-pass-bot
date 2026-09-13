@@ -6,14 +6,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 type cardAction struct{ Label, URL, Class string }
 type hiddenField struct{ Name, Value string }
 type postAction struct {
-	Label, URL, Class string
-	Fields            []hiddenField
+	Label, URL, Class       string
+	Fields                  []hiddenField
+	SelectName, SelectLabel string
+	SelectOptions           []selectOption
 }
 type listCard struct {
 	Title, Subtitle, Status, StatusClass, URL string
@@ -21,6 +23,7 @@ type listCard struct {
 	Fields                                    []labelValue
 	Actions                                   []cardAction
 	PostActions                               []postAction
+	Default                                   bool
 }
 type listData struct {
 	BaseData
@@ -32,20 +35,31 @@ type listData struct {
 type selectOption struct {
 	Value, Label string
 	Selected     bool
+	LakeDefaults string
 }
 type formField struct {
 	Name, Label, Type, Value, Placeholder, Help, Step, Min, Max string
 	Required, Checked                                           bool
+	Wide                                                        bool
 	Options                                                     []selectOption
 }
 type formSection struct {
-	Title, Help string
-	Fields      []formField
+	Title, Help, Class, Provider string
+	HelpURL, HelpLabel           string
+	Fields                       []formField
+	Advanced                     bool
 }
 type formData struct {
 	BaseData
+	HiddenFields                                                                []hiddenField
+	LakeSettingsURL                                                             string
+	AdvancedHelp                                                                string
+	SubmitHelp                                                                  string
+	SubmitDisabled                                                              bool
 	Eyebrow, Heading, Description, CancelURL, ActionURL, SubmitLabel, FormError string
 	Sections                                                                    []formSection
+	LakeSelection                                                               bool
+	SourceSelection                                                             bool
 }
 
 func checked(r *http.Request, name string) bool {
@@ -66,7 +80,7 @@ func safeFormError(err error) string {
 		return "This account has reached the limit for this resource."
 	}
 	if errors.Is(err, store.ErrConflict) {
-		return "That name, inbox, browser profile, or exclusive source is already in use."
+		return "That name or inbox is already in use, or an active job is using these settings."
 	}
 	message := strings.TrimSpace(err.Error())
 	if len(message) > 300 {
@@ -77,5 +91,10 @@ func safeFormError(err error) string {
 			return "The submitted provider or credential values were not accepted."
 		}
 	}
-	return message
+	return strings.NewReplacer(
+		"poll timing must fit the worker bounds", "Use an availability window of 1–900 seconds and retry delays of 0.05–60 seconds. The minimum retry delay cannot exceed the maximum.",
+		"auth deadline must fall within the preparation window", "The sign-in deadline must be within the preparation window.",
+		"profile is required", "Choose a booking sign-in.",
+		"vehicle is required", "Enter a vehicle keyword.",
+	).Replace(message)
 }

@@ -5,7 +5,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from buntzen_actions.checkout import CheckoutConfirmation, successful_receipt
+from lake_pass_actions.providers.yodel.checkout import CheckoutConfirmation, successful_receipt
 
 
 def receipt():

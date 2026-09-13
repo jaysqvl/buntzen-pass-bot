@@ -2,12 +2,12 @@
 
 set -Eeuo pipefail
 
-image="${1:-buntzen-pass-bot:ci}"
+image="${1:-lake-pass-bot:ci}"
 expected_version="${2:-dev}"
 expected_revision="${3:-}"
 run_suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$"
-container="buntzen-ci-smoke-${run_suffix}"
-volume="buntzen-ci-appdata-${run_suffix}"
+container="lake-pass-ci-smoke-${run_suffix}"
+volume="lake-pass-ci-appdata-${run_suffix}"
 setup_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 admin_username="ci-admin"
 admin_password="ci-only-administrator-password"
@@ -15,6 +15,7 @@ workspace="$(mktemp -d)"
 base_url=""
 appdata_mount="$volume"
 key_directory=""
+swap_limit_supported=""
 
 cleanup() {
   status=$?
@@ -121,11 +122,11 @@ footer = parser.footers[0]
 if footer.get("data-version") != version or footer.get("data-revision") != revision:
     raise SystemExit("page version does not match the image build")
 text = " ".join(" ".join(parser.text).split())
-repository = "https://github.com/jaysqvl/buntzen-pass-bot"
+repository = "https://github.com/jaysqvl/lake-pass-bot"
 if version == "dev":
     if "Development build" not in text:
         raise SystemExit("development image is not clearly identified")
-elif f"v{version}" not in text or f"{repository}/releases/tag/buntzen-pass-bot-v{version}" not in parser.links:
+elif f"v{version}" not in text or f"{repository}/releases/tag/lake-pass-bot-v{version}" not in parser.links:
     raise SystemExit("release version or release notes link is missing")
 if revision and (f"Build {revision[:7]}" not in text or f"{repository}/commit/{revision}" not in parser.links):
     raise SystemExit("build revision or commit link is missing")
@@ -145,10 +146,41 @@ wait_for_health() {
   fail "health endpoint did not become ready"
 }
 
+# Some Linux hosts omit swap accounting. Accept that only while the daemon
+# reports it unavailable and the actual daemon host has no configured swap.
+validate_host_swap() {
+  if [[ "$swap_limit_supported" == "false" ]]; then
+    docker exec "$container" python -c '
+from pathlib import Path
+lines = Path("/proc/swaps").read_text().splitlines()
+assert len(lines) == 1 and lines[0].split() == ["Filename", "Type", "Size", "Used", "Priority"]
+' || fail "swap accounting is unavailable and the Docker host has swap enabled or unverifiable"
+  fi
+}
+
+# Unconfigured accounts now land on Lakes. Follow only that specific redirect
+# and retain identity/header checks on the final authenticated document.
+fetch_authenticated_landing() {
+  local cookies="$1" page="$2" headers="$3" code=""
+  code="$(curl --silent --show-error --max-time 10 \
+    --cookie "$cookies" --dump-header "$headers" --output "$page" \
+    --write-out '%{http_code}' "$base_url/")"
+  if [[ "$code" == "303" ]]; then
+    [[ "$(header_value "$headers" Location)" == "/lakes" ]] || fail "authenticated Home returned an unexpected redirect"
+    code="$(curl --silent --show-error --max-time 10 \
+      --cookie "$cookies" --dump-header "$headers" --output "$page" \
+      --write-out '%{http_code}' "$base_url/lakes")"
+  fi
+  [[ "$code" == "200" ]] || fail "authenticated landing page returned HTTP $code"
+  grep -Fq "Account settings for $admin_username" "$page" || fail "authenticated landing page did not identify the administrator"
+  [[ "$(header_value "$headers" Cache-Control)" == "no-store" ]] || fail "authenticated HTML was cacheable"
+  [[ -n "$(header_value "$headers" Content-Security-Policy)" ]] || fail "authenticated HTML omitted its Content Security Policy"
+}
+
 start_container() {
   local key_options=()
   if [[ -n "$key_directory" ]]; then
-    key_options+=(--env BUNTZEN_MASTER_KEY_FILE=/run/buntzen-key/master.key)
+    key_options+=(--env LAKE_PASS_MASTER_KEY_FILE=/run/buntzen-key/master.key)
   fi
   docker run --detach \
     --name "$container" \
@@ -164,8 +196,8 @@ start_container() {
     --volume "${key_directory:-$appdata_mount}:/run/buntzen-key:ro" \
     --env APPDATA_DIR=/appdata \
     --env BLUEBUBBLES_URL=http://bluebubbles.example:1234 \
-    --env BUNTZEN_DEBUG=true \
-    --env BUNTZEN_SETUP_TOKEN="$setup_token" \
+    --env LAKE_PASS_DEBUG=true \
+    --env LAKE_PASS_SETUP_TOKEN="$setup_token" \
     --env MAX_CONCURRENT_JOBS=2 \
     --env SCHEDULES_ENABLED=false \
     "${key_options[@]}" \
@@ -182,11 +214,13 @@ start_container() {
   [[ "$published" == 127.0.0.1:* ]] || fail "container did not publish its loopback HTTP port"
   base_url="http://$published"
   wait_for_health
-  docker inspect "$container" | jq -e '
+  validate_host_swap
+  docker inspect "$container" | jq -e --argjson swap_limit_supported "$swap_limit_supported" '
     length == 1 and (.[0] |
       .HostConfig.NanoCpus == (2 * 1000 * 1000 * 1000) and
       .HostConfig.Memory == (4 * 1024 * 1024 * 1024) and
-      .HostConfig.MemorySwap == (4 * 1024 * 1024 * 1024) and
+      (.HostConfig.MemorySwap == (4 * 1024 * 1024 * 1024) or
+        ($swap_limit_supported == false and .HostConfig.MemorySwap == -1)) and
       .HostConfig.PidsLimit == 512 and
       .HostConfig.ShmSize == (1024 * 1024 * 1024) and
       .HostConfig.Init == true and .HostConfig.ReadonlyRootfs == true and
@@ -199,17 +233,17 @@ start_container() {
 
 validate_doctor() {
   local report
-  report="$(docker exec "$container" /usr/local/bin/buntzen doctor)"
+  report="$(docker exec "$container" /usr/local/bin/lake-pass-bot doctor)"
   printf '%s\n' "$report" | jq -e '
     .ok == true and
-    .schema_version == 6 and
+    .schema_version == 10 and
     .action_protocol == 2 and
     .appdata_dir == "/appdata" and
-    .database_path == "/appdata/buntzen.db" and
+    .database_path == "/appdata/lake-pass-bot.db" and
     .profiles_dir == "/appdata/profiles" and
     .artifacts_dir == "/appdata/artifacts" and
-    .python_executable == "/usr/bin/python" and
-    .python_module == "buntzen_actions" and
+    .python_executable == "python3" and
+    .python_module == "lake_pass_actions" and
     .python_ready == true and
     .log_level == "debug" and
     .schedules_enabled == false and
@@ -243,12 +277,10 @@ perform_setup() {
     --write-out '%{http_code}' "$base_url/setup")"
   [[ "$code" == "303" ]] || fail "first-run setup returned HTTP $code"
   [[ "$(header_value "$headers" Location)" == "/?ok=setup" ]] || fail "first-run setup returned an unexpected redirect"
-  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: buntzen_session=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened session cookie"
-  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: buntzen_csrf=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened CSRF cookie"
+  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: lake_pass_session=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened session cookie"
+  tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: lake_pass_csrf=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened CSRF cookie"
 
-  curl --fail --silent --show-error --max-time 10 \
-    --cookie "$cookies" --output "$workspace/setup-dashboard" "$base_url/"
-  grep -Fq "Account settings for $admin_username" "$workspace/setup-dashboard" || fail "setup session did not reach the authenticated dashboard"
+  fetch_authenticated_landing "$cookies" "$workspace/setup-dashboard" "$workspace/setup-dashboard-headers"
   validate_page_version "$workspace/setup-dashboard"
 }
 
@@ -275,17 +307,14 @@ perform_login() {
   [[ "$code" == "303" ]] || fail "login returned HTTP $code"
   [[ "$(header_value "$headers" Location)" == "/" ]] || fail "login returned an unexpected redirect"
 
-  curl --fail --silent --show-error --max-time 10 \
-    --cookie "$cookies" --dump-header "$workspace/${label}-dashboard-headers" \
-    --output "$workspace/${label}-dashboard" "$base_url/"
-  grep -Fq "Account settings for $admin_username" "$workspace/${label}-dashboard" || fail "authenticated dashboard did not identify the administrator"
-  [[ "$(header_value "$workspace/${label}-dashboard-headers" Cache-Control)" == "no-store" ]] || fail "authenticated HTML was cacheable"
-  [[ -n "$(header_value "$workspace/${label}-dashboard-headers" Content-Security-Policy)" ]] || fail "authenticated HTML omitted its Content Security Policy"
+  fetch_authenticated_landing "$cookies" "$workspace/${label}-dashboard" "$workspace/${label}-dashboard-headers"
 }
 
 for command in docker curl jq; do
   command -v "$command" >/dev/null || fail "$command is required"
 done
+swap_limit_supported="$(docker info --format '{{json .SwapLimit}}')"
+[[ "$swap_limit_supported" == "true" || "$swap_limit_supported" == "false" ]] || fail "Docker did not report its swap accounting capability"
 docker image inspect "$image" >/dev/null
 [[ "$(docker image inspect --format '{{.Os}}' "$image")" == "linux" ]] || fail "smoke image is not a Linux image"
 [[ "$(docker image inspect --format '{{.Architecture}}' "$image")" == "amd64" ]] || fail "smoke image is not linux/amd64"
@@ -318,6 +347,19 @@ unexpected = [
 if unexpected:
     raise SystemExit("unexpected runtime Python modules: " + ", ".join(unexpected))
 ' || fail "build-only Python modules remained importable in the runtime image"
+# A pre-start cancellation probes compatibility without opening a browser.
+docker exec "$container" python -c '
+import json
+import subprocess
+import sys
+
+probe = json.dumps({"v": 2, "type": "control.cancel"}) + "\n"
+result = subprocess.run([sys.executable, "-m", "buntzen_actions"], input=probe,
+                        text=True, capture_output=True, timeout=10, check=True)
+frames = [json.loads(line) for line in result.stdout.splitlines()]
+assert len(frames) == 1 and frames[0]["type"] == "worker.ready"
+assert frames[0]["protocol"] == 2
+' || fail "legacy Python worker launcher did not pass readiness"
 # Inspect the image itself without the service's tmpfs masking its home cache.
 docker run --rm --network none --read-only --user 0 --entrypoint sh "$image" -eu -c '
   test ! -e /root/.cache
@@ -329,7 +371,7 @@ docker run --rm --network none --read-only --user 0 --entrypoint sh "$image" -eu
 ' || fail "removed build caches or WebKit-only packages survived in the image"
 docker exec "$container" sh -eu -c '
   test -w /appdata
-  test -f /appdata/buntzen.db
+  test -f /appdata/lake-pass-bot.db
   test -f /appdata/master.key
   printf "%s\n" persisted > /appdata/.ci-persistence-marker
 '
@@ -337,19 +379,20 @@ docker exec "$container" sh -eu -c '
 
 key_digest="$(docker exec "$container" sha256sum /appdata/master.key | awk '{print $1}')"
 validate_doctor
+[[ "$(docker exec "$container" /usr/local/bin/buntzen version)" == "$(docker exec "$container" /usr/local/bin/lake-pass-bot version)" ]] || fail "legacy CLI alias differs from the renamed binary"
 perform_setup
 perform_login before-restart
 
-docker exec --interactive "$container" sh -eu -c 'cat > /tmp/buntzen-browser-smoke.py' \
+docker exec --interactive "$container" sh -eu -c 'cat > /tmp/lake-pass-browser-smoke.py' \
   < scripts/docker_browser_smoke.py
-docker exec "$container" python /tmp/buntzen-browser-smoke.py
+docker exec --env "LAKE_PASS_SMOKE_SWAP_LIMIT_SUPPORTED=$swap_limit_supported" "$container" python /tmp/lake-pass-browser-smoke.py
 wait_for_health
 
 service_logs="$(docker logs "$container" 2>&1)"
 [[ "$service_logs" != *"$setup_token"* ]] || fail "service logs exposed the setup token"
 [[ "$service_logs" != *"$admin_password"* ]] || fail "service logs exposed the administrator password"
 docker exec --env "CI_SECRET=$admin_password" "$container" sh -eu -c '
-  for path in /appdata/buntzen.db*; do
+  for path in /appdata/lake-pass-bot.db*; do
     ! grep -aF -- "$CI_SECRET" "$path" >/dev/null
   done
 ' || fail "database contains the administrator password in plaintext"
@@ -363,9 +406,7 @@ start_container
 [[ "$(docker exec "$container" sha256sum /appdata/master.key | awk '{print $1}')" == "$key_digest" ]] || fail "recreated container replaced the persistent encryption key"
 docker exec "$container" sh -eu -c 'grep -qx persisted /appdata/.ci-persistence-marker' || fail "recreated container did not retain appdata"
 
-curl --fail --silent --show-error --max-time 10 \
-  --cookie "$workspace/setup-cookies" --output "$workspace/restarted-session-dashboard" "$base_url/"
-grep -Fq "Account settings for $admin_username" "$workspace/restarted-session-dashboard" || fail "durable session did not survive container recreation"
+fetch_authenticated_landing "$workspace/setup-cookies" "$workspace/restarted-session-dashboard" "$workspace/restarted-session-headers"
 validate_page_version "$workspace/restarted-session-dashboard"
 
 setup_code="$(curl --silent --show-error --max-time 10 \

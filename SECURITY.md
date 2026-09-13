@@ -1,10 +1,10 @@
 # Security scope
 
-Buntzen is a self-hosted application with an administrator and invited member
+Lake Pass Bot is a self-hosted application with an administrator and invited member
 accounts. The default mode is private HTTP and must stay on a trusted private
 network. Public access through an HTTPS tunnel is supported only with the
 [public HTTPS configuration](docs/public-exposure.md), after creating the initial
-administrator privately. Buntzen enforces its own authentication; Cloudflare
+administrator privately. Lake Pass Bot enforces its own authentication; Cloudflare
 Access is not a prerequisite.
 
 ## HTTP and account boundaries
@@ -75,7 +75,7 @@ runtime, not a sandbox for untrusted code or hostile tenants.
 
 The default encryption key sits beside the database and does not protect a copied
 whole appdata directory. An existing private key can be mounted separately and
-read-only with `BUNTZEN_MASTER_KEY_FILE`. Startup rejects missing replacement keys,
+read-only with `LAKE_PASS_MASTER_KEY_FILE`. Startup rejects missing replacement keys,
 unsafe key files and keys that cannot authenticate existing encrypted records
 before write-capable SQLite opening or migration. Separation protects a
 database-only backup; it cannot prevent a compromised service from reading its

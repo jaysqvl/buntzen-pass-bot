@@ -1,0 +1,20 @@
+{{define "content"}}
+<div class="settings-page">
+  <section class="section-head"><div><p class="eyebrow">Configuration</p><h1>Settings</h1><p>Defaults for new bookings and Yodel sign-ins across your lakes.</p></div></section>
+  {{template "settings-nav" .}}
+  {{if .FormError}}<div id="form-error" class="flash error" role="alert" tabindex="-1">{{.FormError}}</div>{{end}}
+  <form action="/settings" method="post" class="settings-form" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="settings-sections">
+      {{range $index, $section := .Sections}}
+      <section class="settings-section" aria-labelledby="settings-section-{{$index}}">
+        <div class="settings-section-intro"><h2 id="settings-section-{{$index}}">{{.Title}}</h2>{{if .Help}}<p>{{.Help}}</p>{{end}}</div>
+        <div class="settings-fields">{{template "settings-controls" .}}</div>
+      </section>
+      {{end}}
+    </div>
+    <div class="settings-actions actions"><button type="submit" class="primary">Save settings</button></div>
+  </form>
+</div>
+{{end}}
+{{template "base" .}}

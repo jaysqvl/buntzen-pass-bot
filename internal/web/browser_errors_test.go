@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func TestBrowserPlainErrorsRenderSafePagesAndPreserveHTTPHeaders(t *testing.T) {
@@ -44,7 +44,7 @@ func TestBrowserPlainErrorsRenderSafePagesAndPreserveHTTPHeaders(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, request)
 			body := recorder.Body.String()
-			if recorder.Code != status || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/html") || !strings.Contains(body, "Buntzen Bot") {
+			if recorder.Code != status || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/html") || !strings.Contains(body, "Lake Pass Bot") {
 				t.Fatalf("fallback status=%d headers=%v body=%q", recorder.Code, recorder.Header(), body)
 			}
 			returnURL := "/bookings"
@@ -176,7 +176,7 @@ func TestBrowserErrorFallbackCoversSecurityOwnershipAndRoutingFailures(t *testin
 			recorder := httptest.NewRecorder()
 			fixture.handler.ServeHTTP(recorder, request)
 			body := recorder.Body.String()
-			if recorder.Code != test.status || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/html") || !strings.Contains(body, `href="`+test.returnURL+`"`) || !strings.Contains(body, "Buntzen Bot") {
+			if recorder.Code != test.status || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/html") || !strings.Contains(body, `href="`+test.returnURL+`"`) || !strings.Contains(body, "Lake Pass Bot") {
 				t.Fatalf("browser failure status=%d headers=%v body=%q", recorder.Code, recorder.Header(), body)
 			}
 			if strings.Contains(body, foreign.Name) || strings.Contains(body, "invalid CSRF token") || strings.Contains(body, "invalid Host header") || strings.Contains(body, "synthetic-secret") {

@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/origin"
 )
 
 type PassType string
@@ -20,15 +21,20 @@ const (
 )
 
 type BookingRequest struct {
-	ID                        int64
-	UserID                    int64
-	Name                      string
-	ProfileID                 int64
-	Enabled                   bool
-	ScheduleEnabled           bool
-	TargetDate                string
-	Timezone                  string
-	ReleaseTime               string
+	ID              int64
+	UserID          int64
+	Name            string
+	LakeID          string
+	ProfileID       int64
+	VehicleKeyword  string
+	Enabled         bool
+	ScheduleEnabled bool
+	TargetDate      string
+	Timezone        string
+	ReleaseTime     string
+	// Nil supports callers predating per-lake defaults. Persistence snapshots
+	// the catalog value; an explicit zero means release on the visit date.
+	ReleaseDaysBefore         *int
 	PrepMinutesBefore         int
 	AuthDeadlineMinutesBefore int
 	PollDeadlineSeconds       int
@@ -47,6 +53,21 @@ type BookingRequest struct {
 	CheckMorning   bool
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+func (r BookingRequest) EffectiveLakeID() string {
+	if r.LakeID == "" {
+		return destinations.DefaultLakeID
+	}
+	return r.LakeID
+}
+
+func (r BookingRequest) EffectiveReleaseDaysBefore() int {
+	if r.ReleaseDaysBefore != nil {
+		return *r.ReleaseDaysBefore
+	}
+	lake, _ := destinations.Resolve(r.LakeID)
+	return lake.ReleaseDaysBefore
 }
 
 func (r BookingRequest) PassOrder() []PassType {
@@ -68,6 +89,10 @@ func (r BookingRequest) PassOrder() []PassType {
 
 func (r BookingRequest) Validate() error {
 	var problems []string
+	lake, lakeErr := destinations.Resolve(r.LakeID)
+	if lakeErr != nil {
+		problems = append(problems, lakeErr.Error())
+	}
 	if strings.TrimSpace(r.Name) == "" {
 		problems = append(problems, "name is required")
 	} else if len(r.Name) > MaxResourceNameBytes {
@@ -75,6 +100,11 @@ func (r BookingRequest) Validate() error {
 	}
 	if r.ProfileID <= 0 {
 		problems = append(problems, "profile is required")
+	}
+	if strings.TrimSpace(r.VehicleKeyword) == "" {
+		problems = append(problems, "vehicle is required")
+	} else if len(r.VehicleKeyword) > MaxDefaultVehicleBytes {
+		problems = append(problems, "vehicle is too long")
 	}
 	if _, err := time.Parse(time.DateOnly, r.TargetDate); err != nil {
 		problems = append(problems, "target date must use YYYY-MM-DD")
@@ -87,21 +117,10 @@ func (r BookingRequest) Validate() error {
 	if _, err := time.Parse("15:04", r.ReleaseTime); err != nil {
 		problems = append(problems, "release time must use HH:MM")
 	}
-	if r.PrepMinutesBefore < 0 || r.AuthDeadlineMinutesBefore < 0 {
-		problems = append(problems, "preparation offsets cannot be negative")
-	} else if r.PrepMinutesBefore > MaxPrepMinutesBefore {
-		problems = append(problems, "preparation window cannot exceed 180 minutes")
+	if days := r.EffectiveReleaseDaysBefore(); days < 0 || days > MaxReleaseDaysBefore {
+		problems = append(problems, "release days before visit must be between 0 and 365")
 	}
-	if r.AuthDeadlineMinutesBefore > r.PrepMinutesBefore {
-		problems = append(problems, "auth deadline must fall within the preparation window")
-	}
-	if r.PollDeadlineSeconds <= 0 || r.PollDeadlineSeconds > 900 ||
-		r.PollMinSeconds < 0.05 || r.PollMinSeconds > 60 ||
-		r.PollMaxSeconds < r.PollMinSeconds || r.PollMaxSeconds > 60 ||
-		math.IsNaN(r.PollMinSeconds) || math.IsNaN(r.PollMaxSeconds) ||
-		math.IsInf(r.PollMinSeconds, 0) || math.IsInf(r.PollMaxSeconds, 0) {
-		problems = append(problems, "poll timing must fit the worker bounds")
-	}
+	problems = append(problems, r.preparationProblems()...)
 	if !r.ConfirmationMode.Valid() || r.ConfirmationMode == RunModeDryRun {
 		problems = append(problems, "confirmation mode must be manual or auto")
 	}
@@ -113,8 +132,8 @@ func (r BookingRequest) Validate() error {
 	}
 	seen := make(map[PassType]bool, len(passes))
 	for _, pass := range passes {
-		if pass != PassAllDay && pass != PassAfternoon && pass != PassMorning {
-			problems = append(problems, "pass preferences must be all-day, afternoon, or morning")
+		if lakeErr == nil && !slices.Contains(lake.SupportedPasses, string(pass)) {
+			problems = append(problems, "pass preference is not supported by the selected lake")
 		} else if seen[pass] {
 			problems = append(problems, "each pass preference can only be selected once")
 		}
@@ -134,6 +153,26 @@ func (r BookingRequest) Validate() error {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+func (r BookingRequest) preparationProblems() []string {
+	var problems []string
+	if r.PrepMinutesBefore < 0 || r.AuthDeadlineMinutesBefore < 0 {
+		problems = append(problems, "preparation offsets cannot be negative")
+	} else if r.PrepMinutesBefore > MaxPrepMinutesBefore {
+		problems = append(problems, "preparation window cannot exceed 180 minutes")
+	}
+	if r.AuthDeadlineMinutesBefore > r.PrepMinutesBefore {
+		problems = append(problems, "auth deadline must fall within the preparation window")
+	}
+	if r.PollDeadlineSeconds <= 0 || r.PollDeadlineSeconds > 900 ||
+		r.PollMinSeconds < 0.05 || r.PollMinSeconds > 60 ||
+		r.PollMaxSeconds < r.PollMinSeconds || r.PollMaxSeconds > 60 ||
+		math.IsNaN(r.PollMinSeconds) || math.IsNaN(r.PollMaxSeconds) ||
+		math.IsInf(r.PollMinSeconds, 0) || math.IsInf(r.PollMaxSeconds, 0) {
+		problems = append(problems, "poll timing must fit the worker bounds")
+	}
+	return problems
 }
 
 // ValidateForOrigins applies the operator-controlled credential boundary on

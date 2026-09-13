@@ -8,7 +8,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func (s *Store) CreateBookingRequest(ctx context.Context, userID int64, request model.BookingRequest) (model.BookingRequest, error) {
@@ -17,14 +18,17 @@ func (s *Store) CreateBookingRequest(ctx context.Context, userID int64, request 
 	}
 	request.UserID = userID
 	request = normalizeBooking(request)
+	profile, err := s.bookingProfile(ctx, userID, request)
+	if err != nil {
+		return model.BookingRequest{}, err
+	}
+	if request.VehicleKeyword == "" {
+		request.VehicleKeyword = strings.TrimSpace(profile.DefaultVehicle)
+	}
 	if err := request.Validate(); err != nil {
 		return model.BookingRequest{}, err
 	}
 	if request.LoginProbeURL == "" {
-		profile, err := s.GetProfile(ctx, userID, request.ProfileID)
-		if err != nil {
-			return model.BookingRequest{}, err
-		}
 		// Keep the historical column populated for its original SQL constraint;
 		// authentication now reads the profile's login URL directly.
 		request.LoginProbeURL = profile.LoginProbeURL
@@ -36,14 +40,14 @@ func (s *Store) CreateBookingRequest(ctx context.Context, userID int64, request 
 			prep_minutes_before, auth_deadline_minutes_before, poll_deadline_seconds,
 			poll_min_seconds, poll_max_seconds, confirmation_mode, login_probe_url,
 			all_day_pass_url, half_day_pass_url, check_all_day, check_afternoon, check_morning,
-			pass_order, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			pass_order, created_at, updated_at, lake_id, release_days_before, vehicle_keyword
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, userID, request.Name, request.ProfileID, request.Enabled, request.ScheduleEnabled,
 		request.TargetDate, request.Timezone, request.ReleaseTime, request.PrepMinutesBefore,
 		request.AuthDeadlineMinutesBefore, request.PollDeadlineSeconds, request.PollMinSeconds,
 		request.PollMaxSeconds, request.ConfirmationMode, request.LoginProbeURL,
 		request.AllDayPassURL, request.HalfDayPassURL, request.CheckAllDay,
-		request.CheckAfternoon, request.CheckMorning, passOrderCSV(request.PreferredPasses), formatTime(now), formatTime(now))
+		request.CheckAfternoon, request.CheckMorning, passOrderCSV(request.PreferredPasses), formatTime(now), formatTime(now), request.LakeID, request.EffectiveReleaseDaysBefore(), request.VehicleKeyword)
 	if err != nil {
 		return model.BookingRequest{}, mapWriteError(err)
 	}
@@ -63,6 +67,20 @@ func (s *Store) UpdateBookingRequest(ctx context.Context, userID int64, request 
 	}
 	request.UserID = userID
 	request = normalizeBooking(request)
+	profile, err := s.bookingProfile(ctx, userID, request)
+	if err != nil {
+		return model.BookingRequest{}, err
+	}
+	if request.VehicleKeyword == "" {
+		existing, err := s.GetBookingRequest(ctx, userID, request.ID)
+		if err != nil {
+			return model.BookingRequest{}, err
+		}
+		request.VehicleKeyword = existing.VehicleKeyword
+		if request.VehicleKeyword == "" {
+			request.VehicleKeyword = strings.TrimSpace(profile.DefaultVehicle)
+		}
+	}
 	if err := request.Validate(); err != nil {
 		return model.BookingRequest{}, err
 	}
@@ -73,7 +91,7 @@ func (s *Store) UpdateBookingRequest(ctx context.Context, userID int64, request 
 			auth_deadline_minutes_before = ?, poll_deadline_seconds = ?, poll_min_seconds = ?,
 			poll_max_seconds = ?, confirmation_mode = ?, login_probe_url = COALESCE(NULLIF(?, ''), login_probe_url),
 			all_day_pass_url = ?, half_day_pass_url = ?, check_all_day = ?,
-			check_afternoon = ?, check_morning = ?, pass_order = ?, updated_at = ?
+			check_afternoon = ?, check_morning = ?, pass_order = ?, updated_at = ?, lake_id = ?, release_days_before = ?, vehicle_keyword = ?
 		WHERE id = ? AND user_id = ? AND NOT EXISTS (
 			SELECT 1 FROM jobs WHERE booking_request_id = booking_requests.id
 			AND status IN ('queued', 'running', 'awaiting_approval')
@@ -83,7 +101,7 @@ func (s *Store) UpdateBookingRequest(ctx context.Context, userID int64, request 
 		request.AuthDeadlineMinutesBefore, request.PollDeadlineSeconds, request.PollMinSeconds,
 		request.PollMaxSeconds, request.ConfirmationMode, request.LoginProbeURL,
 		request.AllDayPassURL, request.HalfDayPassURL, request.CheckAllDay,
-		request.CheckAfternoon, request.CheckMorning, passOrderCSV(request.PreferredPasses), formatTime(s.now()), request.ID, userID)
+		request.CheckAfternoon, request.CheckMorning, passOrderCSV(request.PreferredPasses), formatTime(s.now()), request.LakeID, request.EffectiveReleaseDaysBefore(), request.VehicleKeyword, request.ID, userID)
 	if err != nil {
 		return model.BookingRequest{}, mapWriteError(err)
 	}
@@ -180,7 +198,7 @@ const bookingSelect = `
 		prep_minutes_before, auth_deadline_minutes_before, poll_deadline_seconds,
 		poll_min_seconds, poll_max_seconds, confirmation_mode, login_probe_url,
 		all_day_pass_url, half_day_pass_url, check_all_day, check_afternoon, check_morning,
-		pass_order, created_at, updated_at
+		pass_order, created_at, updated_at, lake_id, release_days_before, vehicle_keyword
 	FROM booking_requests`
 
 func scanBooking(scanner rowScanner) (model.BookingRequest, error) {
@@ -192,7 +210,7 @@ func scanBooking(scanner rowScanner) (model.BookingRequest, error) {
 		&request.PollDeadlineSeconds, &request.PollMinSeconds, &request.PollMaxSeconds,
 		&request.ConfirmationMode, &request.LoginProbeURL, &request.AllDayPassURL,
 		&request.HalfDayPassURL, &request.CheckAllDay, &request.CheckAfternoon,
-		&request.CheckMorning, &passOrder, &created, &updated); errors.Is(err, sql.ErrNoRows) {
+		&request.CheckMorning, &passOrder, &created, &updated, &request.LakeID, &request.ReleaseDaysBefore, &request.VehicleKeyword); errors.Is(err, sql.ErrNoRows) {
 		return model.BookingRequest{}, ErrNotFound
 	} else if err != nil {
 		return model.BookingRequest{}, fmt.Errorf("scan booking request: %w", err)
@@ -212,6 +230,10 @@ func scanBooking(scanner rowScanner) (model.BookingRequest, error) {
 
 func normalizeBooking(request model.BookingRequest) model.BookingRequest {
 	request.Name = strings.TrimSpace(request.Name)
+	request.VehicleKeyword = strings.TrimSpace(request.VehicleKeyword)
+	request.LakeID = request.EffectiveLakeID()
+	days := request.EffectiveReleaseDaysBefore()
+	request.ReleaseDaysBefore = &days
 	request.TargetDate = strings.TrimSpace(request.TargetDate)
 	request.Timezone = strings.TrimSpace(request.Timezone)
 	request.ReleaseTime = strings.TrimSpace(request.ReleaseTime)
@@ -223,6 +245,21 @@ func normalizeBooking(request model.BookingRequest) model.BookingRequest {
 	request.CheckAfternoon = slices.Contains(request.PreferredPasses, model.PassAfternoon)
 	request.CheckMorning = slices.Contains(request.PreferredPasses, model.PassMorning)
 	return request
+}
+
+func (s *Store) bookingProfile(ctx context.Context, userID int64, request model.BookingRequest) (model.Profile, error) {
+	profile, err := s.GetProfile(ctx, userID, request.ProfileID)
+	if err != nil {
+		return model.Profile{}, err
+	}
+	lake, err := destinations.Resolve(request.LakeID)
+	if err != nil {
+		return model.Profile{}, err
+	}
+	if profile.EffectiveProviderID() != lake.ProviderID {
+		return model.Profile{}, fmt.Errorf("%w: choose a sign-in for the selected lake's booking provider", ErrConflict)
+	}
+	return profile, nil
 }
 
 func passOrderCSV(order []model.PassType) string {

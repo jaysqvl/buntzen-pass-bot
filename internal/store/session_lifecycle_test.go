@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"errors"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
+	"github.com/jaysqvl/lake-pass-bot/internal/auth"
 	"testing"
 	"time"
 )

@@ -8,8 +8,9 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/buildinfo"
+	"github.com/jaysqvl/lake-pass-bot/internal/buildinfo"
 )
 
 // assets contains the complete browser UI. Keeping these files in the Go
@@ -60,17 +61,32 @@ func newRenderer(version, revision string) (*Renderer, error) {
 	functions := template.FuncMap{
 		"assetURL": func(name string) string { return assetURLs[name] },
 		"appBuild": func() buildDisplay { return build },
+		"navCurrent": func(path, section string) bool {
+			if section == "/" {
+				return path == "/"
+			}
+			if section == "/lakes" && strings.HasPrefix(path, "/profiles") {
+				return true
+			}
+			if section == "/settings" && (strings.HasPrefix(path, "/account") || strings.HasPrefix(path, "/admin/")) {
+				return true
+			}
+			return path == section || strings.HasPrefix(path, section+"/")
+		},
 	}
 	definitions := map[string][]string{
 		"error":     {"assets/templates/base.html", "assets/templates/error.html"},
 		"login":     {"assets/templates/base.html", "assets/templates/login.html"},
 		"setup":     {"assets/templates/base.html", "assets/templates/setup.html"},
-		"account":   {"assets/templates/base.html", "assets/templates/account.html"},
-		"users":     {"assets/templates/base.html", "assets/templates/users.html"},
-		"user":      {"assets/templates/base.html", "assets/templates/user.html"},
-		"dashboard": {"assets/templates/base.html", "assets/templates/jobs_table.html", "assets/templates/dashboard.html"},
+		"account":   {"assets/templates/base.html", "assets/templates/settings_nav.html", "assets/templates/account.html"},
+		"users":     {"assets/templates/base.html", "assets/templates/settings_nav.html", "assets/templates/users.html"},
+		"user":      {"assets/templates/base.html", "assets/templates/settings_nav.html", "assets/templates/user.html"},
+		"dashboard": {"assets/templates/base.html", "assets/templates/lake_icon.html", "assets/templates/jobs_table.html", "assets/templates/dashboard.html"},
+		"lakes":     {"assets/templates/base.html", "assets/templates/lake_icon.html", "assets/templates/lakes.html"},
 		"list":      {"assets/templates/base.html", "assets/templates/list.html"},
-		"form":      {"assets/templates/base.html", "assets/templates/form.html"},
+		"form":      {"assets/templates/base.html", "assets/templates/form_fields.html", "assets/templates/form.html"},
+		"lake":      {"assets/templates/base.html", "assets/templates/form_fields.html", "assets/templates/resource_card.html", "assets/templates/lake.html"},
+		"settings":  {"assets/templates/base.html", "assets/templates/form_fields.html", "assets/templates/settings_nav.html", "assets/templates/settings_controls.html", "assets/templates/settings.html"},
 		"jobs":      {"assets/templates/base.html", "assets/templates/jobs_table.html", "assets/templates/jobs.html"},
 		"job":       {"assets/templates/base.html", "assets/templates/job.html"},
 	}

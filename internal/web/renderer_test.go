@@ -22,7 +22,7 @@ func TestEmbeddedTemplatesAndStaticAssets(t *testing.T) {
 	if err := renderer.Render(recorder, 200, "login", data); err != nil {
 		t.Fatal(err)
 	}
-	if body := recorder.Body.String(); !strings.Contains(body, "Buntzen Bot") || !strings.Contains(body, "csrf") || !strings.Contains(body, "example-user") {
+	if body := recorder.Body.String(); !strings.Contains(body, "Lake Pass Bot") || !strings.Contains(body, "csrf") || !strings.Contains(body, "example-user") {
 		t.Fatalf("unexpected login body: %s", body)
 	}
 
@@ -135,8 +135,8 @@ func TestBuildIdentityAppearsOnSignedInSignedOutAndErrorPages(t *testing.T) {
 					return
 				}
 				for _, expected := range []string{
-					`href="https://github.com/jaysqvl/buntzen-pass-bot/releases/tag/buntzen-pass-bot-v1.2.3"`,
-					`href="https://github.com/jaysqvl/buntzen-pass-bot/commit/` + revision + `"`,
+					`href="https://github.com/jaysqvl/lake-pass-bot/releases/tag/lake-pass-bot-v1.2.3"`,
+					`href="https://github.com/jaysqvl/lake-pass-bot/commit/` + revision + `"`,
 					`title="Build ` + revision + `"`, ">Build 1234567<",
 				} {
 					if !strings.Contains(body, expected) {

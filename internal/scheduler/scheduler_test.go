@@ -4,7 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestWindowUsesPreviousLocalCalendarDayAcrossDST(t *testing.T) {
@@ -61,13 +62,52 @@ func TestShouldQueueUsesBoundedWindow(t *testing.T) {
 	}
 }
 
+func TestWindowUsesSelectedDestinationAndRejectsUnknown(t *testing.T) {
+	request := validRequest()
+	request.LakeID = destinations.DefaultLakeID
+	lake, err := destinations.Resolve(request.LakeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := WindowFor(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _ := time.Parse(time.DateOnly, request.TargetDate)
+	if got, want := window.ReleaseAt.Format(time.DateOnly), target.AddDate(0, 0, -lake.ReleaseDaysBefore).Format(time.DateOnly); got != want {
+		t.Fatalf("release date = %s, want destination rule %s", got, want)
+	}
+	request.LakeID = "unknown"
+	if _, err := WindowFor(request); err == nil {
+		t.Fatal("unknown lake received a release window")
+	}
+}
+
 func validRequest() model.BookingRequest {
 	return model.BookingRequest{
-		Name: "test", ProfileID: 1, Enabled: true, TargetDate: "2030-01-15",
+		VehicleKeyword: "Example vehicle",
+		Name:           "test", ProfileID: 1, Enabled: true, TargetDate: "2030-01-15",
 		Timezone: "UTC", ReleaseTime: "07:00", PrepMinutesBefore: 30,
 		AuthDeadlineMinutesBefore: 5, PollDeadlineSeconds: 120, PollMinSeconds: 1,
 		PollMaxSeconds: 2, ConfirmationMode: model.RunModeManual,
 		LoginProbeURL: "https://example.invalid/login", AllDayPassURL: "https://example.invalid/all",
 		CheckAllDay: true,
+	}
+}
+
+func TestWindowUsesSnapshottedReleaseDaysIncludingSameDay(t *testing.T) {
+	for _, test := range []struct {
+		days int
+		want string
+	}{
+		{0, "2030-01-15T07:00:00Z"},
+		{3, "2030-01-12T07:00:00Z"},
+	} {
+		request := validRequest()
+		request.ReleaseDaysBefore = &test.days
+		window, err := WindowFor(request)
+		if err != nil || window.ReleaseAt.Format(time.RFC3339) != test.want {
+			t.Fatalf("days=%d release=%s want=%s err=%v", test.days, window.ReleaseAt, test.want, err)
+		}
 	}
 }

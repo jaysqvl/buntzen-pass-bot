@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 func TestYodelPhoneMigrationFailsClosedAndPreservesLinkedWork(t *testing.T) {
@@ -122,7 +122,7 @@ func TestYodelPhoneMigrationFailsClosedAndPreservesLinkedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	version, err := database.SchemaVersion(ctx)
-	if err != nil || version != 6 {
+	if err != nil || version != 10 {
 		t.Fatalf("schema version=%d err=%v", version, err)
 	}
 	var phoneColumns, legacyCredentialColumns int

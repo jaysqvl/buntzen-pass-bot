@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from buntzen_actions.config import ActionConfig
-from buntzen_actions.errors import ProtocolError
+from lake_pass_actions.config import ActionConfig
+from lake_pass_actions.errors import ProtocolError
 
 
 def start_frame() -> dict:
@@ -14,7 +14,7 @@ def start_frame() -> dict:
         "command": "book",
         "mode": "manual",
         "config": {
-            "profile_dir": "/tmp/buntzen-profile",
+            "profile_dir": "/tmp/lake-pass-profile",
             "target_date": "2030-01-15",
             "timezone": "UTC",
             "allowed_yodel_origins": ["https://yodelportal.com"],
@@ -49,17 +49,39 @@ class ConfigTests(unittest.TestCase):
         frame["command"] = "auth-check"
         for key in (
             "target_date", "timezone", "pass_order", "all_day_pass_url",
-            "half_day_pass_url", "release_at", "auth_deadline_at",
+            "half_day_pass_url", "release_at", "auth_deadline_at", "vehicle_keyword",
         ):
             del frame["config"][key]
         config = ActionConfig.from_start(frame)
         self.assertIsNone(config.target_date)
         self.assertEqual(config.timezone_name, "UTC")
         self.assertEqual(config.pass_order, ())
+        self.assertIsNone(config.lake_id)
+        self.assertEqual(config.provider_id, "yodel")
+        self.assertEqual(config.vehicle_keyword, "")
+
+    def test_legacy_auth_check_with_booking_fields_still_decodes(self) -> None:
+        frame = start_frame()
+        frame["command"] = "auth-check"
+        config = ActionConfig.from_start(frame)
+        self.assertEqual(config.pass_order, ("all_day", "afternoon", "morning"))
+        self.assertEqual(config.vehicle_keyword, "Example Vehicle")
+        frame["config"]["lake_id"] = "buntzen"
+        self.assertEqual(ActionConfig.from_start(frame).lake_id, "buntzen")
+
+    def test_auth_check_rejects_explicit_unsupported_provider_and_lake(self) -> None:
+        for field in ("lake_id", "provider_id"):
+            for value in (None, "", "unknown", False, [], {}):
+                with self.subTest(field=field, value=value):
+                    frame = start_frame()
+                    frame["command"] = "auth-check"
+                    frame["config"][field] = value
+                    with self.assertRaises(ProtocolError):
+                        ActionConfig.from_start(frame)
 
     def test_bookings_still_require_their_date_and_timezone(self) -> None:
         for command in ("book", "dry-run"):
-            for key in ("target_date", "timezone"):
+            for key in ("target_date", "timezone", "vehicle_keyword"):
                 with self.subTest(command=command, missing=key):
                     frame = start_frame()
                     frame["command"] = command

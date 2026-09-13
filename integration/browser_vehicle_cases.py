@@ -5,15 +5,15 @@ small test model of its select/Save behavior, not a live provider checkout.
 """
 from __future__ import annotations
 
-import os
 import time
 import unittest
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from buntzen_actions.errors import Cancelled
-from buntzen_actions.vehicle_selection import select_vehicle
+from lake_pass_actions.environment import operator_env
+from lake_pass_actions.errors import Cancelled
+from lake_pass_actions.providers.yodel.vehicle_selection import select_vehicle
 
 
 FIXTURE = Path(__file__).resolve().parents[1] / "actions/tests/fixtures/yodel_vehicle.html"
@@ -64,7 +64,7 @@ class VehicleBrowserTests(unittest.TestCase):
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
         launch = {"headless": True}
-        if executable := os.environ.get("BUNTZEN_E2E_BROWSER_EXECUTABLE"):
+        if executable := operator_env("E2E_BROWSER_EXECUTABLE"):
             launch["executable_path"] = executable
         cls.browser = cls.playwright.chromium.launch(**launch)
 

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/auth"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
 )
 
 var ErrPasswordUnchanged = errors.New("new password must differ from the current password")

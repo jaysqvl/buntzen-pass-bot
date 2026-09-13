@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func createImmediateWebBooking(t *testing.T, fixture webFixture, ownerID int64, name string, enabled bool) (model.Profile, model.BookingRequest) {
@@ -115,6 +115,56 @@ func TestBookNowFormsExplainAutoQueueingAndOwnedProfilePreselection(t *testing.T
 	response := serveForm(fixture, http.MethodPost, fmt.Sprintf("/bookings/%d/run", foreignBookings[0].ID), cookies, form)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("foreign booking POST=%d", response.Code)
+	}
+}
+
+func TestBookingPagesOfferActionsForCurrentRequestState(t *testing.T) {
+	fixture := newWebFixture(t)
+	_, booking := createImmediateWebBooking(t, fixture, fixture.admin.ID, "action-state", true)
+	ctx := context.Background()
+	resources := fixture.store.ForUser(fixture.admin.ID)
+	booking.TargetDate = time.Now().UTC().AddDate(0, 0, 2).Format(time.DateOnly)
+	booking, err := resources.UpdateBookingRequest(ctx, booking)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies := loginCookies(t, fixture)
+	page := serveForm(fixture, http.MethodGet, "/bookings", cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Queue for release") || strings.Contains(page.Body.String(), `name="timing" value="now"`) {
+		t.Fatalf("unreleased request offered the wrong booking action: %d %s", page.Code, page.Body.String())
+	}
+	job, err := resources.EnqueueJob(ctx, store.EnqueueJobParams{BookingRequestID: &booking.ID, Command: model.CommandAuthCheck})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = serveForm(fixture, http.MethodGet, "/bookings", cookies, nil)
+	if page.Code != http.StatusOK || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/bookings/%d/run"`, booking.ID)) || !strings.Contains(page.Body.String(), fmt.Sprintf(`href="/jobs/%d"`, job.ID)) {
+		t.Fatalf("pending sign-in job did not replace unavailable request actions: %d %s", page.Code, page.Body.String())
+	}
+	page = serveForm(fixture, http.MethodGet, fmt.Sprintf("/bookings/%d", booking.ID), cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "This request cannot be changed while its job is pending") || !strings.Contains(page.Body.String(), `type="submit" disabled`) || !strings.Contains(page.Body.String(), `value="`+booking.Name+`"`) {
+		t.Fatalf("pending request edit was not explained or lost saved values: %d %s", page.Code, page.Body.String())
+	}
+	if err := resources.RequestJobCancellation(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	booking.TargetDate = time.Now().UTC().AddDate(0, 0, -1).Format(time.DateOnly)
+	booking, err = resources.UpdateBookingRequest(ctx, booking)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = serveForm(fixture, http.MethodGet, "/bookings", cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Visit date passed") || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/bookings/%d/run"`, booking.ID)) {
+		t.Fatalf("past request still offered booking jobs: %d %s", page.Code, page.Body.String())
+	}
+	booking.TargetDate = time.Now().UTC().AddDate(0, 0, 2).Format(time.DateOnly)
+	booking.Enabled = false
+	if _, err := resources.UpdateBookingRequest(ctx, booking); err != nil {
+		t.Fatal(err)
+	}
+	page = serveForm(fixture, http.MethodGet, "/bookings", cookies, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Enable this request to queue a booking") || strings.Contains(page.Body.String(), fmt.Sprintf(`action="/bookings/%d/run"`, booking.ID)) {
+		t.Fatalf("disabled request still offered booking jobs: %d %s", page.Code, page.Body.String())
 	}
 }
 

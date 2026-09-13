@@ -8,7 +8,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
+	"github.com/jaysqvl/lake-pass-bot/internal/origin"
 )
 
 const clientIPContextKey contextKey = "validated-client-ip"

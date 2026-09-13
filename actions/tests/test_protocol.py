@@ -8,13 +8,13 @@ import threading
 import time
 import unittest
 
-from buntzen_actions.errors import Cancelled, ProtocolError
-from buntzen_actions.protocol import (
+from lake_pass_actions.errors import Cancelled, ProtocolError
+from lake_pass_actions.protocol import (
     JsonLineStream,
     MAX_FRAME_BYTES,
     validate_start_has_no_secrets,
 )
-from buntzen_actions.protocol import ControlInbox
+from lake_pass_actions.protocol import ControlInbox
 
 
 class ProtocolTests(unittest.TestCase):

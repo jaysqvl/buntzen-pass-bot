@@ -4,10 +4,11 @@ A passing local test or a healthy container does not prove that Yodel issued a
 parking pass. A successful live test needs a completed job and the corresponding
 Yodel confirmation or wallet pass matching the intended date, pass and vehicle.
 
-1. On Home, configure an OTP source and a Yodel profile. The profile owns its
-   login URL and mobile number. Pair BlueBubbles with that profile if used.
+1. Open **Lakes → Buntzen Lake** and configure its connection. Configure the
+   shared inbox on **OTP sources**, then return to the lake to add a Yodel account.
+   Pair BlueBubbles with that account if used.
 2. Create a booking request for that profile, select the date and pass preference
-   order, then run **Auth check** and **Dry run**. A dry run checks login, the
+   order, then run **Sign-in check** and **Booking rehearsal**. A dry run checks login, the
    vehicle and pass pages; it stops before adding a pass to the cart.
 3. For passes already released, choose **Book now · manual approval**. This
    always requires your approval immediately before final confirmation, even

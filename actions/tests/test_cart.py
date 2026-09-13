@@ -5,10 +5,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from buntzen_actions.cart import (
+from lake_pass_actions.providers.yodel.cart import (
     is_empty_cart, is_single_pass_cart, require_empty_cart, require_single_pass_cart,
 )
-from buntzen_actions.errors import ActionError
+from lake_pass_actions.errors import ActionError
 
 
 def single_pass():
@@ -70,7 +70,7 @@ class CartTests(unittest.TestCase):
         page = Mock()
         page.evaluate.return_value = snapshot
         control = SimpleNamespace(inbox=SimpleNamespace(check_cancelled=Mock()))
-        with patch("buntzen_actions.cart.time.monotonic", side_effect=[0, 0, 6]):
+        with patch("lake_pass_actions.providers.yodel.cart.time.monotonic", side_effect=[0, 0, 6]):
             with self.assertRaisesRegex(ActionError, "exactly one pass"):
                 require_single_pass_cart(page, control)
 
@@ -85,7 +85,7 @@ class CartTests(unittest.TestCase):
         page = Mock()
         page.evaluate.return_value = single_pass()
         control = SimpleNamespace(inbox=SimpleNamespace(check_cancelled=Mock()))
-        with patch("buntzen_actions.cart.time.monotonic", side_effect=[0, 0, 6]):
+        with patch("lake_pass_actions.providers.yodel.cart.time.monotonic", side_effect=[0, 0, 6]):
             with self.assertRaisesRegex(ActionError, "inspect and clear the cart"):
                 require_empty_cart(page, control)
 

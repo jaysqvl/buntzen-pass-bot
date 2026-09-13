@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/egress"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/origin"
+	"github.com/jaysqvl/lake-pass-bot/internal/egress"
+	"github.com/jaysqvl/lake-pass-bot/internal/origin"
 )
 
 const (
@@ -48,7 +48,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	appData := strings.TrimSpace(os.Getenv("APPDATA_DIR"))
+	appData := strings.TrimSpace(Env("APPDATA_DIR"))
 	if appData == "" {
 		appData = "./appdata"
 	}
@@ -57,7 +57,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("resolve APPDATA_DIR: %w", err)
 	}
 
-	listen := strings.TrimSpace(os.Getenv("BUNTZEN_LISTEN"))
+	listen := strings.TrimSpace(Env("LAKE_PASS_LISTEN"))
 	if listen == "" {
 		listen = defaultListenAddress
 	}
@@ -69,43 +69,46 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	debug, err := boolValue("BUNTZEN_DEBUG", false)
+	debug, err := boolValue("LAKE_PASS_DEBUG", false)
 	if err != nil {
 		return Config{}, err
 	}
-	logLevel, err := logLevelValue(os.Getenv("BUNTZEN_LOG_LEVEL"), debug)
+	logLevel, err := logLevelValue(Env("LAKE_PASS_LOG_LEVEL"), debug)
 	if err != nil {
 		return Config{}, err
 	}
-	python := strings.TrimSpace(os.Getenv("BUNTZEN_PYTHON"))
+	python := strings.TrimSpace(Env("LAKE_PASS_PYTHON"))
 	if python == "" {
 		python = "python3"
 	}
-	module := strings.TrimSpace(os.Getenv("BUNTZEN_ACTIONS_MODULE"))
+	module := strings.TrimSpace(Env("LAKE_PASS_ACTIONS_MODULE"))
 	if module == "" {
-		module = "buntzen_actions"
+		module = "lake_pass_actions"
 	}
-	browserExecutable := strings.TrimSpace(os.Getenv("BUNTZEN_BROWSER_EXECUTABLE"))
+	if module == "buntzen_actions" {
+		module = "lake_pass_actions"
+	}
+	browserExecutable := strings.TrimSpace(Env("LAKE_PASS_BROWSER_EXECUTABLE"))
 	if browserExecutable != "" && (!filepath.IsAbs(browserExecutable) || len(browserExecutable) > 2048 || strings.ContainsRune(browserExecutable, '\x00')) {
-		return Config{}, errors.New("BUNTZEN_BROWSER_EXECUTABLE must be an absolute path of at most 2048 bytes")
+		return Config{}, errors.New("LAKE_PASS_BROWSER_EXECUTABLE must be an absolute path of at most 2048 bytes")
 	}
-	blueBubblesURL := strings.TrimSpace(os.Getenv("BLUEBUBBLES_URL"))
+	blueBubblesURL := strings.TrimSpace(Env("BLUEBUBBLES_URL"))
 	if blueBubblesURL == "" {
 		blueBubblesURL = "http://127.0.0.1:1234"
 	}
-	blueBubblesPolicy, err := providerPolicy(os.Getenv("BUNTZEN_BLUEBUBBLES_ENDPOINTS"))
+	blueBubblesPolicy, err := providerPolicy(Env("LAKE_PASS_BLUEBUBBLES_ENDPOINTS"))
 	if err != nil {
-		return Config{}, fmt.Errorf("BUNTZEN_BLUEBUBBLES_ENDPOINTS: %w", err)
+		return Config{}, fmt.Errorf("LAKE_PASS_BLUEBUBBLES_ENDPOINTS: %w", err)
 	}
-	allowedOrigins, err := originList("BUNTZEN_ALLOWED_ORIGINS")
-	if err != nil {
-		return Config{}, err
-	}
-	yodelOrigins, err := yodelOriginList("BUNTZEN_YODEL_ORIGINS")
+	allowedOrigins, err := originList("LAKE_PASS_ALLOWED_ORIGINS")
 	if err != nil {
 		return Config{}, err
 	}
-	allowedHosts, err := hostList("BUNTZEN_ALLOWED_HOSTS")
+	yodelOrigins, err := yodelOriginList("LAKE_PASS_YODEL_ORIGINS")
+	if err != nil {
+		return Config{}, err
+	}
+	allowedHosts, err := hostList("LAKE_PASS_ALLOWED_HOSTS")
 	if err != nil {
 		return Config{}, err
 	}
@@ -124,17 +127,21 @@ func Load() (Config, error) {
 			seenHosts[host] = struct{}{}
 		}
 	}
-	keyPath := strings.TrimSpace(os.Getenv("BUNTZEN_MASTER_KEY_FILE"))
+	keyPath := strings.TrimSpace(Env("LAKE_PASS_MASTER_KEY_FILE"))
 	keyExplicit := keyPath != ""
 	if keyExplicit && (!filepath.IsAbs(keyPath) || len(keyPath) > 2048 || strings.ContainsRune(keyPath, '\x00')) {
-		return Config{}, errors.New("BUNTZEN_MASTER_KEY_FILE must be an absolute path of at most 2048 bytes")
+		return Config{}, errors.New("LAKE_PASS_MASTER_KEY_FILE must be an absolute path of at most 2048 bytes")
 	}
 	if !keyExplicit {
 		keyPath = filepath.Join(abs, "master.key")
 	}
+	database, err := databasePath(abs)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		AppDataDir:        abs,
-		DatabasePath:      filepath.Join(abs, "buntzen.db"),
+		DatabasePath:      database,
 		EncryptionKeyPath: keyPath,
 		MasterKeyExplicit: keyExplicit,
 		ProfilesDir:       filepath.Join(abs, "profiles"),
@@ -150,7 +157,7 @@ func Load() (Config, error) {
 		YodelOrigins:      yodelOrigins,
 		AllowedOrigins:    allowedOrigins,
 		AllowedHosts:      allowedHosts,
-		SetupToken:        strings.TrimSpace(os.Getenv("BUNTZEN_SETUP_TOKEN")),
+		SetupToken:        strings.TrimSpace(Env("LAKE_PASS_SETUP_TOKEN")),
 		LogLevel:          logLevel,
 	}
 	if err := cfg.loadHTTPBoundary(); err != nil {
@@ -204,7 +211,7 @@ func logLevelValue(raw string, debug bool) (string, error) {
 	case "debug", "info", "warn", "error":
 		return level, nil
 	default:
-		return "", errors.New("BUNTZEN_LOG_LEVEL must be debug, info, warn, or error")
+		return "", errors.New("LAKE_PASS_LOG_LEVEL must be debug, info, warn, or error")
 	}
 }
 
@@ -212,7 +219,7 @@ func logLevelValue(raw string, debug bool) (string, error) {
 // credentials. The operator may override the production default for a trusted
 // test deployment, but booking records cannot expand this boundary.
 func yodelOriginList(name string) ([]string, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
+	raw := strings.TrimSpace(Env(name))
 	if raw == "" {
 		return []string{DefaultYodelOrigin}, nil
 	}
@@ -229,7 +236,7 @@ func yodelOriginList(name string) ([]string, error) {
 }
 
 func hostList(name string) ([]string, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
+	raw := strings.TrimSpace(Env(name))
 	if raw == "" {
 		return nil, nil
 	}
@@ -255,9 +262,9 @@ func hostList(name string) ([]string, error) {
 }
 
 // originList parses an optional comma-separated list of exact browser origins
-// trusted when a reverse proxy changes the Host header seen by Buntzen.
+// trusted when a reverse proxy changes the Host header seen by Lake Pass Bot.
 func originList(name string) ([]string, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
+	raw := strings.TrimSpace(Env(name))
 	if raw == "" {
 		return nil, nil
 	}
@@ -299,7 +306,7 @@ func (c Config) EnsureDirectories() error {
 }
 
 func boundedInt(name string, fallback, min, max int) (int, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
+	raw := strings.TrimSpace(Env(name))
 	if raw == "" {
 		return fallback, nil
 	}
@@ -311,7 +318,7 @@ func boundedInt(name string, fallback, min, max int) (int, error) {
 }
 
 func boolValue(name string, fallback bool) (bool, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
+	raw := strings.TrimSpace(Env(name))
 	if raw == "" {
 		return fallback, nil
 	}

@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"os"
 
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
 )
 
 var ErrKeyMismatch = errors.New("database contains encrypted data that cannot be authenticated; restore its matching key and intact data")

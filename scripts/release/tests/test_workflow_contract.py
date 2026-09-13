@@ -18,7 +18,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("value: ${{ jobs.publish.outputs.image_digest }}", image)
         self.assertIn("image_digest: ${{ steps.build.outputs.digest }}", image)
         self.assertIn("uses: ./.github/workflows/release-image.yml", release)
-        self.assertIn("startsWith(needs.release-please.outputs.tag_name, 'buntzen-pass-bot-v')", release)
+        self.assertIn("startsWith(needs.release-please.outputs.tag_name, 'lake-pass-bot-v')", release)
 
     def test_latest_waits_for_all_publication_gates(self) -> None:
         image = (ROOT / ".github/workflows/release-image.yml").read_text()
@@ -45,9 +45,9 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_compose_retains_container_identity_logs_and_schedule_default(self) -> None:
         portainer = (ROOT / "deploy/portainer.yml").read_text()
-        self.assertEqual(portainer.count("    container_name: buntzen-pass-bot\n"), 1)
-        self.assertIn('      BUNTZEN_LOG_LEVEL: "${BUNTZEN_LOG_LEVEL:-info}"', portainer)
-        self.assertIn('      BUNTZEN_DEBUG: "${BUNTZEN_DEBUG:-false}"', portainer)
+        self.assertEqual(portainer.count("    container_name: lake-pass-bot\n"), 1)
+        self.assertIn('      LAKE_PASS_LOG_LEVEL: "${LAKE_PASS_LOG_LEVEL-${BUNTZEN_LOG_LEVEL:-info}}"', portainer)
+        self.assertIn('      LAKE_PASS_DEBUG: "${LAKE_PASS_DEBUG-${BUNTZEN_DEBUG:-false}}"', portainer)
         self.assertIn('      SCHEDULES_ENABLED: "false"', portainer)
         for path in ("deploy/portainer.yml", "docker-compose.yml"):
             compose = (ROOT / path).read_text()

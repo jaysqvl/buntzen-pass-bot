@@ -4,7 +4,7 @@ The browser tests are guarded by the `integration` build tag because they start
 the real Python worker and real headless Chromium processes. Together they cross:
 
 1. the Go coordinator and bounded JSON-lines subprocess protocol;
-2. the pinned `buntzen_actions` Python package and persistent Playwright context;
+2. the pinned `lake_pass_actions` Python package and persistent Playwright context;
 3. an ephemeral HTTPS fake Yodel login and OTP form; and
 4. the real query-only BlueBubbles adapter backed by a bounded fake API.
 
@@ -52,5 +52,5 @@ go test -race -tags=integration ./integration -count=1 -timeout=5m
 ```
 
 The tests use `actions/.venv/bin/python` when available and otherwise invoke
-`uv`. Set `BUNTZEN_E2E_PYTHON` or `BUNTZEN_E2E_BROWSER_EXECUTABLE` to explicit
+`uv`. Set `LAKE_PASS_E2E_PYTHON` or `LAKE_PASS_E2E_BROWSER_EXECUTABLE` to explicit
 absolute executables when a runner uses a non-standard layout.

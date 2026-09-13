@@ -7,29 +7,41 @@
   <meta name="referrer" content="same-origin">
   <meta name="htmx-config" content='{"historyCacheSize":0,"includeIndicatorStyles":false}'>
   <link rel="icon" type="image/svg+xml" href="{{assetURL "favicon.svg"}}">
-  <title>{{if .Title}}{{.Title}} · {{end}}Buntzen Bot</title>
+  <title>{{if .Title}}{{.Title}} · {{end}}Lake Pass Bot</title>
   <link rel="stylesheet" href="{{assetURL "app.css"}}">
   <script defer src="{{assetURL "htmx.min.js"}}"></script>
   <script defer src="{{assetURL "app.js"}}"></script>
 </head>
-<body>
+<body{{if .Authenticated}} class="app-layout"{{end}}>
+  <a class="button skip-link" href="#main-content">Skip to content</a>
   {{if .Authenticated}}
   <header class="topbar">
-    <a class="brand" href="/">Buntzen <span>Bot</span></a>
-    <nav>
-      <a href="/">Setup</a>
-      <a href="/bookings">Bookings</a>
-      <a href="/jobs">Jobs</a>
-	  {{if .IsAdmin}}<a href="/admin/users">Users</a>{{end}}
+    <a class="brand" href="/">Lake Pass <span>Bot</span></a>
+    <button id="nav-toggle" class="nav-toggle ghost" type="button" aria-expanded="false" aria-controls="app-navigation" hidden>Menu</button>
+    <div class="navigation-content" id="app-navigation">
+    <nav aria-label="Main navigation">
+      <div class="nav-group"><p class="nav-label">Workspace</p>
+      <a href="/"{{if navCurrent .CurrentPath "/"}} aria-current="page"{{end}}>Home</a>
+      <a href="/bookings"{{if navCurrent .CurrentPath "/bookings"}} aria-current="page"{{end}}>Bookings</a>
+      <a href="/jobs"{{if navCurrent .CurrentPath "/jobs"}} aria-current="page"{{end}}>Jobs</a>
+      </div>
+      <div class="nav-group"><p class="nav-label">Configuration</p>
+      <a href="/lakes"{{if navCurrent .CurrentPath "/lakes"}} aria-current="page"{{end}}>Lakes</a>
+      <a href="/sources"{{if navCurrent .CurrentPath "/sources"}} aria-current="page"{{end}}>OTP sources</a>
+      <a href="/settings"{{if navCurrent .CurrentPath "/settings"}} aria-current="page"{{end}}>Settings</a>
+      </div>
     </nav>
-	<a class="account-link" href="/account" aria-label="Account settings for {{.Username}}">{{.Username}}</a>
+    <div class="nav-account">
+	<a class="account-link" href="/account" aria-label="Account settings for {{.Username}}"><span class="nav-label">Signed in as</span><strong>{{.Username}}</strong></a>
     <form action="/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <button class="ghost" type="submit">Sign out</button>
     </form>
+    </div>
+    </div>
   </header>
   {{end}}
-  <main class="shell">
+  <main id="main-content" class="shell" tabindex="-1">
     <section id="notifications" class="notifications" aria-label="Notifications">
       {{if .Flash}}
       <div class="flash notification {{.Flash.Kind}}" data-notification role="{{if eq .Flash.Kind "error"}}alert{{else}}status{{end}}" aria-atomic="true">
@@ -45,7 +57,7 @@
   </main>
   {{with appBuild}}
   <footer id="build-info" class="app-footer" aria-label="Application version" data-version="{{.Version}}" data-revision="{{.Revision}}">
-    <span>Buntzen Bot</span>
+    <span>Lake Pass Bot</span>
     <div class="build-details">
       {{if .ReleaseURL}}<a class="release-version" href="{{.ReleaseURL}}" target="_blank" rel="noopener noreferrer" aria-label="Release notes for {{.Label}}">{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}
       {{if .CommitURL}}<a class="build-revision" href="{{.CommitURL}}" target="_blank" rel="noopener noreferrer" title="Build {{.Revision}}">Build {{.ShortRevision}}</a>{{end}}

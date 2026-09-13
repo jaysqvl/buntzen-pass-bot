@@ -16,9 +16,13 @@ class Element {
     this._text = '';
     this.hidden = true;
     this.disabled = false;
+    this.focusCount = 0;
+    this.textUpdates = 0;
   }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
-  set textContent(value) { this.replaceChildren(); this._text = value; }
+  get selectedOptions() { return this.children.filter(child => child.tagName === 'OPTION' && child.value === this.value); }
+  set textContent(value) { this.replaceChildren(); this._text = value; this.textUpdates++; }
+  focus() { this.focusCount++; }
   setAttribute(name, value) { this.attributes[name] = value; }
   getAttribute(name) { return this.attributes[name]; }
   addEventListener(name, handler) { this.listeners[name] = handler; }
@@ -45,13 +49,21 @@ class Element {
   closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector); }
 }
 
-function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, flash} = {}) {
+function openPage({fetchResult = async () => new Response(null, {status: 204}), liveJob = true, supportsEvents = true, terminal = false, flash, booking, sourceForm, formError} = {}) {
   const ids = ['live-job', 'otp-code', 'otp-panel', 'pairing-candidates', 'pairing-panel',
     'job-message', 'job-pill', 'approval-panel', 'job-events', 'job-status', 'job-started',
-    'job-finished', 'job-confirmation', 'cancel-job', 'notifications'];
+    'job-finished', 'job-confirmation', 'job-connection', 'job-attention', 'cancel-job', 'notifications'];
   const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
+  if (booking) {
+    nodes['booking-form'] = booking.form;
+    nodes['lake-release-policy'] = booking.policy;
+    nodes['use-lake-defaults'] = booking.applyButton;
+    nodes['lake-settings-link'] = booking.settingsLink;
+  }
+  if (sourceForm) nodes['source-form'] = sourceForm;
+  if (formError) nodes['form-error'] = formError;
   if (flash) nodes.notifications.append(flash);
-  nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf', lastEventId: '7'};
+  nodes['live-job'].dataset = {jobId: '42', csrf: 'synthetic-csrf', lastEventId: '7', terminal: String(terminal)};
   nodes['job-status'].textContent = 'queued';
   nodes['cancel-job'].hidden = false;
   nodes['cancel-job'].dataset.decision = 'cancel-job';
@@ -87,6 +99,201 @@ function openPage({fetchResult = async () => new Response(null, {status: 204}), 
 
 function openJob(fetchResult) { return openPage({fetchResult}); }
 
+test('a returned form error receives focus without needing a live job or EventSource', () => {
+  const formError = new Element();
+  formError.textContent = 'Choose a valid retry interval.';
+  const page = openPage({liveJob: false, supportsEvents: false, formError});
+  assert.equal(formError.focusCount, 1);
+  assert.equal(page.nodes['otp-code'].focusCount, 0);
+  assert.equal(page.connections, 0);
+  assert.equal(page.requests.length, 0);
+});
+
+test('source provider selection excludes inactive fields and preserves values when switching back', () => {
+  const form = new Element('form');
+  const selector = new Element('select');
+  selector.value = 'twilio';
+  form.elements = {namedItem: name => name === 'provider' ? selector : null};
+  const bluebubbles = new Element('fieldset');
+  bluebubbles.dataset.sourceProvider = 'bluebubbles';
+  const serverURL = new Element('input');
+  serverURL.value = 'unfinished URL';
+  bluebubbles.append(serverURL);
+  const twilio = new Element('fieldset');
+  twilio.dataset.sourceProvider = 'twilio';
+  const token = new Element('input');
+  token.value = 'synthetic-unsaved-token';
+  twilio.append(token);
+  form.append(selector, bluebubbles, twilio);
+  const page = openPage({liveJob: false, supportsEvents: false, sourceForm: form});
+  assert.equal(bluebubbles.hidden, true);
+  assert.equal(bluebubbles.disabled, true, 'inactive fieldset must not block validation or submit values');
+  assert.equal(twilio.hidden, false);
+  assert.equal(twilio.disabled, false);
+  selector.value = 'bluebubbles';
+  selector.listeners.change();
+  assert.equal(bluebubbles.hidden, false);
+  assert.equal(bluebubbles.disabled, false);
+  assert.equal(serverURL.value, 'unfinished URL');
+  assert.equal(twilio.hidden, true);
+  assert.equal(twilio.disabled, true);
+  selector.value = 'twilio';
+  selector.listeners.change();
+  assert.equal(twilio.hidden, false);
+  assert.equal(twilio.disabled, false);
+  assert.equal(token.value, 'synthetic-unsaved-token');
+  assert.equal(bluebubbles.hidden, true);
+  assert.equal(bluebubbles.disabled, true);
+  assert.equal(page.requests.length, 0);
+  assert.equal(page.connections, 0);
+});
+
+function bookingFixture() {
+  const values = {
+    lake_id: 'buntzen', timezone: 'UTC', release_time: '11:00', release_days_before: '4',
+    all_day_pass_url: 'https://example.test/custom-all', half_day_pass_url: 'https://example.test/custom-half',
+    vehicle_keyword: 'Saved request vehicle',
+    pass_priority_1: 'morning', pass_priority_2: '', pass_priority_3: 'all_day',
+    name: 'Weekend plans', target_date: '2030-07-20', profile_id: '24', confirmation_mode: 'manual',
+    prep_minutes_before: '40', auth_deadline_minutes_before: '8', poll_deadline_seconds: '150',
+    poll_min_seconds: '2.5', poll_max_seconds: '4.2', csrf_token: 'synthetic-csrf',
+    enabled: '1', schedule_enabled: '1',
+  };
+  const fields = Object.fromEntries(Object.entries(values).map(([name, value]) => {
+    const field = new Element(name === 'lake_id' || name === 'profile_id' || name.startsWith('pass_priority_') ? 'select' : 'input');
+    field.value = value;
+    return [name, field];
+  }));
+  const definitions = [
+    {id: 'buntzen', timezone: 'America/Vancouver', releaseTime: '07:00', releaseDaysBefore: 1,
+      allDayPassURL: 'https://example.test/buntzen-lake/All-Day-Pass', halfDayPassURL: 'https://example.test/buntzen-lake/Half-Day-Pass',
+      releasePolicy: 'Buntzen Lake releases 1 day before the visit.',
+      preferredPasses: ['morning', 'all_day'],
+      vehicleKeyword: 'Buntzen vehicle',
+      profiles: [{value: '24', label: 'My Buntzen vehicle'}, {value: '25', label: 'Another Buntzen vehicle'}], settingsURL: '/lakes/buntzen',
+      passes: [{value: 'all_day', label: 'All-day'}, {value: 'afternoon', label: 'Afternoon'}, {value: 'morning', label: 'Morning'}]},
+    {id: 'test-lake', timezone: 'Etc/UTC', releaseTime: '09:30', releaseDaysBefore: 3,
+      allDayPassURL: 'https://example.test/test-lake/day', halfDayPassURL: '',
+      releasePolicy: 'Test Lake releases 3 days before the visit.',
+      preferredPasses: ['all_day'],
+      vehicleKeyword: 'Other lake vehicle',
+      profiles: [{value: '42', label: 'Other lake account <test>'}], settingsURL: '/lakes/test-lake',
+      passes: [{value: 'all_day', label: 'Day entry <test>'}]},
+  ];
+  for (const defaults of definitions) {
+    const option = new Element('option');
+    option.value = defaults.id;
+    option.dataset.lakeDefaults = JSON.stringify(defaults);
+    fields.lake_id.append(option);
+  }
+  const form = new Element('form');
+  form.elements = {namedItem: name => fields[name] || null};
+  const policy = new Element('p');
+  policy.textContent = 'Existing booking release policy';
+  const applyButton = new Element('button');
+  const settingsLink = new Element('a');
+  settingsLink.setAttribute('href', '/lakes/buntzen');
+  return {form, policy, fields, definitions, applyButton, settingsLink};
+}
+
+test('changing lakes replaces destination defaults and pass options while preserving trip choices', () => {
+  const booking = bookingFixture();
+  const page = openPage({liveJob: false, supportsEvents: false, booking});
+  const fields = booking.fields;
+  const preserved = ['name', 'target_date', 'confirmation_mode', 'csrf_token', 'enabled', 'schedule_enabled',
+    'prep_minutes_before', 'auth_deadline_minutes_before', 'poll_deadline_seconds', 'poll_min_seconds', 'poll_max_seconds'];
+  const original = Object.fromEntries(preserved.map(name => [name, fields[name].value]));
+  fields.lake_id.value = 'test-lake';
+  fields.lake_id.listeners.change();
+  assert.equal(fields.timezone.value, 'Etc/UTC');
+  assert.equal(fields.release_time.value, '09:30');
+  assert.equal(fields.release_days_before.value, '3');
+  assert.equal(fields.vehicle_keyword.value, 'Other lake vehicle');
+  assert.equal(fields.all_day_pass_url.value, 'https://example.test/test-lake/day');
+  assert.equal(fields.half_day_pass_url.value, '', 'an absent URL must clear the previous lake URL');
+  assert.equal(booking.policy.textContent, booking.definitions[1].releasePolicy);
+  assert.equal(booking.settingsLink.getAttribute('href'), '/lakes/test-lake');
+  assert.equal(fields.profile_id.value, '', 'a profile from another lake must not remain selected');
+  assert.deepEqual(fields.profile_id.children.map(option => option.value), ['', '42']);
+  assert.equal(fields.profile_id.children[1].textContent, 'Other lake account <test>');
+  assert.equal(fields.profile_id.children[1].children.length, 0, 'profile names must remain text');
+  assert.equal(fields.pass_priority_1.value, 'all_day');
+  assert.equal(fields.pass_priority_2.value, '');
+  assert.equal(fields.pass_priority_3.value, '');
+  for (const name of ['pass_priority_1', 'pass_priority_2', 'pass_priority_3']) {
+    assert.deepEqual(fields[name].children.map(option => option.value), ['all_day', '']);
+    assert.equal(fields[name].children[0].textContent, 'Day entry <test>');
+    assert.equal(fields[name].children[0].children.length, 0, 'pass labels must remain text');
+  }
+  assert.deepEqual(Object.fromEntries(preserved.map(name => [name, fields[name].value])), original);
+  fields.lake_id.value = 'buntzen';
+  fields.lake_id.listeners.change();
+  assert.equal(fields.timezone.value, 'America/Vancouver');
+  assert.equal(fields.release_time.value, '07:00');
+  assert.equal(fields.half_day_pass_url.value, booking.definitions[0].halfDayPassURL);
+  assert.deepEqual(['pass_priority_1', 'pass_priority_2', 'pass_priority_3'].map(name => fields[name].value), ['morning', 'all_day', '']);
+  assert.equal(fields.profile_id.value, '', 'switching back must not silently select a profile');
+  assert.deepEqual(fields.profile_id.children.map(option => option.value), ['', '24', '25']);
+  assert.equal(page.requests.length, 0);
+  assert.equal(page.connections, 0);
+});
+
+test('opening an existing booking and reselecting its lake preserves custom settings', () => {
+  const booking = bookingFixture();
+  const original = Object.fromEntries(Object.entries(booking.fields).map(([name, field]) => [name, field.value]));
+  const page = openPage({liveJob: false, booking});
+  booking.fields.lake_id.listeners.change();
+  assert.deepEqual(Object.fromEntries(Object.entries(booking.fields).map(([name, field]) => [name, field.value])), original);
+  assert.equal(booking.policy.textContent, 'Existing booking release policy');
+  assert.equal(page.requests.length, 0);
+});
+
+test('explicitly applying lake defaults retains request timing, a compatible profile, and trip choices', () => {
+  const booking = bookingFixture();
+  const page = openPage({liveJob: false, booking});
+  assert.equal(booking.applyButton.hidden, false);
+  const fields = booking.fields;
+  const preserved = ['lake_id', 'name', 'target_date', 'profile_id', 'confirmation_mode', 'csrf_token', 'enabled', 'schedule_enabled',
+    'prep_minutes_before', 'auth_deadline_minutes_before', 'poll_deadline_seconds', 'poll_min_seconds', 'poll_max_seconds'];
+  const original = Object.fromEntries(preserved.map(name => [name, fields[name].value]));
+  booking.applyButton.listeners.click();
+  assert.deepEqual(Object.fromEntries(preserved.map(name => [name, fields[name].value])), original);
+  assert.equal(fields.timezone.value, 'America/Vancouver');
+  assert.equal(fields.release_days_before.value, '1');
+  assert.equal(fields.vehicle_keyword.value, 'Buntzen vehicle');
+  assert.deepEqual(['pass_priority_1', 'pass_priority_2', 'pass_priority_3'].map(name => fields[name].value), ['morning', 'all_day', '']);
+  assert.deepEqual(fields.pass_priority_1.children.map(option => option.value), ['all_day', 'afternoon', 'morning', ''], 'unpreferred supported passes must still be available');
+  assert.match(notificationMessages(page)[0], /Save this request/);
+  assert.equal(page.requests.length, 0, 'applying defaults must not save or create a job');
+});
+
+test('a global Yodel sign-in remains selected when both lakes support it', () => {
+  const booking = bookingFixture();
+  booking.definitions[1].profiles.push({value: '24', label: 'Shared Yodel sign-in'});
+  booking.fields.lake_id.children[1].dataset.lakeDefaults = JSON.stringify(booking.definitions[1]);
+  openPage({liveJob: false, booking});
+  booking.fields.lake_id.value = 'test-lake';
+  booking.fields.lake_id.listeners.change();
+  assert.equal(booking.fields.profile_id.value, '24');
+  assert.equal(booking.fields.vehicle_keyword.value, 'Other lake vehicle');
+});
+
+test('release policy follows explicit days edits without replacing other booking values', () => {
+  const booking = bookingFixture();
+  openPage({liveJob: false, booking});
+  const days = booking.fields.release_days_before;
+  days.value = '0';
+  days.listeners.input();
+  assert.equal(booking.policy.textContent, 'Passes release 0 days before your visit at the configured local time.');
+  days.value = '1';
+  days.listeners.input();
+  assert.equal(booking.policy.textContent, 'Passes release 1 day before your visit at the configured local time.');
+  days.value = '';
+  days.listeners.input();
+  assert.equal(booking.policy.textContent, 'Passes release 1 day before your visit at the configured local time.');
+  assert.equal(booking.fields.prep_minutes_before.value, '40');
+});
+
 function notificationMessages(page) {
   return page.nodes.notifications.querySelectorAll('.notification-message').map(message => message.textContent);
 }
@@ -106,6 +313,74 @@ function assertSensitiveStateCleared(job) {
   assert.equal(job.nodes['pairing-panel'].hidden, true);
   assert.equal(job.nodes['pairing-candidates'].children.length, 0);
 }
+
+test('stream loss marks retained progress stale, reconnects, and still receives final events', () => {
+  const job = openJob();
+  const connection = job.nodes['job-connection'];
+  assert.equal(connection.dataset.connection, 'connecting');
+  job.emit('open', {});
+  assert.equal(connection.dataset.connection, 'connected');
+  assert.match(connection.textContent, /refreshing progress/);
+  const running = {status: 'running', label: 'Running', message: 'Checking passes', terminal: false, can_cancel: true};
+  job.emit('state', running);
+  assert.equal(connection.textContent, 'Connected · live updates.');
+  showSensitiveState(job);
+  job.emit('error', {});
+  assertSensitiveStateCleared(job);
+  assert.equal(connection.dataset.connection, 'reconnecting');
+  assert.match(connection.textContent, /progress may be out of date/);
+  assert.equal(job.nodes['job-message'].textContent, 'Checking passes', 'retain the last known progress with an explicit stale warning');
+  assert.equal(job.closed, false, 'EventSource should reconnect without replaying any decision');
+  assert.equal(job.requests.length, 0);
+  job.emit('open', {});
+  assert.match(connection.textContent, /refreshing progress/);
+  job.emit('state', {...running, message: 'Found a pass'});
+  assert.equal(connection.textContent, 'Connected · live updates.');
+  assert.equal(job.nodes['job-message'].textContent, 'Found a pass');
+  job.emit('state', {...running, status: 'succeeded', terminal: true, can_cancel: false});
+  assert.equal(connection.dataset.connection, 'completed');
+  assert.equal(job.closed, false);
+  job.emit('error', {});
+  assert.match(connection.textContent, /job has finished; waiting for final events/);
+  job.emit('job_event', {id: 8, time: '12:00:00', type: 'job.succeeded', message: 'Booking confirmed'});
+  assert.equal(job.nodes['job-events'].children.length, 1);
+  job.emit('complete', {});
+  assert.equal(connection.dataset.connection, 'completed');
+  assert.equal(connection.textContent, 'Completed · live updates ended.');
+  assert.equal(job.closed, true);
+  job.emit('error', {});
+  assert.equal(connection.dataset.connection, 'completed', 'a closed stream must not look like a new connection failure');
+});
+
+test('approval and pairing attention is announced without codes, sender details, repeated messages, or focus changes', () => {
+  const job = openJob();
+  const attention = job.nodes['job-attention'];
+  const approval = {terminal: false, awaiting_approval: true, message: 'Provider content stays in Progress'};
+  job.emit('state', approval);
+  assert.match(attention.textContent, /Approval needed/);
+  const updates = attention.textUpdates;
+  job.emit('state', approval);
+  assert.equal(attention.textUpdates, updates, 'polling the same state should not repeat its announcement');
+  showSensitiveState(job);
+  assert.match(attention.textContent, /Pairing needs your attention/);
+  assert.doesNotMatch(attention.textContent, /123456|654321|1234|SMS/);
+  assert.equal(job.nodes['otp-code'].focusCount, 0);
+  assert.equal(job.nodes['pairing-candidates'].children[0].focusCount, 0);
+  job.emit('pairing', {active: false});
+  assert.match(attention.textContent, /Approval needed/);
+  job.emit('state', {terminal: true, awaiting_approval: false});
+  assert.equal(attention.textContent, '');
+});
+
+test('terminal server-rendered jobs reject transient codes and actions before the first stream snapshot', async () => {
+  const job = openPage({terminal: true});
+  assert.equal(job.nodes['job-connection'].dataset.connection, 'completed');
+  job.emit('otp', {active: true, code: '123456'});
+  job.emit('pairing', {active: true, candidates: [{id: 'late', code: '654321'}]});
+  assertSensitiveStateCleared(job);
+  await job.click(job.nodes['cancel-job']);
+  assert.equal(job.requests.length, 0);
+});
 
 for (const signal of ['error', 'terminal', 'auth_expired', 'pagehide']) {
   test(`${signal} removes already displayed OTPs and pairing candidates`, () => {
@@ -172,6 +447,24 @@ test('live completion updates all details and controls before waiting for the fi
   assert.equal(job.nodes['job-events'].children[0].children[1].children[1].textContent, 'Booking confirmed');
   job.emit('complete', {});
   assert.equal(job.closed, true);
+});
+
+test('approval shows its own cancel action and restores generic cancellation after approval ends', async () => {
+  const job = openJob();
+  const running = {status: 'running', can_cancel: true, awaiting_approval: false, terminal: false};
+  job.emit('state', running);
+  assert.equal(job.nodes['cancel-job'].hidden, false);
+  job.emit('state', {...running, status: 'awaiting_approval', awaiting_approval: true});
+  assert.equal(job.nodes['approval-panel'].hidden, false);
+  assert.equal(job.nodes['cancel-job'].hidden, true, 'approval should not display two competing cancel actions');
+  const approvalCancel = new Element('button');
+  approvalCancel.dataset.decision = 'cancel';
+  await job.click(approvalCancel);
+  assert.equal(job.requests[0][1].body.get('decision'), 'cancel', 'the approval action must keep its existing decision semantics');
+  job.emit('state', running);
+  assert.equal(job.nodes['approval-panel'].hidden, true);
+  assert.equal(job.nodes['cancel-job'].hidden, false);
+  assert.equal(job.nodes['cancel-job'].disabled, false);
 });
 
 test('replayed events do not duplicate server-rendered or already received history', () => {

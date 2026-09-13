@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/auth"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 type authPageData struct {
@@ -73,7 +73,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	cookie, err := r.Cookie(s.cookieName(loginCSRFCookie))
+	cookie, err := s.readCookie(r, loginCSRFCookie)
 	if err != nil || !constantEqual(cookie.Value, r.Form.Get("csrf_token")) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
@@ -170,7 +170,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	cookie, err := r.Cookie(s.cookieName(loginCSRFCookie))
+	cookie, err := s.readCookie(r, loginCSRFCookie)
 	if err != nil || !constantEqual(cookie.Value, r.Form.Get("csrf_token")) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
@@ -265,8 +265,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// Public cookies use browser-enforced host and path integrity. Do not accept
-// legacy names in public mode: a sibling origin can supply Domain cookies.
+// Public cookies use browser-enforced host and path integrity. Unprefixed
+// cookies are never accepted in public mode, including during a rebrand.
 func (s *Server) cookieName(name string) string {
 	if s.config.PublicOrigin != "" {
 		return "__Host-" + name
@@ -280,6 +280,32 @@ func (s *Server) setCookie(w http.ResponseWriter, name, value string, lifetime t
 
 func (s *Server) clearCookie(w http.ResponseWriter, name string) {
 	http.SetCookie(w, &http.Cookie{Name: s.cookieName(name), Value: "", Path: "/", MaxAge: -1, Expires: time.Unix(1, 0), Secure: s.config.PublicOrigin != "", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	if legacy := legacyCookieName(name); legacy != "" {
+		http.SetCookie(w, &http.Cookie{Name: s.cookieName(legacy), Value: "", Path: "/", MaxAge: -1, Expires: time.Unix(1, 0), Secure: s.config.PublicOrigin != "", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	}
+}
+
+func legacyCookieName(name string) string {
+	switch name {
+	case sessionCookie:
+		return "buntzen_session"
+	case csrfCookie:
+		return "buntzen_csrf"
+	case loginCSRFCookie:
+		return "buntzen_login_csrf"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) readCookie(r *http.Request, name string) (*http.Cookie, error) {
+	cookie, err := r.Cookie(s.cookieName(name))
+	if err == nil || legacyCookieName(name) == "" {
+		return cookie, err
+	}
+	// Preserve existing sessions in the same HTTP security mode only. Invalid
+	// new cookies never fall back to an older identity.
+	return r.Cookie(s.cookieName(legacyCookieName(name)))
 }
 
 func (s *Server) clearAuthCookies(w http.ResponseWriter) {
@@ -337,7 +363,7 @@ func (s *Server) admitInvalidSetupToken(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) readSessionCookie(r *http.Request) (*http.Cookie, error) {
-	cookie, err := r.Cookie(s.cookieName(sessionCookie))
+	cookie, err := s.readCookie(r, sessionCookie)
 	if err != nil || !auth.SessionTokenMatchesScope(cookie.Value, s.config.PublicOrigin) {
 		return nil, http.ErrNoCookie
 	}

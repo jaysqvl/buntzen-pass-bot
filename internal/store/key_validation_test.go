@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
 )
 
 func TestWrongKeyFailsBeforeWritableOpen(t *testing.T) {

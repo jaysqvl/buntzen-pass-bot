@@ -19,7 +19,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LogLevel != "info" || cfg.EffectiveLogLevel() != "info" {
 		t.Fatalf("default log level = %q", cfg.LogLevel)
 	}
-	if cfg.DatabasePath != filepath.Join(cfg.AppDataDir, "buntzen.db") {
+	if cfg.DatabasePath != filepath.Join(cfg.AppDataDir, "lake-pass-bot.db") {
 		t.Fatalf("database path was %q", cfg.DatabasePath)
 	}
 	if len(cfg.YodelOrigins) != 1 || cfg.YodelOrigins[0] != DefaultYodelOrigin {
@@ -32,8 +32,8 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadLogLevelAndDebugOverride(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_LOG_LEVEL", "warning")
-	t.Setenv("BUNTZEN_DEBUG", "")
+	t.Setenv("LAKE_PASS_LOG_LEVEL", "warning")
+	t.Setenv("LAKE_PASS_DEBUG", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -42,8 +42,8 @@ func TestLoadLogLevelAndDebugOverride(t *testing.T) {
 		t.Fatalf("warning log level = %q", cfg.LogLevel)
 	}
 
-	t.Setenv("BUNTZEN_LOG_LEVEL", "error")
-	t.Setenv("BUNTZEN_DEBUG", "true")
+	t.Setenv("LAKE_PASS_LOG_LEVEL", "error")
+	t.Setenv("LAKE_PASS_DEBUG", "true")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
@@ -55,13 +55,13 @@ func TestLoadLogLevelAndDebugOverride(t *testing.T) {
 
 func TestLoadRejectsInvalidLoggingConfiguration(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_LOG_LEVEL", "trace")
+	t.Setenv("LAKE_PASS_LOG_LEVEL", "trace")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid log level to be rejected")
 	}
 
-	t.Setenv("BUNTZEN_LOG_LEVEL", "info")
-	t.Setenv("BUNTZEN_DEBUG", "sometimes")
+	t.Setenv("LAKE_PASS_LOG_LEVEL", "info")
+	t.Setenv("LAKE_PASS_DEBUG", "sometimes")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid debug toggle to be rejected")
 	}
@@ -69,7 +69,7 @@ func TestLoadRejectsInvalidLoggingConfiguration(t *testing.T) {
 
 func TestLoadTrustedYodelOrigins(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_YODEL_ORIGINS", "https://example.test:443,https://second.example.test")
+	t.Setenv("LAKE_PASS_YODEL_ORIGINS", "https://example.test:443,https://second.example.test")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestLoadTrustedYodelOrigins(t *testing.T) {
 
 func TestLoadRejectsInsecureYodelOrigin(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_YODEL_ORIGINS", "http://example.test")
+	t.Setenv("LAKE_PASS_YODEL_ORIGINS", "http://example.test")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected insecure Yodel origin to be rejected")
 	}
@@ -98,23 +98,23 @@ func TestLoadRejectsInvalidConcurrency(t *testing.T) {
 
 func TestLoadAllowedOrigins(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "http://buntzen.example, https://buntzen.example")
+	t.Setenv("LAKE_PASS_ALLOWED_ORIGINS", "http://lake-pass.example, https://lake-pass.example")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(cfg.AllowedOrigins), 2; got != want || cfg.AllowedOrigins[0] != "http://buntzen.example" || cfg.AllowedOrigins[1] != "https://buntzen.example" {
+	if got, want := len(cfg.AllowedOrigins), 2; got != want || cfg.AllowedOrigins[0] != "http://lake-pass.example" || cfg.AllowedOrigins[1] != "https://lake-pass.example" {
 		t.Fatalf("allowed origins = %#v", cfg.AllowedOrigins)
 	}
-	if got, want := cfg.AllowedHosts, []string{"buntzen.example"}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := cfg.AllowedHosts, []string{"lake-pass.example"}; len(got) != len(want) || got[0] != want[0] {
 		t.Fatalf("origin-derived allowed hosts = %#v", got)
 	}
 }
 
 func TestLoadAllowedHostsAndSetupToken(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_ALLOWED_HOSTS", "Example.Test:8080, [::1]:8080")
-	t.Setenv("BUNTZEN_SETUP_TOKEN", "operator-setup-token")
+	t.Setenv("LAKE_PASS_ALLOWED_HOSTS", "Example.Test:8080, [::1]:8080")
+	t.Setenv("LAKE_PASS_SETUP_TOKEN", "operator-setup-token")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestLoadAllowedHostsAndSetupToken(t *testing.T) {
 
 func TestLoadRejectsEmptyAllowedOrigin(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "http://buntzen.example,")
+	t.Setenv("LAKE_PASS_ALLOWED_ORIGINS", "http://lake-pass.example,")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid allowed-origin list")
 	}
@@ -137,7 +137,7 @@ func TestLoadRejectsEmptyAllowedOrigin(t *testing.T) {
 
 func TestLoadRejectsInvalidAllowedOrigin(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_ALLOWED_ORIGINS", "https://buntzen.example/path")
+	t.Setenv("LAKE_PASS_ALLOWED_ORIGINS", "https://lake-pass.example/path")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid allowed origin")
 	}
@@ -145,7 +145,7 @@ func TestLoadRejectsInvalidAllowedOrigin(t *testing.T) {
 
 func TestLoadRejectsInvalidAllowedHost(t *testing.T) {
 	isolateEnvironment(t)
-	t.Setenv("BUNTZEN_ALLOWED_HOSTS", "https://buntzen.example/path")
+	t.Setenv("LAKE_PASS_ALLOWED_HOSTS", "https://lake-pass.example/path")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid allowed host")
 	}
@@ -155,11 +155,11 @@ func TestLoadRejectsInvalidAllowedHost(t *testing.T) {
 func isolateEnvironment(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
-		"BUNTZEN_LISTEN", "MAX_CONCURRENT_JOBS", "SCHEDULES_ENABLED",
-		"BUNTZEN_DEBUG", "BUNTZEN_LOG_LEVEL", "BUNTZEN_PYTHON",
-		"BUNTZEN_ACTIONS_MODULE", "BUNTZEN_BROWSER_EXECUTABLE", "BLUEBUBBLES_URL", "BUNTZEN_BLUEBUBBLES_ENDPOINTS", "BUNTZEN_ALLOWED_ORIGINS",
-		"BUNTZEN_YODEL_ORIGINS", "BUNTZEN_ALLOWED_HOSTS", "BUNTZEN_SETUP_TOKEN", "BUNTZEN_MASTER_KEY_FILE",
-		"BUNTZEN_PUBLIC_ORIGIN", "BUNTZEN_TRUSTED_PROXIES",
+		"LAKE_PASS_LISTEN", "MAX_CONCURRENT_JOBS", "SCHEDULES_ENABLED",
+		"LAKE_PASS_DEBUG", "LAKE_PASS_LOG_LEVEL", "LAKE_PASS_PYTHON",
+		"LAKE_PASS_ACTIONS_MODULE", "LAKE_PASS_BROWSER_EXECUTABLE", "BLUEBUBBLES_URL", "LAKE_PASS_BLUEBUBBLES_ENDPOINTS", "LAKE_PASS_ALLOWED_ORIGINS",
+		"LAKE_PASS_YODEL_ORIGINS", "LAKE_PASS_ALLOWED_HOSTS", "LAKE_PASS_SETUP_TOKEN", "LAKE_PASS_MASTER_KEY_FILE",
+		"LAKE_PASS_PUBLIC_ORIGIN", "LAKE_PASS_TRUSTED_PROXIES",
 	} {
 		t.Setenv(name, "")
 	}
@@ -169,13 +169,13 @@ func isolateEnvironment(t *testing.T) {
 func TestOperatorBrowserExecutable(t *testing.T) {
 	isolateEnvironment(t)
 	for _, value := range []string{"chrome", "../chrome"} {
-		t.Setenv("BUNTZEN_BROWSER_EXECUTABLE", value)
+		t.Setenv("LAKE_PASS_BROWSER_EXECUTABLE", value)
 		if _, err := Load(); err == nil {
 			t.Fatalf("accepted relative executable %q", value)
 		}
 	}
 	want := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-	t.Setenv("BUNTZEN_BROWSER_EXECUTABLE", want)
+	t.Setenv("LAKE_PASS_BROWSER_EXECUTABLE", want)
 	cfg, err := Load()
 	if err != nil || cfg.BrowserExecutable != want {
 		t.Fatalf("operator browser path = %q, %v", cfg.BrowserExecutable, err)
@@ -185,13 +185,13 @@ func TestOperatorBrowserExecutable(t *testing.T) {
 func TestExplicitMasterKeyPath(t *testing.T) {
 	isolateEnvironment(t)
 	for _, path := range []string{"master.key", "../master.key", "/" + strings.Repeat("x", 2048)} {
-		t.Setenv("BUNTZEN_MASTER_KEY_FILE", path)
+		t.Setenv("LAKE_PASS_MASTER_KEY_FILE", path)
 		if _, err := Load(); err == nil {
 			t.Fatal("invalid explicit key path accepted")
 		}
 	}
 	path := filepath.Join(t.TempDir(), "existing.key")
-	t.Setenv("BUNTZEN_MASTER_KEY_FILE", path)
+	t.Setenv("LAKE_PASS_MASTER_KEY_FILE", path)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestExplicitMasterKeyPath(t *testing.T) {
 	if !cfg.MasterKeyExplicit || cfg.EncryptionKeyPath != path {
 		t.Fatal("explicit key path lost")
 	}
-	t.Setenv("BUNTZEN_MASTER_KEY_FILE", "")
+	t.Setenv("LAKE_PASS_MASTER_KEY_FILE", "")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)

@@ -12,20 +12,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/control"
-	secretcrypto "github.com/jaysqvl/buntzen-pass-bot/internal/crypto"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/scheduler"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/control"
+	secretcrypto "github.com/jaysqvl/lake-pass-bot/internal/crypto"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/scheduler"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 type engineTestFixture struct {
-	engine    *Engine
-	store     *store.Store
-	resources store.UserStore
-	user      model.User
-	booking   model.BookingRequest
+	databasePath string
+	engine       *Engine
+	store        *store.Store
+	resources    store.UserStore
+	user         model.User
+	booking      model.BookingRequest
 }
 
 func newEngineTestFixture(t *testing.T) engineTestFixture {
@@ -36,7 +37,8 @@ func newEngineTestFixture(t *testing.T) engineTestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	database, err := store.OpenMigrated(ctx, filepath.Join(t.TempDir(), "buntzen.db"), box)
+	databasePath := filepath.Join(t.TempDir(), "buntzen.db")
+	database, err := store.OpenMigrated(ctx, databasePath, box)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +77,7 @@ func newEngineTestFixture(t *testing.T) engineTestFixture {
 	}
 	hub := control.NewHub()
 	return engineTestFixture{
+		databasePath: databasePath,
 		engine: New(config.Config{
 			MaxConcurrentJobs: 1,
 			YodelOrigins:      []string{"https://example.test"},

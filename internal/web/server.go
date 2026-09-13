@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/auth"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/engine"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/auth"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/engine"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 type Server struct {
@@ -78,6 +78,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /account", s.authenticated(s.accountPage))
 	s.mux.HandleFunc("POST /account/password", s.authenticated(s.accountPassword))
 	s.mux.HandleFunc("POST /account/username", s.authenticated(s.accountUsername))
+	s.mux.HandleFunc("GET /settings", s.authenticated(s.settingsPage))
+	s.mux.HandleFunc("POST /settings", s.authenticated(s.settingsUpdate))
+	s.mux.HandleFunc("GET /lakes", s.authenticated(s.lakesPage))
+	s.mux.HandleFunc("GET /lakes/{lakeID}", s.authenticated(s.lakePage))
+	s.mux.HandleFunc("POST /lakes/{lakeID}", s.authenticated(s.lakeUpdate))
+	s.mux.HandleFunc("POST /lakes/{lakeID}/reset", s.authenticated(s.lakeReset))
 
 	s.mux.HandleFunc("GET /admin/users", s.authenticated(s.adminOnly(s.usersPage)))
 	s.mux.HandleFunc("GET /admin/users/new", s.authenticated(s.adminOnly(s.userNewPage)))
@@ -95,12 +101,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sources/{id}", s.authenticated(s.sourceUpdate))
 	s.mux.HandleFunc("POST /sources/{id}/health", s.authenticated(s.sourceHealth))
 	s.mux.HandleFunc("POST /sources/{id}/pair", s.authenticated(s.sourcePair))
+	s.mux.HandleFunc("POST /sources/{id}/default", s.authenticated(s.sourceDefault))
 
 	s.mux.HandleFunc("GET /profiles", s.authenticated(s.profiles))
 	s.mux.HandleFunc("GET /profiles/new", s.authenticated(s.profileNew))
 	s.mux.HandleFunc("POST /profiles/new", s.authenticated(s.profileCreate))
 	s.mux.HandleFunc("GET /profiles/{id}", s.authenticated(s.profileEdit))
 	s.mux.HandleFunc("POST /profiles/{id}", s.authenticated(s.profileUpdate))
+	s.mux.HandleFunc("POST /profiles/{id}/sign-in", s.authenticated(s.profileSignIn))
 
 	s.mux.HandleFunc("GET /bookings", s.authenticated(s.bookings))
 	s.mux.HandleFunc("GET /bookings/new", s.authenticated(s.bookingNew))

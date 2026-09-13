@@ -4,16 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
+	"net/url"
 	"strings"
 
-	"github.com/jaysqvl/buntzen-pass-bot/internal/config"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/model"
-	"github.com/jaysqvl/buntzen-pass-bot/internal/store"
+	"github.com/jaysqvl/lake-pass-bot/internal/config"
+	"github.com/jaysqvl/lake-pass-bot/internal/destinations"
+	"github.com/jaysqvl/lake-pass-bot/internal/model"
+	"github.com/jaysqvl/lake-pass-bot/internal/store"
 )
 
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/#profiles", http.StatusSeeOther)
+	http.Redirect(w, r, "/lakes", http.StatusSeeOther)
 }
 
 func profileCard(profile model.Profile, sourceName string) listCard {
@@ -21,21 +22,28 @@ func profileCard(profile model.Profile, sourceName string) listCard {
 	if profile.Enabled {
 		status, class = "Enabled", "ok"
 	}
-	return listCard{
-		Title: profile.Name, Subtitle: "Yodel login and vehicle", Status: status, StatusClass: class,
-		URL:    fmt.Sprintf("/profiles/%d", profile.ID),
-		Fields: []labelValue{{"Vehicle", profile.DefaultVehicle}, {"Linked OTP source", sourceName}},
-		Actions: []cardAction{
-			{"Edit profile", fmt.Sprintf("/profiles/%d", profile.ID), ""},
-			{"View OTP source", fmt.Sprintf("/sources/%d", profile.OTPSourceID), ""},
-			{"New booking", fmt.Sprintf("/bookings/new?profile_id=%d", profile.ID), "primary"},
-		},
+	card := listCard{
+		Title: profile.Name, Subtitle: "Yodel sign-in", Status: status, StatusClass: class,
+		URL:     fmt.Sprintf("/profiles/%d", profile.ID),
+		Actions: []cardAction{{"Edit sign-in", fmt.Sprintf("/profiles/%d", profile.ID), ""}},
 	}
+	if sourceName == "" {
+		card.Description = "Choose a default OTP source before signing in."
+		card.Actions = append(card.Actions, cardAction{"Choose OTP source", "/sources", "primary"})
+	} else if profile.Enabled {
+		card.PostActions = []postAction{{Label: "Sign in to Yodel", URL: fmt.Sprintf("/profiles/%d/sign-in", profile.ID), Class: "primary"}}
+	}
+	return card
 }
 
 func (s *Server) profileNew(w http.ResponseWriter, r *http.Request) { s.profileForm(w, r, nil, "") }
 func (s *Server) profileCreate(w http.ResponseWriter, r *http.Request) {
-	input, err := s.profileInput(r, true)
+	lake, err := profileLakeContext(r, nil)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	input, err := s.profileInput(r, nil)
 	if err == nil {
 		_, err = s.userStore(r).CreateProfile(r.Context(), input)
 	}
@@ -43,7 +51,7 @@ func (s *Server) profileCreate(w http.ResponseWriter, r *http.Request) {
 		s.profileForm(w, r, nil, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/?ok=created#profiles", http.StatusSeeOther)
+	http.Redirect(w, r, lakeConnectionURL(lake)+"?ok=created#connection", http.StatusSeeOther)
 }
 func (s *Server) profileEdit(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
@@ -67,7 +75,7 @@ func (s *Server) profileUpdate(w http.ResponseWriter, r *http.Request) {
 		s.notFoundOrInternal(w, err)
 		return
 	}
-	input, err := s.profileInput(r, false)
+	input, err := s.profileInput(r, &current)
 	if err == nil {
 		_, err = s.userStore(r).UpdateProfile(r.Context(), id, input)
 	}
@@ -75,27 +83,109 @@ func (s *Server) profileUpdate(w http.ResponseWriter, r *http.Request) {
 		s.profileForm(w, r, &current, safeFormError(err))
 		return
 	}
-	http.Redirect(w, r, "/?ok=updated#profiles", http.StatusSeeOther)
+	lake, _ := profileLakeContext(r, &current)
+	http.Redirect(w, r, lakeConnectionURL(lake)+"?ok=updated#connection", http.StatusSeeOther)
 }
 
-func (s *Server) profileInput(r *http.Request, creating bool) (store.ProfileInput, error) {
-	timeout, err := strconv.Atoi(r.Form.Get("default_timeout_ms"))
-	if err != nil {
-		return store.ProfileInput{}, errors.New("browser timeout must be a number")
+func (s *Server) profileSignIn(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
 	}
-	input := store.ProfileInput{
-		Name:              r.Form.Get("name"),
-		DefaultVehicle:    r.Form.Get("default_vehicle"),
-		LoginProbeURL:     strings.TrimSpace(r.Form.Get("login_probe_url")),
-		OTPSourceID:       parseInt64(r.Form.Get("otp_source_id")),
-		Headless:          checked(r, "headless"),
-		BrowserChannel:    r.Form.Get("browser_channel"),
-		BrowserExecutable: r.Form.Get("browser_executable"),
-		DefaultTimeoutMS:  timeout,
-		Enabled:           checked(r, "enabled"),
+	profile, err := s.userStore(r).GetProfile(r.Context(), id)
+	if err != nil {
+		s.notFoundOrInternal(w, err)
+		return
+	}
+	lake, err := profileLakeContext(r, &profile)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	r.SetPathValue("lakeID", lake.ID)
+	job, err := s.engine.QueueProfileSignIn(r.Context(), s.userStore(r).UserID(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		s.renderLakePage(w, r, nil, "A sign-in or booking is already using this account or its OTP source. Check Jobs before trying again.")
+		return
+	}
+	if err != nil {
+		s.renderLakePage(w, r, nil, safeFormError(err))
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/jobs/%d", job.ID), http.StatusSeeOther)
+}
+
+// A connection is configured through a catalog lake, never through a caller's
+// arbitrary return URL or provider choice. Legacy identities keep their IDs and
+// provider configuration while their original lake remains the editing context.
+func profileLakeContext(r *http.Request, current *model.Profile) (destinations.Lake, error) {
+	id := strings.TrimSpace(r.URL.Query().Get("lake_id"))
+	provider := destinations.ProviderYodel
+	if current != nil {
+		id, provider = current.EffectiveLakeID(), current.EffectiveProviderID()
+	} else if r.Method == http.MethodPost {
+		id = strings.TrimSpace(r.Form.Get("lake_id"))
+	}
+	lake, err := destinations.Resolve(id)
+	if err != nil {
+		return destinations.Lake{}, err
+	}
+	if lake.ProviderID != provider {
+		return destinations.Lake{}, errors.New("this lake uses a different sign-in provider")
+	}
+	return lake, nil
+}
+
+func lakeConnectionURL(lake destinations.Lake) string {
+	return "/lakes/" + url.PathEscape(lake.ID)
+}
+
+func (s *Server) profileInput(r *http.Request, current *model.Profile) (store.ProfileInput, error) {
+	lake, err := profileLakeContext(r, current)
+	if err != nil {
+		return store.ProfileInput{}, err
+	}
+	// Browser programs are controlled by the operator even for old clients.
+	if strings.TrimSpace(r.Form.Get("browser_executable")) != "" {
+		return store.ProfileInput{}, errors.New("browser executable paths are operator-controlled")
+	}
+	input := store.ProfileInput{ProviderID: lake.ProviderID, LakeID: lake.ID, Name: strings.TrimSpace(r.Form.Get("name")), Enabled: checked(r, "enabled")}
+	if current != nil {
+		input.ProviderID, input.LakeID = current.EffectiveProviderID(), current.LakeID
+		input.DefaultVehicle, input.LoginProbeURL, input.OTPSourceID = current.DefaultVehicle, current.LoginProbeURL, current.OTPSourceID
+		input.Headless, input.BrowserChannel, input.DefaultTimeoutMS = current.Headless, current.BrowserChannel, current.DefaultTimeoutMS
+		// Resaving clears the retired executable override. It is no longer
+		// editable, and carrying it forward would keep legacy sign-ins invalid.
+		input.BrowserExecutable = ""
+	} else {
+		source, err := s.userStore(r).GetDefaultOTPSource(r.Context())
+		if errors.Is(err, store.ErrNotFound) {
+			return input, errors.New("choose a default OTP source before adding a Yodel sign-in")
+		}
+		if err != nil {
+			return input, err
+		}
+		settings, err := s.userStore(r).GetAccountSettings(r.Context())
+		if err != nil {
+			return input, err
+		}
+		input.OTPSourceID, input.Headless, input.BrowserChannel, input.DefaultTimeoutMS = source.ID, settings.Headless, settings.BrowserChannel, settings.DefaultTimeoutMS
+	}
+	// Some older sign-ins have no login URL until they are repaired. Use the
+	// approved built-in URL for those records, preserving nonblank saved URLs.
+	if strings.TrimSpace(input.LoginProbeURL) == "" {
+		approvedOrigin := config.DefaultYodelOrigin
+		if len(s.config.YodelOrigins) > 0 {
+			approvedOrigin = s.config.YodelOrigins[0]
+		}
+		input.LoginProbeURL = lake.WithOrigin(approvedOrigin).LoginURL
 	}
 	phone := strings.TrimSpace(r.Form.Get("yodel_phone"))
-	if creating || phone != "" {
+	if current == nil || phone != "" {
 		if phone == "" {
 			return input, errors.New("Yodel mobile number is required")
 		}
@@ -105,84 +195,80 @@ func (s *Server) profileInput(r *http.Request, creating bool) (store.ProfileInpu
 }
 
 func (s *Server) profileForm(w http.ResponseWriter, r *http.Request, profile *model.Profile, formError string) {
-	sources, err := s.userStore(r).ListOTPSources(r.Context())
+	lake, err := profileLakeContext(r, profile)
 	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	source, err := s.userStore(r).GetDefaultOTPSource(r.Context())
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.internal(w)
 		return
 	}
 	creating := profile == nil
-	yodelOrigin := config.DefaultYodelOrigin
-	if len(s.config.YodelOrigins) > 0 {
-		yodelOrigin = s.config.YodelOrigins[0]
-	}
-	value := model.Profile{Headless: true, Enabled: true, DefaultTimeoutMS: 15000, LoginProbeURL: yodelOrigin + "/buntzen-lake"}
+	value := model.Profile{Enabled: true}
 	if profile != nil {
 		value = *profile
 	}
-	if creating && r.Method == http.MethodGet {
-		requestedSource := parseInt64(r.URL.Query().Get("source_id"))
-		for _, source := range sources {
-			if source.ID == requestedSource {
-				value.OTPSourceID = source.ID
-				break
-			}
-		}
-	}
 	if r.Method == http.MethodPost {
-		value.Name, value.DefaultVehicle = r.Form.Get("name"), r.Form.Get("default_vehicle")
-		value.LoginProbeURL = r.Form.Get("login_probe_url")
-		value.OTPSourceID, value.Headless, value.Enabled = parseInt64(r.Form.Get("otp_source_id")), checked(r, "headless"), checked(r, "enabled")
-		value.BrowserChannel, value.BrowserExecutable = r.Form.Get("browser_channel"), r.Form.Get("browser_executable")
-		value.DefaultTimeoutMS, _ = strconv.Atoi(r.Form.Get("default_timeout_ms"))
+		value.Name, value.Enabled = r.Form.Get("name"), checked(r, "enabled")
 	}
-	options := make([]selectOption, 0, len(sources))
-	for _, source := range sources {
-		options = append(options, selectOption{Value: strconv.FormatInt(source.ID, 10), Label: source.Name + " · " + string(source.Provider), Selected: source.ID == value.OTPSourceID})
-	}
-	actionURL, heading, submit := "/profiles/new", "New Yodel profile", "Create profile"
+	actionURL, heading, submit := "/profiles/new", "Add Yodel sign-in", "Save sign-in"
 	if !creating {
-		actionURL, heading, submit = fmt.Sprintf("/profiles/%d", profile.ID), "Edit Yodel profile", "Save profile"
+		actionURL, heading = fmt.Sprintf("/profiles/%d", profile.ID), "Edit Yodel sign-in"
+	}
+	phonePlaceholder := "Enter mobile number"
+	phoneHelp := "Enter the 10-digit Canadian or US mobile number you use with Yodel. A leading +1 is accepted."
+	if !creating {
+		phonePlaceholder = secretPlaceholder(false)
+		phoneHelp = "Leave blank to keep your saved mobile number. Enter a new number only to replace it."
 	}
 	data := formData{
-		BaseData:    base(r, heading),
-		Eyebrow:     "Browser identity",
-		Heading:     heading,
-		Description: "Use the phone number on your Yodel account and choose the OTP source that receives its login codes. Save this profile, then choose Pair with Yodel on the linked OTP source. A booking request is not required.",
-		CancelURL:   "/#profiles",
-		ActionURL:   actionURL,
-		SubmitLabel: submit,
-		FormError:   formError,
+		BaseData: base(r, heading), Eyebrow: lake.Name, Heading: heading,
+		Description: "Connect to " + lake.Name + " using the Yodel account you use to book passes.",
+		CancelURL:   lakeConnectionURL(lake) + "#connection", ActionURL: actionURL, SubmitLabel: submit, FormError: formError,
+		HiddenFields:   []hiddenField{{Name: "lake_id", Value: lake.ID}},
+		SubmitHelp:     "Saving keeps your account details. Return to " + lake.Name + " to connect and check your sign-in status.",
+		SubmitDisabled: creating && source.ID == 0,
+		Sections: []formSection{{Title: "Account details", Fields: []formField{
+			{Name: "name", Label: "Sign-in name", Type: "text", Value: value.Name, Required: true, Help: "Use a name you’ll recognize when choosing a booking account."},
+			{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: phonePlaceholder, Required: creating, Help: phoneHelp},
+			{Name: "enabled", Label: "Enable this sign-in", Type: "checkbox", Checked: value.Enabled, Wide: true, Help: "Allow this account to sign in and run booking jobs."},
+		}}},
 	}
-	data.Sections = []formSection{
-		{
-			Title: "Profile",
-			Help:  "Choose your saved OTP source. Each source can be linked to only one profile.",
-			Fields: []formField{
-				{Name: "name", Label: "Name", Type: "text", Value: value.Name, Required: true},
-				{Name: "default_vehicle", Label: "Vehicle keyword", Type: "text", Value: value.DefaultVehicle, Required: true},
-				{Name: "otp_source_id", Label: "Exclusive OTP source", Type: "select", Required: true, Options: options},
-				{Name: "enabled", Label: "Enabled", Type: "checkbox", Checked: value.Enabled},
-			},
-		},
-		{
-			Title: "Yodel sign-in",
-			Help:  "Enter the 10-digit Canadian/US mobile number used by Yodel. A leading +1 and common separators are accepted. If this profile predates mobile login support, re-enter the number before enabling it.",
-			Fields: []formField{
-				{Name: "yodel_phone", Label: "Mobile phone number", Type: "password", Placeholder: secretPlaceholder(creating), Required: creating},
-				{Name: "login_probe_url", Label: "Yodel login URL", Type: "url", Value: value.LoginProbeURL, Required: true, Help: "Used for pairing and signing in. Keep the default Buntzen Lake URL unless your host uses another approved Yodel site."},
-			},
-		},
-		{
-			Title: "Browser",
-			Help:  "Use Chrome for native macOS or bundled Chromium for Docker. Custom browser installations are managed by your host operator.",
-			Fields: []formField{
-				{Name: "headless", Label: "Run headless", Type: "checkbox", Checked: value.Headless},
-				{Name: "browser_channel", Label: "Browser channel", Type: "select", Options: browserChannelOptions(value.BrowserChannel)},
-				{Name: "default_timeout_ms", Label: "Action timeout (ms)", Type: "number", Value: strconv.Itoa(value.DefaultTimeoutMS), Required: true, Step: "1000"},
-			},
-		},
+	message := "Choose a default OTP source on the OTP sources page before adding a Yodel sign-in."
+	if source.ID != 0 {
+		message = "Default OTP source: " + source.Name + ". Manage the inbox used for login codes on OTP sources."
+	}
+	data.Flash = &Flash{Kind: "info", Message: message, ActionLabel: "OTP sources", ActionURL: "/sources"}
+	if !creating {
+		job, err := s.pendingResourceJob(r, func(job model.Job) bool { return job.ProfileID == profile.ID })
+		if err != nil {
+			s.internal(w)
+			return
+		}
+		if job != nil {
+			data.SubmitDisabled = true
+			data.SubmitHelp = "This sign-in cannot be changed while its job is pending."
+			data.Flash = &Flash{Kind: "info", Message: "A pending job is using this sign-in. View the job to follow progress or cancel before editing.", ActionLabel: "View job", ActionURL: fmt.Sprintf("/jobs/%d", job.ID)}
+		}
 	}
 	s.render(w, formStatus(formError), "form", data)
+}
+
+func (s *Server) pendingResourceJob(r *http.Request, matches func(model.Job) bool) (*model.Job, error) {
+	// Read the complete account history so an older scheduled job still blocks
+	// editing when newer completed jobs appear first in the recent jobs list.
+	jobs, err := s.userStore(r).ListJobs(r.Context(), store.MaxRetainedJobsPerUser)
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		if !job.Status.Terminal() && matches(job) {
+			return &job, nil
+		}
+	}
+	return nil, nil
 }
 
 func browserChannelOptions(selected string) []selectOption {
