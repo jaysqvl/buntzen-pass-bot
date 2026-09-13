@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.0](https://github.com/jaysqvl/lake-pass-bot/compare/lake-pass-bot-v0.5.3...lake-pass-bot-v0.6.0) (2026-09-13)
+## [0.6.0](https://github.com/jaysqvl/lake-pass-bot/compare/buntzen-pass-bot-v0.5.3...lake-pass-bot-v0.6.0) (2026-09-13)
 
 
 ### Features
