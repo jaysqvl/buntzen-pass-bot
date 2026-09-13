@@ -50,8 +50,13 @@ the running image regardless of the tag used to install it.
 
 ## Existing stack settings
 
-Preserve the existing stack's name, port, appdata path, and configuration. The
-canonical [deploy/portainer.yml](../deploy/portainer.yml) uses:
+Preserve the existing stack's name, port, appdata path, and configuration. An
+image-only update can retain its saved Compose file and legacy variable names.
+When adopting the current [deploy/portainer.yml](../deploy/portainer.yml), provide
+nonempty `LAKE_PASS_WEB_PORT`, `LAKE_PASS_APPDATA_PATH`,
+`LAKE_PASS_SECCOMP_PROFILE_PATH`, and `LAKE_PASS_ALLOWED_HOSTS` values. Copy the
+existing values using the [template migration table](rebrand-migration.md#adopting-the-portainer-template).
+Optional settings retain their legacy fallbacks. The template uses:
 
 - `LAKE_PASS_IMAGE`: optional image override; defaults to the project's `:latest`.
 - `LAKE_PASS_WEB_PORT`: the host port already used by Lake Pass Bot.

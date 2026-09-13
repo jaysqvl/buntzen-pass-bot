@@ -116,6 +116,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - name: Validate Compose
+        shell: bash
         env:
           BLUEBUBBLES_URL: http://bluebubbles.example:1234
           LAKE_PASS_ALLOWED_HOSTS: lake-pass.example
@@ -146,15 +147,28 @@ jobs:
                 .services["lake-pass-bot"] |
                 .environment.LAKE_PASS_MASTER_KEY_FILE == "/run/buntzen-key/master.key" and
                 (.volumes | any(.source == "/tmp/separate-key" and .target == "/run/buntzen-key" and .read_only == true))
-              ' >/dev/null
+            ' >/dev/null
           done
-      - name: Validate legacy Compose settings during upgrade
+          for setting in LAKE_PASS_ALLOWED_HOSTS LAKE_PASS_WEB_PORT LAKE_PASS_APPDATA_PATH LAKE_PASS_SECCOMP_PROFILE_PATH; do
+            if env -u "$setting" docker compose -f deploy/portainer.yml config >/dev/null 2>/tmp/compose-required-error; then
+              echo "Missing $setting must reject the deployment template" >&2
+              exit 1
+            fi
+            [[ "$(cat /tmp/compose-required-error)" == *"$setting"* ]]
+            if env "$setting=" docker compose -f deploy/portainer.yml config >/dev/null 2>/tmp/compose-required-error; then
+              echo "Empty $setting must reject the deployment template" >&2
+              exit 1
+            fi
+            [[ "$(cat /tmp/compose-required-error)" == *"$setting"* ]]
+          done
+      - name: Validate legacy runtime settings during upgrade
+        shell: bash
         env:
           BLUEBUBBLES_URL: http://bluebubbles.example:1234
-          BUNTZEN_ALLOWED_HOSTS: legacy.example
-          BUNTZEN_APPDATA_PATH: /tmp/legacy-appdata
-          BUNTZEN_SECCOMP_PROFILE_PATH: /tmp/legacy-seccomp.json
-          BUNTZEN_WEB_PORT: "18092"
+          LAKE_PASS_ALLOWED_HOSTS: legacy.example
+          LAKE_PASS_APPDATA_PATH: /tmp/legacy-appdata
+          LAKE_PASS_SECCOMP_PROFILE_PATH: /tmp/legacy-seccomp.json
+          LAKE_PASS_WEB_PORT: "18092"
           BUNTZEN_IMAGE: ghcr.io/example/legacy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           BUNTZEN_MASTER_KEY_FILE: /run/buntzen-key/master.key
           BUNTZEN_DEBUG: "true"

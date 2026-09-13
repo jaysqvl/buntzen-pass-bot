@@ -1,5 +1,7 @@
 # Use a verified published image or digest; see docs/release-and-deployment.md.
 # Existing stacks may retain their service name and runtime settings during upgrades.
+# Set the four required LAKE_PASS_ deployment variables when adopting this template.
+# Nested required fallbacks are evaluated eagerly by older Portainer Compose versions.
 services:
   lake-pass-bot:
     image: "${LAKE_PASS_IMAGE-${BUNTZEN_IMAGE:-ghcr.io/jaysqvl/lake-pass-bot:latest}}"
@@ -7,14 +9,14 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "${LAKE_PASS_WEB_PORT-${BUNTZEN_WEB_PORT:?set the configured Lake Pass Bot host port}}:8080"
+      - "${LAKE_PASS_WEB_PORT:?set the configured Lake Pass Bot host port}:8080"
     environment:
       APPDATA_DIR: /appdata
       LAKE_PASS_MASTER_KEY_FILE: "${LAKE_PASS_MASTER_KEY_FILE-${BUNTZEN_MASTER_KEY_FILE:-}}"
       BLUEBUBBLES_URL: "${BLUEBUBBLES_URL:?set the LAN BlueBubbles URL in Portainer}"
       LAKE_PASS_BLUEBUBBLES_ENDPOINTS: "${LAKE_PASS_BLUEBUBBLES_ENDPOINTS-${BUNTZEN_BLUEBUBBLES_ENDPOINTS:-}}"
       LAKE_PASS_YODEL_ORIGINS: "${LAKE_PASS_YODEL_ORIGINS-${BUNTZEN_YODEL_ORIGINS:-https://yodelportal.com}}"
-      LAKE_PASS_ALLOWED_HOSTS: "${LAKE_PASS_ALLOWED_HOSTS-${BUNTZEN_ALLOWED_HOSTS:?set the exact Lake Pass Bot authorities}}"
+      LAKE_PASS_ALLOWED_HOSTS: "${LAKE_PASS_ALLOWED_HOSTS:?set the exact Lake Pass Bot authorities}"
       LAKE_PASS_ALLOWED_ORIGINS: "${LAKE_PASS_ALLOWED_ORIGINS-${BUNTZEN_ALLOWED_ORIGINS:-}}"
       LAKE_PASS_PUBLIC_ORIGIN: "${LAKE_PASS_PUBLIC_ORIGIN-${BUNTZEN_PUBLIC_ORIGIN:-}}"
       LAKE_PASS_TRUSTED_PROXIES: "${LAKE_PASS_TRUSTED_PROXIES-${BUNTZEN_TRUSTED_PROXIES:-}}"
@@ -26,10 +28,10 @@ services:
       # Keep auto-queueing off until the operator completes live booking tests.
       SCHEDULES_ENABLED: "false"
     volumes:
-      - "${LAKE_PASS_APPDATA_PATH-${BUNTZEN_APPDATA_PATH:?set the configured absolute Lake Pass Bot appdata path}}:/appdata"
+      - "${LAKE_PASS_APPDATA_PATH:?set the configured absolute Lake Pass Bot appdata path}:/appdata"
       # The optional directory must already exist; never generate an external key.
       - type: bind
-        source: "${LAKE_PASS_KEY_DIRECTORY_PATH-${BUNTZEN_KEY_DIRECTORY_PATH:-${LAKE_PASS_APPDATA_PATH-${BUNTZEN_APPDATA_PATH}}}}"
+        source: "${LAKE_PASS_KEY_DIRECTORY_PATH-${BUNTZEN_KEY_DIRECTORY_PATH:-${LAKE_PASS_APPDATA_PATH}}}"
         target: /run/buntzen-key
         read_only: true
         bind:
@@ -44,7 +46,7 @@ services:
       - /tmp:size=512m,mode=1777,nosuid,nodev
       - /home/pwuser:size=128m,uid=1001,gid=1001,mode=0700,nosuid,nodev
     security_opt:
-      - "seccomp=${LAKE_PASS_SECCOMP_PROFILE_PATH-${BUNTZEN_SECCOMP_PROFILE_PATH:?install and reference the Playwright seccomp profile on the Docker host}}"
+      - "seccomp=${LAKE_PASS_SECCOMP_PROFILE_PATH:?install and reference the Playwright seccomp profile on the Docker host}"
     stop_grace_period: 45s
     logging:
       driver: json-file

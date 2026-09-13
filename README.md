@@ -84,6 +84,12 @@ Treat `appdata` as sensitive: it contains the database and browser profiles. The
 publication completed before updating an existing stack. GitHub builds and
 verifies release images; you choose when to deploy them in Portainer.
 
+Existing saved stacks can keep their variable names when updating the image.
+When adopting the current template, set its four required canonical variables:
+`LAKE_PASS_WEB_PORT`, `LAKE_PASS_APPDATA_PATH`, `LAKE_PASS_SECCOMP_PROFILE_PATH`,
+and `LAKE_PASS_ALLOWED_HOSTS`. Preserve the existing values; see the
+[template migration table](docs/rebrand-migration.md#adopting-the-portainer-template).
+
 The app footer shows the build actually running. See
 [Release and Portainer deployment](docs/release-and-deployment.md) for stack
 settings and version pinning, and [rebrand migration](docs/rebrand-migration.md)

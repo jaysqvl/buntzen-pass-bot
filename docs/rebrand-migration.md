@@ -20,7 +20,7 @@ Compatibility is intentional:
 | --- | --- |
 | App name and CLI | `Lake Pass Bot` and `lake-pass-bot`; the new Docker image includes a `buntzen` executable alias for existing operator commands. |
 | Runtime environment | `LAKE_PASS_*` names are canonical. If a canonical name is unset, its matching `BUNTZEN_*` name remains accepted. An explicitly set canonical value, including an empty value, takes precedence. Existing unprefixed settings such as `APPDATA_DIR` and `SCHEDULES_ENABLED` retain their names. |
-| Compose environment | Both templates translate old names into the canonical runtime settings. The native Compose port also accepts existing `WEB_PORT`. The service/container name becomes `lake-pass-bot`. |
+| Compose environment | Optional settings retain legacy fallbacks. The current Portainer template requires four canonical variables listed below. The native Compose port also accepts existing `WEB_PORT`. The service/container name becomes `lake-pass-bot`. |
 | Database | New installs create `lake-pass-bot.db`. An existing `buntzen.db` is reused in place. Startup rejects ambiguous directories containing both database names. Keep the data directory together; do not create or rename a second database during the upgrade. |
 | Encryption and browser state | The existing key and profile marker formats are retained. The read-only key mount stays at `/run/buntzen-key` so explicit existing master-key paths continue to resolve. |
 | Bookings | The migration records the original lake on existing requests. Saved URLs, release timing, credentials, and duplicate-attempt safeguards are retained. |
@@ -35,6 +35,27 @@ service name, stop the old service before starting its replacement against the
 same appdata. Preserve custom host paths and the installed seccomp profile. Keep scheduling
 disabled while validating the upgraded application, and verify an OTP connection
 and booking setup before enabling unattended work.
+
+## Adopting the Portainer template
+
+An existing saved stack can keep its Compose file and `BUNTZEN_*` variables when
+updating only the image. The runtime aliases remain supported.
+
+When replacing the saved Compose file with the current `deploy/portainer.yml`,
+rename these four Portainer variables while preserving their exact values:
+
+| Previous variable | Required variable in the current template |
+| --- | --- |
+| `BUNTZEN_WEB_PORT` | `LAKE_PASS_WEB_PORT` |
+| `BUNTZEN_APPDATA_PATH` | `LAKE_PASS_APPDATA_PATH` |
+| `BUNTZEN_SECCOMP_PROFILE_PATH` | `LAKE_PASS_SECCOMP_PROFILE_PATH` |
+| `BUNTZEN_ALLOWED_HOSTS` | `LAKE_PASS_ALLOWED_HOSTS` |
+
+Each canonical value must be nonempty. These required fields use direct Compose
+validation so missing configuration is rejected on older Portainer parsers as
+well. Optional settings still accept their legacy names, and unprefixed settings
+such as `BLUEBUBBLES_URL` retain their names. Keep the existing service identity,
+host paths, and runtime settings when applying the template.
 
 ## Isolated source builds and release images
 
