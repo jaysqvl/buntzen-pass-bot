@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/jaysqvl/lake-pass-bot/compare/buntzen-pass-bot-v0.5.3...lake-pass-bot-v0.6.0) (2026-09-13)
+
+
+### Features
+
+* rebrand as Lake Pass Bot and organize lake connections ([#78](https://github.com/jaysqvl/lake-pass-bot/issues/78)) ([d8f3ce0](https://github.com/jaysqvl/lake-pass-bot/commit/d8f3ce0f60b415ebe15283f3095b1af19f1e6b2c))
+
 ## [0.5.3](https://github.com/jaysqvl/buntzen-pass-bot/compare/buntzen-pass-bot-v0.5.2...buntzen-pass-bot-v0.5.3) (2026-09-08)
 
 
