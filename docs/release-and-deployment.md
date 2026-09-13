@@ -4,11 +4,12 @@ GitHub builds, tests, scans, and publishes the Docker image. Portainer updates t
 existing stack when you choose to install a release. No GitHub deployment
 workflow, LAN runner, deployment approval, or Portainer API credential is needed.
 
-> The renamed image is a future publication target. This source rebrand has not
-> published it or changed any running stack. Use the local source build for
-> review and read [rebrand migration](rebrand-migration.md) before upgrading.
+Before installing an image, verify that its release publication completed and
+that the registry exposes the intended digest. Read
+[rebrand migration](rebrand-migration.md) when upgrading an installation from the
+previous name. Publishing a repository or release does not update a running stack.
 
-## Update from Portainer after publication
+## Update from Portainer
 
 The [Portainer Compose template](../deploy/portainer.yml) defaults to:
 
@@ -16,8 +17,8 @@ The [Portainer Compose template](../deploy/portainer.yml) defaults to:
 ghcr.io/jaysqvl/lake-pass-bot:latest
 ```
 
-After the first renamed release is published, `latest` follows the newest
-accepted stable release, including future minor and major versions. Publishing a release does not restart your container. You decide
+`latest` follows the newest accepted stable release, including future minor and
+major versions. Publishing a release does not restart your container. You decide
 when to install it:
 
 1. Read the release notes for configuration or database changes. Wait for active
@@ -43,8 +44,8 @@ template's default with the variable unset. A force update of an old digest
 recreates the old image; it cannot choose a newer release.
 
 To stay on a chosen release, set `LAKE_PASS_IMAGE` to its published version tag
-or to the exact digest printed in the release workflow summary. To follow only patch releases within a minor version,
-use its tag, such as `:0.5`. The footer continues to display the version built into
+or to the exact digest printed in the release workflow summary. To follow only
+patch releases within a minor version, use its matching tag. The footer continues to display the version built into
 the running image regardless of the tag used to install it.
 
 ## Existing stack settings
@@ -88,8 +89,9 @@ does not need a Portainer API credential.
 ### Upgrading from 0.5.0 or earlier
 
 Provider origin approval became required in 0.5.1. Existing BlueBubbles sources
-now use `LAKE_PASS_BLUEBUBBLES_ENDPOINTS` (or the retained legacy variable). Without it, provider network access is disabled even if the source has a
-saved URL and password. Add the exact origin and its allowed network before
+now use `LAKE_PASS_BLUEBUBBLES_ENDPOINTS` (or the retained legacy variable).
+Without it, provider network access is disabled even if the source has a saved
+URL and password. Add the exact origin and its allowed network before
 updating the image; see the provider policy linked above.
 
 Apply the current template's CPU, memory, PID, read-only filesystem, and tmpfs
@@ -99,9 +101,11 @@ original encryption key and any deliberate local paths or network settings.
 
 ## Release publication
 
-The 0.5.3 manifest baseline is retained; see
+Renamed releases continue from the 0.5.3 pre-rebrand baseline; see
 [release continuity](rebrand-migration.md#release-continuity-and-later-choices).
-Publication is enabled only in the renamed repository.
+Publication is enabled only in `jaysqvl/lake-pass-bot`. For the first renamed
+release, review the generated comparison link, required CI checks, and GHCR
+package permissions before installation.
 
 `release-please.yml` calls `release-image.yml` when it creates a
 `lake-pass-bot-v*` release. GitHub-token-created tags do not trigger a second
@@ -135,6 +139,20 @@ Keep `main` protected with reviewed pull requests and passing `go`,
 `python-actions`, `integration`, and `docker` checks. Release Please still needs
 permission to create release pull requests and publish releases. None of these
 build/release permissions requires a runner or credentials on your LAN.
+
+## Source-built canaries
+
+A private canary can be built from a reviewed commit without publishing a GitHub
+release. Use an isolated build context, a unique local image tag, and the full
+source revision in the image metadata and binary. Keep `pull_policy: never` for
+that local image and retain the existing stack's service identity and runtime
+settings while replacing only its image.
+
+Run the container smoke test and the current HIGH/CRITICAL vulnerability gate
+against that exact image before cutover. Save the image configuration ID, source
+revision, scan results, and SBOM. A local image configuration ID is not a registry
+manifest digest; a source-built canary does not carry the release workflow's
+signed attestations unless those were independently produced and verified.
 
 ## Verify and recover
 

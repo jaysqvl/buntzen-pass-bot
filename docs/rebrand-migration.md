@@ -1,15 +1,15 @@
 # Lake Pass Bot rebrand migration
 
-This change prepares the source, UI, CLI, Python worker, documentation, and
-release configuration for **Lake Pass Bot**. It does not rename the remote
-repository, publish an image, change an existing deployment, rewrite history, or
-delete the preserved pre-rebrand branch. Review the source build before deciding
-on publication or removal of the old version.
+**Lake Pass Bot** uses the `jaysqvl/lake-pass-bot` repository, `lake-pass-bot`
+CLI, and `ghcr.io/jaysqvl/lake-pass-bot` release image namespace. Source changes,
+repository publication, and installation are distinct steps: verify the selected
+release and image before updating an installation. Preserve the pre-rebrand
+history and data backups throughout the transition.
 
 ## Existing installations
 
 Keep the original appdata directory, encryption key, browser profiles, stack
-settings, and working image digest. Before an eventual upgrade, stop active jobs
+settings, and working image digest. Before an upgrade, stop active jobs
 and make a consistent private backup as described in
 [release and deployment](release-and-deployment.md#verify-and-recover). Never run
 the old and new services against the same appdata at the same time.
@@ -28,13 +28,15 @@ Compatibility is intentional:
 | Sessions | New cookies use neutral names. Existing cookies are accepted within the same transport mode; public HTTPS still requires the hardened `__Host-` cookie mode. |
 | Python worker | The package becomes `lake-pass-actions` and its import/worker module is `lake_pass_actions`. Use the renamed package in source development and refresh the locked virtual environment. |
 
-When eventually applying the new Compose file, account for the changed service
-name in the existing stack and remove the stopped old service only after review.
-Preserve custom host paths and the installed seccomp profile. Keep scheduling
+The template uses `lake-pass-bot` as its service/container name. Existing stacks
+can retain their current service name while updating the image; a display-name
+change does not require replacing the stack or its data. If adopting the new
+service name, stop the old service before starting its replacement against the
+same appdata. Preserve custom host paths and the installed seccomp profile. Keep scheduling
 disabled while validating the upgraded application, and verify an OTP connection
 and booking setup before enabling unattended work.
 
-## Review this source without a published image
+## Isolated source builds and release images
 
 Use the source-build `docker-compose.yml` from a separate checkout and a fresh,
 isolated appdata directory. Run `docker compose up -d --build` after completing
@@ -42,14 +44,18 @@ the [README setup](../README.md#quick-start-with-docker-compose). Do not copy li
 browser credentials into a second concurrent instance or initiate duplicate
 bookings while the original service is running.
 
-`deploy/portainer.yml` targets `ghcr.io/jaysqvl/lake-pass-bot:latest`; this rebrand
-has not published that image. Keep the old installation on its existing image
-until a renamed release exists and deployment is deliberately approved.
+`deploy/portainer.yml` targets `ghcr.io/jaysqvl/lake-pass-bot:latest`. Verify a
+completed release-image workflow and the intended immutable digest before using
+a registry image. A private source-built canary should use a unique local image
+tag with its full source revision recorded; keep image pulling disabled for that
+local image. Its successful deployment does not establish registry publication
+or GitHub attestation of the build.
 
 ## Release continuity and later choices
 
-The version baseline remains **0.5.3** in the release manifest, Python project,
-and lockfile. New releases use the `lake-pass-bot-v` component prefix. The
+The rebrand starts from the last pre-rebrand release, **0.5.3**. Release Please
+advances the manifest, Python project, and lockfile versions together. New
+releases use the `lake-pass-bot-v` component prefix. The
 Release Please bootstrap SHA anchors the first renamed release at the preserved
 pre-rebrand commit, so the first changelog does not need to replay the old
 history. Release promotion compares both old and new component tags, and manual
@@ -59,12 +65,24 @@ newer `latest` image. [Release Please documents bootstrap and manifest versions]
 Review the first renamed release PR's comparison link before publishing.
 Release Please can synthesize `lake-pass-bot-v0.5.3` as the previous tag from the
 manifest even though that tag does not exist. Point that first comparison at the
-retained `buntzen-pass-bot-v0.5.3` tag, or explicitly authorize a baseline tag alias
-as part of the later repository migration. This source change creates no tags.
+retained `buntzen-pass-bot-v0.5.3` tag. For a first release of 0.6.0, the correct
+comparison is:
 
-Release workflows only publish from `jaysqvl/lake-pass-bot`. Renaming the GitHub
-repository and reviewing package permissions/visibility are separate publication
-steps. Existing historical changelog entries and release tags are retained.
+```text
+https://github.com/jaysqvl/lake-pass-bot/compare/buntzen-pass-bot-v0.5.3...lake-pass-bot-v0.6.0
+```
+
+Use the actual proposed version at the right-hand end. Correct both the
+changelog entry and release notes if needed; historical tags do not need to be
+recreated or deleted. Once a renamed release exists, Release Please discovers
+its tag normally and no longer needs the bootstrap fallback.
+
+Release workflows only publish from `jaysqvl/lake-pass-bot`. Complete the GitHub
+repository rename before running them, update clone remotes, and verify the GHCR
+package's repository association and pull permissions after its first publish.
+A newly created package may require an explicit visibility change before
+anonymous clients can pull it. Keep historical changelog entries and release
+tags intact; repository renaming does not require a history rewrite.
 
 The `pre-rebrand` branch preserves the working version. Deleting that branch or
 rewriting published commits requires a separate decision after reviewing this

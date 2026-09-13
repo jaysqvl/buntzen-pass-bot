@@ -35,9 +35,10 @@ Only the lake listed above is currently supported.
 
 ## Quick start with Docker Compose
 
-Build this checkout locally with the steps below. The renamed GHCR image is a
-publication target; it has not been published by this rebrand. Existing installs
-should read the [rebrand migration notes](docs/rebrand-migration.md) first.
+Build this checkout locally with the steps below. For registry-based installs,
+choose an image from a completed [release publication](docs/release-and-deployment.md#release-publication).
+Existing installs should read the [rebrand migration notes](docs/rebrand-migration.md)
+first.
 
 1. Create the local configuration:
 
@@ -78,16 +79,16 @@ Treat `appdata` as sensitive: it contains the database and browser profiles. The
 
 ## Portainer installs and updates
 
-[deploy/portainer.yml](deploy/portainer.yml) is prepared for the future
-`ghcr.io/jaysqvl/lake-pass-bot:latest` image. Keep your currently working image and
-stack until a renamed release has been published and you choose to upgrade.
-For local review, use the source-build Compose instructions above.
+[deploy/portainer.yml](deploy/portainer.yml) targets
+`ghcr.io/jaysqvl/lake-pass-bot:latest`. Verify that the selected release's image
+publication completed before updating an existing stack. GitHub builds and
+verifies release images; you choose when to deploy them in Portainer.
 
-After publication, GitHub builds and verifies the image; you choose when to
-update the existing stack in Portainer. The app footer shows the build actually
-running. See [Release and Portainer deployment](docs/release-and-deployment.md)
-for stack settings and version pinning, and [rebrand migration](docs/rebrand-migration.md)
-for existing data and configuration compatibility.
+The app footer shows the build actually running. See
+[Release and Portainer deployment](docs/release-and-deployment.md) for stack
+settings and version pinning, and [rebrand migration](docs/rebrand-migration.md)
+for existing data and configuration compatibility. The source-build Compose
+instructions above also support isolated local review.
 
 ## Set up and test a booking
 
@@ -186,6 +187,6 @@ See [Browser integration tests](integration/README.md) for the real Go/Python/Pl
 - [Browser integration tests](integration/README.md)
 - [Testing a live booking](docs/live-testing.md)
 - [Lake settings and provider extension](docs/lakes.md)
-- [Rebrand migration and publication status](docs/rebrand-migration.md)
+- [Rebrand migration and release continuity](docs/rebrand-migration.md)
 - [Release and Portainer deployment](docs/release-and-deployment.md)
 - [Changelog](CHANGELOG.md)

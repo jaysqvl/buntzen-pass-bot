@@ -1,4 +1,5 @@
-# The renamed image must be published before using this template; see docs/rebrand-migration.md.
+# Use a verified published image or digest; see docs/release-and-deployment.md.
+# Existing stacks may retain their service name and runtime settings during upgrades.
 services:
   lake-pass-bot:
     image: "${LAKE_PASS_IMAGE-${BUNTZEN_IMAGE:-ghcr.io/jaysqvl/lake-pass-bot:latest}}"
