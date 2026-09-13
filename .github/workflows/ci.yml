@@ -169,7 +169,7 @@ jobs:
             (.volumes | any(.source == "/tmp/legacy-appdata" and .target == "/appdata")) and
             (.volumes | any(.source == "/tmp/legacy-appdata" and .target == "/run/buntzen-key" and .read_only == true))
           ' >/dev/null
-          LAKE_PASS_DEBUG=false LAKE_PASS_MASTER_KEY_FILE= \
+          LAKE_PASS_DEBUG=false LAKE_PASS_MASTER_KEY_FILE='' \
             docker compose -f deploy/portainer.yml config --format json | jq -e '
               .services["lake-pass-bot"].environment |
               .LAKE_PASS_DEBUG == "false" and .LAKE_PASS_MASTER_KEY_FILE == ""
