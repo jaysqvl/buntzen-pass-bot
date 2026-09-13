@@ -172,7 +172,7 @@ func TestControlPlanePythonBrowserBookingVehicleFailure(t *testing.T) {
 	if outcome.err != nil {
 		t.Fatalf("run coordinated booking: %v\nworker stderr:\n%s", outcome.err, strings.Join(outcome.stderr, "\n"))
 	}
-	wantMessage := "All-day pass was available, but no visible saved vehicle matched the profile's vehicle keyword."
+	wantMessage := "All-day pass was available, but no visible saved vehicle matched the booking's vehicle keyword."
 	if outcome.result.Status != model.JobFailed || outcome.result.Message != wantMessage {
 		t.Fatalf("missing vehicle result = %#v, want failed with %q", outcome.result, wantMessage)
 	}

@@ -15,6 +15,7 @@ workspace="$(mktemp -d)"
 base_url=""
 appdata_mount="$volume"
 key_directory=""
+swap_limit_supported=""
 
 cleanup() {
   status=$?
@@ -145,6 +146,37 @@ wait_for_health() {
   fail "health endpoint did not become ready"
 }
 
+# Some Linux hosts omit swap accounting. Accept that only while the daemon
+# reports it unavailable and the actual daemon host has no configured swap.
+validate_host_swap() {
+  if [[ "$swap_limit_supported" == "false" ]]; then
+    docker exec "$container" python -c '
+from pathlib import Path
+lines = Path("/proc/swaps").read_text().splitlines()
+assert len(lines) == 1 and lines[0].split() == ["Filename", "Type", "Size", "Used", "Priority"]
+' || fail "swap accounting is unavailable and the Docker host has swap enabled or unverifiable"
+  fi
+}
+
+# Unconfigured accounts now land on Lakes. Follow only that specific redirect
+# and retain identity/header checks on the final authenticated document.
+fetch_authenticated_landing() {
+  local cookies="$1" page="$2" headers="$3" code=""
+  code="$(curl --silent --show-error --max-time 10 \
+    --cookie "$cookies" --dump-header "$headers" --output "$page" \
+    --write-out '%{http_code}' "$base_url/")"
+  if [[ "$code" == "303" ]]; then
+    [[ "$(header_value "$headers" Location)" == "/lakes" ]] || fail "authenticated Home returned an unexpected redirect"
+    code="$(curl --silent --show-error --max-time 10 \
+      --cookie "$cookies" --dump-header "$headers" --output "$page" \
+      --write-out '%{http_code}' "$base_url/lakes")"
+  fi
+  [[ "$code" == "200" ]] || fail "authenticated landing page returned HTTP $code"
+  grep -Fq "Account settings for $admin_username" "$page" || fail "authenticated landing page did not identify the administrator"
+  [[ "$(header_value "$headers" Cache-Control)" == "no-store" ]] || fail "authenticated HTML was cacheable"
+  [[ -n "$(header_value "$headers" Content-Security-Policy)" ]] || fail "authenticated HTML omitted its Content Security Policy"
+}
+
 start_container() {
   local key_options=()
   if [[ -n "$key_directory" ]]; then
@@ -182,11 +214,13 @@ start_container() {
   [[ "$published" == 127.0.0.1:* ]] || fail "container did not publish its loopback HTTP port"
   base_url="http://$published"
   wait_for_health
-  docker inspect "$container" | jq -e '
+  validate_host_swap
+  docker inspect "$container" | jq -e --argjson swap_limit_supported "$swap_limit_supported" '
     length == 1 and (.[0] |
       .HostConfig.NanoCpus == (2 * 1000 * 1000 * 1000) and
       .HostConfig.Memory == (4 * 1024 * 1024 * 1024) and
-      .HostConfig.MemorySwap == (4 * 1024 * 1024 * 1024) and
+      (.HostConfig.MemorySwap == (4 * 1024 * 1024 * 1024) or
+        ($swap_limit_supported == false and .HostConfig.MemorySwap == -1)) and
       .HostConfig.PidsLimit == 512 and
       .HostConfig.ShmSize == (1024 * 1024 * 1024) and
       .HostConfig.Init == true and .HostConfig.ReadonlyRootfs == true and
@@ -202,7 +236,7 @@ validate_doctor() {
   report="$(docker exec "$container" /usr/local/bin/lake-pass-bot doctor)"
   printf '%s\n' "$report" | jq -e '
     .ok == true and
-    .schema_version == 7 and
+    .schema_version == 10 and
     .action_protocol == 2 and
     .appdata_dir == "/appdata" and
     .database_path == "/appdata/lake-pass-bot.db" and
@@ -246,9 +280,7 @@ perform_setup() {
   tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: lake_pass_session=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened session cookie"
   tr -d '\r' < "$headers" | grep -Eiq '^set-cookie: lake_pass_csrf=.*HttpOnly; SameSite=Strict$' || fail "setup did not issue the hardened CSRF cookie"
 
-  curl --fail --silent --show-error --max-time 10 \
-    --cookie "$cookies" --output "$workspace/setup-dashboard" "$base_url/"
-  grep -Fq "Account settings for $admin_username" "$workspace/setup-dashboard" || fail "setup session did not reach the authenticated dashboard"
+  fetch_authenticated_landing "$cookies" "$workspace/setup-dashboard" "$workspace/setup-dashboard-headers"
   validate_page_version "$workspace/setup-dashboard"
 }
 
@@ -275,17 +307,14 @@ perform_login() {
   [[ "$code" == "303" ]] || fail "login returned HTTP $code"
   [[ "$(header_value "$headers" Location)" == "/" ]] || fail "login returned an unexpected redirect"
 
-  curl --fail --silent --show-error --max-time 10 \
-    --cookie "$cookies" --dump-header "$workspace/${label}-dashboard-headers" \
-    --output "$workspace/${label}-dashboard" "$base_url/"
-  grep -Fq "Account settings for $admin_username" "$workspace/${label}-dashboard" || fail "authenticated dashboard did not identify the administrator"
-  [[ "$(header_value "$workspace/${label}-dashboard-headers" Cache-Control)" == "no-store" ]] || fail "authenticated HTML was cacheable"
-  [[ -n "$(header_value "$workspace/${label}-dashboard-headers" Content-Security-Policy)" ]] || fail "authenticated HTML omitted its Content Security Policy"
+  fetch_authenticated_landing "$cookies" "$workspace/${label}-dashboard" "$workspace/${label}-dashboard-headers"
 }
 
 for command in docker curl jq; do
   command -v "$command" >/dev/null || fail "$command is required"
 done
+swap_limit_supported="$(docker info --format '{{json .SwapLimit}}')"
+[[ "$swap_limit_supported" == "true" || "$swap_limit_supported" == "false" ]] || fail "Docker did not report its swap accounting capability"
 docker image inspect "$image" >/dev/null
 [[ "$(docker image inspect --format '{{.Os}}' "$image")" == "linux" ]] || fail "smoke image is not a Linux image"
 [[ "$(docker image inspect --format '{{.Architecture}}' "$image")" == "amd64" ]] || fail "smoke image is not linux/amd64"
@@ -356,7 +385,7 @@ perform_login before-restart
 
 docker exec --interactive "$container" sh -eu -c 'cat > /tmp/lake-pass-browser-smoke.py' \
   < scripts/docker_browser_smoke.py
-docker exec "$container" python /tmp/lake-pass-browser-smoke.py
+docker exec --env "LAKE_PASS_SMOKE_SWAP_LIMIT_SUPPORTED=$swap_limit_supported" "$container" python /tmp/lake-pass-browser-smoke.py
 wait_for_health
 
 service_logs="$(docker logs "$container" 2>&1)"
@@ -377,9 +406,7 @@ start_container
 [[ "$(docker exec "$container" sha256sum /appdata/master.key | awk '{print $1}')" == "$key_digest" ]] || fail "recreated container replaced the persistent encryption key"
 docker exec "$container" sh -eu -c 'grep -qx persisted /appdata/.ci-persistence-marker' || fail "recreated container did not retain appdata"
 
-curl --fail --silent --show-error --max-time 10 \
-  --cookie "$workspace/setup-cookies" --output "$workspace/restarted-session-dashboard" "$base_url/"
-grep -Fq "Account settings for $admin_username" "$workspace/restarted-session-dashboard" || fail "durable session did not survive container recreation"
+fetch_authenticated_landing "$workspace/setup-cookies" "$workspace/restarted-session-dashboard" "$workspace/restarted-session-headers"
 validate_page_version "$workspace/restarted-session-dashboard"
 
 setup_code="$(curl --silent --show-error --max-time 10 \

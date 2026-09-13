@@ -38,13 +38,23 @@ self.addEventListener('fetch', event => {
         pass
 
 
+def check_swap_limit(limit_path: Path, expected: int, host_swaps: Path = Path("/proc/swaps")) -> None:
+    if os.environ.get("LAKE_PASS_SMOKE_SWAP_LIMIT_SUPPORTED") == "false":
+        # Set only by the outer Docker smoke after querying the daemon. Verify
+        # the kernel state again before and after concurrent browser activity.
+        lines = host_swaps.read_text().splitlines()
+        assert len(lines) == 1 and lines[0].split() == ["Filename", "Type", "Size", "Used", "Priority"], "swap accounting is unavailable but host swap is enabled or unverifiable"
+        return
+    assert int(limit_path.read_text()) == expected, "swap limit differs from smoke contract"
+
+
 def cgroup_events() -> dict[str, int]:
     root = Path("/sys/fs/cgroup")
     if (root / "cgroup.controllers").exists():
         quota, period = (root / "cpu.max").read_text().split()
         assert int(quota) == 2 * int(period), "CPU quota differs from smoke contract"
         assert int((root / "memory.max").read_text()) == 4 << 30
-        assert int((root / "memory.swap.max").read_text()) == 0
+        check_swap_limit(root / "memory.swap.max", 0)
         assert int((root / "pids.max").read_text()) == 512
         memory = dict(line.split() for line in (root / "memory.events").read_text().splitlines())
         pids = dict(line.split() for line in (root / "pids.events").read_text().splitlines())
@@ -53,7 +63,7 @@ def cgroup_events() -> dict[str, int]:
     cpu = root / "cpu"
     assert int((cpu / "cpu.cfs_quota_us").read_text()) == 2 * int((cpu / "cpu.cfs_period_us").read_text())
     assert int((memory / "memory.limit_in_bytes").read_text()) == 4 << 30
-    assert int((memory / "memory.memsw.limit_in_bytes").read_text()) == 4 << 30
+    check_swap_limit(memory / "memory.memsw.limit_in_bytes", 4 << 30)
     assert int((root / "pids/pids.max").read_text()) == 512
     events = dict(line.split() for line in (root / "pids/pids.events").read_text().splitlines())
     return {"memory_fail": int((memory / "memory.failcnt").read_text()), "pids_max": int(events["max"])}

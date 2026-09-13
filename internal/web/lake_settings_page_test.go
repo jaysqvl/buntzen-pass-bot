@@ -141,7 +141,7 @@ func TestSettingsAndLakePagesSavePersonalDefaultsAndResetOnlyTheirOwner(t *testi
 		retryMin, retryMax                  float64
 	}{
 		{f.admin, adminCookies, adminProfile, adminBooking, memberProfile.Name, "Europe/London", "chrome", 24000, 3, 50, 240, 2, 4},
-		{member, memberCookies, memberProfile, memberBooking, adminProfile.Name, "America/Toronto", "chrome-beta", 31000, 0, 70, 450, 3, 6},
+		{member, memberCookies, memberProfile, memberBooking, adminProfile.Name, "Europe/Paris", "chrome-beta", 31000, 0, 70, 450, 3, 6},
 	}
 	for _, owner := range owners {
 		settings := settingsPageDefaults(t, f)
@@ -217,7 +217,7 @@ func TestSettingsAndLakePagesSavePersonalDefaultsAndResetOnlyTheirOwner(t *testi
 		t.Fatalf("reset retained owner's saved defaults: %v", err)
 	}
 	memberDefaults, err := f.store.ForUser(member.ID).GetLakeSettings(ctx, "buntzen")
-	if err != nil || memberDefaults.Timezone != "America/Toronto" {
+	if err != nil || memberDefaults.Timezone != "Europe/Paris" {
 		t.Fatalf("reset touched another account: %+v %v", memberDefaults, err)
 	}
 	page := serveForm(f, http.MethodGet, "/lakes/buntzen", adminCookies, nil)
