@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/jaysqvl/lake-pass-bot/compare/lake-pass-bot-v0.6.0...lake-pass-bot-v0.6.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* make private hostname checks configurable ([#80](https://github.com/jaysqvl/lake-pass-bot/issues/80)) ([0faf6a5](https://github.com/jaysqvl/lake-pass-bot/commit/0faf6a5032b5850c75e04168a5c314e5b6b9a9d7))
+
 ## [0.6.0](https://github.com/jaysqvl/lake-pass-bot/compare/buntzen-pass-bot-v0.5.3...lake-pass-bot-v0.6.0) (2026-09-13)
 
 
