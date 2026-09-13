@@ -18,7 +18,7 @@ func TestBrowserPlainErrorsRenderSafePagesAndPreserveHTTPHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{renderer: renderer, config: config.Config{AllowedHosts: []string{"example.test"}}}
+	server := &Server{renderer: renderer, config: config.Config{HostCheckEnabled: true, AllowedHosts: []string{"example.test"}}}
 	for _, status := range []int{400, 401, 403, 404, 405, 413, 429, 500, 502, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			raw := strings.Repeat("private-provider-diagnostic ", 1024)

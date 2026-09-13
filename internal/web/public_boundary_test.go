@@ -15,6 +15,8 @@ import (
 func publicFixture(t *testing.T) webFixture {
 	t.Helper()
 	f := newWebFixture(t)
+	// Public HTTPS must remain strict even with private hostname checks off.
+	f.cfg.HostCheckEnabled = false
 	f.cfg.PublicOrigin = "https://example.test"
 	f.cfg.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 	server, err := NewServer(f.cfg, f.store, f.server.engine)
@@ -105,6 +107,26 @@ func TestPublicHealthExceptionDoesNotExposeUI(t *testing.T) {
 		f.handler.ServeHTTP(w, r)
 		if w.Code != tc.want || len(w.Result().Cookies()) != 0 {
 			t.Errorf("%s = %d, cookies=%d", tc.target, w.Code, len(w.Result().Cookies()))
+		}
+	}
+}
+
+func TestPublicHealthWithoutHostAllowlistRejectsUnknownLoopbackAuthority(t *testing.T) {
+	f := publicFixture(t)
+	f.server.config.AllowedHosts = nil
+	for _, tc := range []struct {
+		host string
+		want int
+	}{
+		{"localhost:8080", http.StatusOK},
+		{"unlisted.example", http.StatusBadRequest},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "http://"+tc.host+"/healthz", nil)
+		r.RemoteAddr = "127.0.0.1:51000"
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if w.Code != tc.want || len(w.Result().Cookies()) != 0 {
+			t.Errorf("health Host %s: status=%d cookies=%d", tc.host, w.Code, len(w.Result().Cookies()))
 		}
 	}
 }

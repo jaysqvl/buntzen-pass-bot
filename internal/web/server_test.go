@@ -62,7 +62,7 @@ func newWebFixtureWithSetup(t *testing.T, setup bool) webFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "lake_pass_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: setupToken}
+	cfg := config.Config{AppDataDir: directory, ProfilesDir: filepath.Join(directory, "profiles"), ArtifactsDir: filepath.Join(directory, "artifacts"), MaxConcurrentJobs: 1, PythonExecutable: "python3", PythonModule: "lake_pass_actions", BlueBubblesURL: "http://127.0.0.1:1234", YodelOrigins: []string{"https://example.test"}, HostCheckEnabled: true, AllowedHosts: []string{"example.test", "container.internal"}, SetupToken: setupToken}
 	runner := engine.New(cfg, database, control.NewHub())
 	server, err := NewServer(cfg, database, runner)
 	if err != nil {

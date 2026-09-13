@@ -119,7 +119,6 @@ jobs:
         shell: bash
         env:
           BLUEBUBBLES_URL: http://bluebubbles.example:1234
-          LAKE_PASS_ALLOWED_HOSTS: lake-pass.example
           LAKE_PASS_APPDATA_PATH: /tmp/lake-pass-appdata
           LAKE_PASS_SECCOMP_PROFILE_PATH: /tmp/lake-pass-seccomp.json
           LAKE_PASS_WEB_PORT: "18091"
@@ -134,12 +133,20 @@ jobs:
           for manifest in docker-compose.yml deploy/portainer.yml; do
             docker compose -f "$manifest" config --format json | jq -e '
               .services["lake-pass-bot"] |
+              .environment.LAKE_PASS_HOST_CHECK_ENABLED == "false" and
+              .environment.LAKE_PASS_ALLOWED_HOSTS == "" and
               (.cpus | tonumber) == 2 and
               (.mem_limit | tonumber) == (4 * 1024 * 1024 * 1024) and
               (.memswap_limit | tonumber) == (4 * 1024 * 1024 * 1024) and
               .pids_limit == 512 and .read_only == true and
               (.tmpfs | length == 2) and
               (.volumes | any(.target == "/run/buntzen-key" and .read_only == true))
+            ' >/dev/null
+            LAKE_PASS_HOST_CHECK_ENABLED=true LAKE_PASS_ALLOWED_HOSTS=lake-pass.example \
+              docker compose -f "$manifest" config --format json | jq -e '
+                .services["lake-pass-bot"].environment |
+                .LAKE_PASS_HOST_CHECK_ENABLED == "true" and
+                .LAKE_PASS_ALLOWED_HOSTS == "lake-pass.example"
             ' >/dev/null
             LAKE_PASS_KEY_DIRECTORY_PATH=/tmp/separate-key \
               LAKE_PASS_MASTER_KEY_FILE=/run/buntzen-key/master.key \
@@ -149,7 +156,7 @@ jobs:
                 (.volumes | any(.source == "/tmp/separate-key" and .target == "/run/buntzen-key" and .read_only == true))
             ' >/dev/null
           done
-          for setting in LAKE_PASS_ALLOWED_HOSTS LAKE_PASS_WEB_PORT LAKE_PASS_APPDATA_PATH LAKE_PASS_SECCOMP_PROFILE_PATH; do
+          for setting in LAKE_PASS_WEB_PORT LAKE_PASS_APPDATA_PATH LAKE_PASS_SECCOMP_PROFILE_PATH; do
             if env -u "$setting" docker compose -f deploy/portainer.yml config >/dev/null 2>/tmp/compose-required-error; then
               echo "Missing $setting must reject the deployment template" >&2
               exit 1
@@ -165,7 +172,8 @@ jobs:
         shell: bash
         env:
           BLUEBUBBLES_URL: http://bluebubbles.example:1234
-          LAKE_PASS_ALLOWED_HOSTS: legacy.example
+          BUNTZEN_HOST_CHECK_ENABLED: "true"
+          BUNTZEN_ALLOWED_HOSTS: legacy.example
           LAKE_PASS_APPDATA_PATH: /tmp/legacy-appdata
           LAKE_PASS_SECCOMP_PROFILE_PATH: /tmp/legacy-seccomp.json
           LAKE_PASS_WEB_PORT: "18092"
@@ -176,6 +184,7 @@ jobs:
           docker compose -f deploy/portainer.yml config --format json | jq -e --arg image "$BUNTZEN_IMAGE" '
             .services["lake-pass-bot"] |
             .image == $image and
+            .environment.LAKE_PASS_HOST_CHECK_ENABLED == "true" and
             .environment.LAKE_PASS_ALLOWED_HOSTS == "legacy.example" and
             .environment.LAKE_PASS_MASTER_KEY_FILE == "/run/buntzen-key/master.key" and
             .environment.LAKE_PASS_DEBUG == "true" and
@@ -184,9 +193,11 @@ jobs:
             (.volumes | any(.source == "/tmp/legacy-appdata" and .target == "/run/buntzen-key" and .read_only == true))
           ' >/dev/null
           LAKE_PASS_DEBUG=false LAKE_PASS_MASTER_KEY_FILE='' \
+            LAKE_PASS_HOST_CHECK_ENABLED=false LAKE_PASS_ALLOWED_HOSTS='' \
             docker compose -f deploy/portainer.yml config --format json | jq -e '
               .services["lake-pass-bot"].environment |
-              .LAKE_PASS_DEBUG == "false" and .LAKE_PASS_MASTER_KEY_FILE == ""
+              .LAKE_PASS_DEBUG == "false" and .LAKE_PASS_MASTER_KEY_FILE == "" and
+              .LAKE_PASS_HOST_CHECK_ENABLED == "false" and .LAKE_PASS_ALLOWED_HOSTS == ""
             ' >/dev/null
       - name: Build amd64 image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

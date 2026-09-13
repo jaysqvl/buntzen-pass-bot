@@ -48,11 +48,12 @@ first.
 
    Edit `.env` and:
 
-   - set `LAKE_PASS_ALLOWED_HOSTS` to the exact host and port users will open, such as `lake-pass.example:8080`;
    - if using BlueBubbles, set `BLUEBUBBLES_URL` and approve its origin/network with `LAKE_PASS_BLUEBUBBLES_ENDPOINTS` as described in [provider access](docs/public-exposure.md#outbound-provider-access); and
    - leave `SCHEDULES_ENABLED=false` until onboarding is complete.
 
-   In private mode, if a reverse proxy rewrites the `Host` header, add the rewritten authority to `LAKE_PASS_ALLOWED_HOSTS` and the browser-facing origin to `LAKE_PASS_ALLOWED_ORIGINS`. These are exact allowlists; do not use `*`. Public mode instead requires its configured public Host and trusted connector settings from the linked guide.
+   The supplied templates set `LAKE_PASS_HOST_CHECK_ENABLED=false` for private LAN hosting: you can use your Docker host address or rename a reverse proxy hostname without changing an allowlist. Authentication, CSRF tokens, and browser-origin checks remain enabled. To restrict hostnames, set the toggle to `true` and list exact host/port values in `LAKE_PASS_ALLOWED_HOSTS`; that list is ignored in private mode while the toggle is `false`.
+
+   If a reverse proxy rewrites the `Host` header, add the browser-facing origin to `LAKE_PASS_ALLOWED_ORIGINS`; with hostname checks enabled, also allow the rewritten authority. Prefer preserving the browser-facing Host. Public HTTPS mode always requires its configured public Host and trusted connector settings, regardless of the toggle; see [public HTTPS configuration](docs/public-exposure.md).
 
 2. Create the persistent data directory for the container's non-root user:
 
@@ -85,9 +86,8 @@ publication completed before updating an existing stack. GitHub builds and
 verifies release images; you choose when to deploy them in Portainer.
 
 Existing saved stacks can keep their variable names when updating the image.
-When adopting the current template, set its four required canonical variables:
-`LAKE_PASS_WEB_PORT`, `LAKE_PASS_APPDATA_PATH`, `LAKE_PASS_SECCOMP_PROFILE_PATH`,
-and `LAKE_PASS_ALLOWED_HOSTS`. Preserve the existing values; see the
+When adopting the current template, set its three required canonical variables:
+`LAKE_PASS_WEB_PORT`, `LAKE_PASS_APPDATA_PATH`, and `LAKE_PASS_SECCOMP_PROFILE_PATH`. Preserve the existing values; see the
 [template migration table](docs/rebrand-migration.md#adopting-the-portainer-template).
 
 The app footer shows the build actually running. See

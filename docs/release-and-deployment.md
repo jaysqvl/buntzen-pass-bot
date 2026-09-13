@@ -53,8 +53,8 @@ the running image regardless of the tag used to install it.
 Preserve the existing stack's name, port, appdata path, and configuration. An
 image-only update can retain its saved Compose file and legacy variable names.
 When adopting the current [deploy/portainer.yml](../deploy/portainer.yml), provide
-nonempty `LAKE_PASS_WEB_PORT`, `LAKE_PASS_APPDATA_PATH`,
-`LAKE_PASS_SECCOMP_PROFILE_PATH`, and `LAKE_PASS_ALLOWED_HOSTS` values. Copy the
+nonempty `LAKE_PASS_WEB_PORT`, `LAKE_PASS_APPDATA_PATH`, and
+`LAKE_PASS_SECCOMP_PROFILE_PATH` values. Copy the
 existing values using the [template migration table](rebrand-migration.md#adopting-the-portainer-template).
 Optional settings retain their legacy fallbacks. The template uses:
 
@@ -67,8 +67,14 @@ Optional settings retain their legacy fallbacks. The template uses:
   persistent `/data` mount, for example `/data/lake-pass-bot/seccomp_profile.json`.
 - `BLUEBUBBLES_URL` and `LAKE_PASS_BLUEBUBBLES_ENDPOINTS`: when using BlueBubbles,
   configure its exact [approved origin and network](public-exposure.md#outbound-provider-access).
-- `LAKE_PASS_ALLOWED_HOSTS` and, when needed, `LAKE_PASS_ALLOWED_ORIGINS`: the exact
-  authorities and origins used to access the app in private mode.
+- `LAKE_PASS_HOST_CHECK_ENABLED`: defaults to `false` in the supplied templates,
+  allowing any valid hostname in private HTTP mode. Set it to `true` to enforce
+  `LAKE_PASS_ALLOWED_HOSTS`; that list is ignored in private mode while checks are
+  disabled. Older stacks that omit the setting retain enabled hostname checks.
+- `LAKE_PASS_ALLOWED_HOSTS`: optional exact host/port list when hostname checks are
+  enabled. `LAKE_PASS_ALLOWED_ORIGINS` permits specific browser origins when a
+  private reverse proxy rewrites Host. Preserving the original Host avoids that
+  extra configuration. CSRF and browser-origin checks stay enabled.
 - `MAX_CONCURRENT_JOBS`: preserve your chosen concurrency.
 
 The template keeps `SCHEDULES_ENABLED=false`. Complete the

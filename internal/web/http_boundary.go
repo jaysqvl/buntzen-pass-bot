@@ -31,7 +31,12 @@ func healthRequest(r *http.Request) bool {
 
 func (s *Server) enforceHTTPBoundary(r *http.Request) (*http.Request, error) {
 	if s.config.PublicOrigin == "" {
-		if !s.hostAllowed(r.Host) {
+		// Disabling the private hostname allowlist does not permit malformed
+		// authorities or change the public HTTPS boundary below.
+		if _, err := origin.Host(r.Host); err != nil {
+			return r, errors.New("invalid Host header")
+		}
+		if s.config.HostCheckEnabled && !s.hostAllowed(r.Host) {
 			return r, errors.New("invalid Host header")
 		}
 		return r, nil

@@ -16,6 +16,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxConcurrentJobs != 2 || cfg.ListenAddress != ":8080" || cfg.SchedulesEnabled {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
+	if !cfg.HostCheckEnabled {
+		t.Fatal("host checks must be enabled by default")
+	}
 	if cfg.LogLevel != "info" || cfg.EffectiveLogLevel() != "info" {
 		t.Fatalf("default log level = %q", cfg.LogLevel)
 	}
@@ -127,6 +130,44 @@ func TestLoadAllowedHostsAndSetupToken(t *testing.T) {
 	}
 }
 
+func TestLoadHostCheckEnabled(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		unset bool
+		want  bool
+	}{
+		{name: "unset", unset: true, want: true},
+		{name: "empty", want: true},
+		{name: "enabled", value: "true", want: true},
+		{name: "disabled", value: "false", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			isolateEnvironment(t)
+			if test.unset {
+				unsetForTest(t, "LAKE_PASS_HOST_CHECK_ENABLED")
+			} else {
+				t.Setenv("LAKE_PASS_HOST_CHECK_ENABLED", test.value)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.HostCheckEnabled != test.want {
+				t.Fatalf("host check enabled = %t, want %t", cfg.HostCheckEnabled, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidHostCheckEnabled(t *testing.T) {
+	isolateEnvironment(t)
+	t.Setenv("LAKE_PASS_HOST_CHECK_ENABLED", "sometimes")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "LAKE_PASS_HOST_CHECK_ENABLED must be true or false") {
+		t.Fatalf("invalid host check setting error = %v", err)
+	}
+}
+
 func TestLoadRejectsEmptyAllowedOrigin(t *testing.T) {
 	isolateEnvironment(t)
 	t.Setenv("LAKE_PASS_ALLOWED_ORIGINS", "http://lake-pass.example,")
@@ -159,6 +200,7 @@ func isolateEnvironment(t *testing.T) {
 		"LAKE_PASS_DEBUG", "LAKE_PASS_LOG_LEVEL", "LAKE_PASS_PYTHON",
 		"LAKE_PASS_ACTIONS_MODULE", "LAKE_PASS_BROWSER_EXECUTABLE", "BLUEBUBBLES_URL", "LAKE_PASS_BLUEBUBBLES_ENDPOINTS", "LAKE_PASS_ALLOWED_ORIGINS",
 		"LAKE_PASS_YODEL_ORIGINS", "LAKE_PASS_ALLOWED_HOSTS", "LAKE_PASS_SETUP_TOKEN", "LAKE_PASS_MASTER_KEY_FILE",
+		"LAKE_PASS_HOST_CHECK_ENABLED", "BUNTZEN_HOST_CHECK_ENABLED",
 		"LAKE_PASS_PUBLIC_ORIGIN", "LAKE_PASS_TRUSTED_PROXIES",
 	} {
 		t.Setenv(name, "")

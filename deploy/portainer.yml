@@ -1,6 +1,6 @@
 # Use a verified published image or digest; see docs/release-and-deployment.md.
 # Existing stacks may retain their service name and runtime settings during upgrades.
-# Set the four required LAKE_PASS_ deployment variables when adopting this template.
+# Set the three required LAKE_PASS_ deployment variables when adopting this template.
 # Nested required fallbacks are evaluated eagerly by older Portainer Compose versions.
 services:
   lake-pass-bot:
@@ -16,7 +16,9 @@ services:
       BLUEBUBBLES_URL: "${BLUEBUBBLES_URL:?set the LAN BlueBubbles URL in Portainer}"
       LAKE_PASS_BLUEBUBBLES_ENDPOINTS: "${LAKE_PASS_BLUEBUBBLES_ENDPOINTS-${BUNTZEN_BLUEBUBBLES_ENDPOINTS:-}}"
       LAKE_PASS_YODEL_ORIGINS: "${LAKE_PASS_YODEL_ORIGINS-${BUNTZEN_YODEL_ORIGINS:-https://yodelportal.com}}"
-      LAKE_PASS_ALLOWED_HOSTS: "${LAKE_PASS_ALLOWED_HOSTS:?set the exact Lake Pass Bot authorities}"
+      # Private LAN hosting accepts any hostname unless checks are enabled.
+      LAKE_PASS_HOST_CHECK_ENABLED: "${LAKE_PASS_HOST_CHECK_ENABLED-${BUNTZEN_HOST_CHECK_ENABLED:-false}}"
+      LAKE_PASS_ALLOWED_HOSTS: "${LAKE_PASS_ALLOWED_HOSTS-${BUNTZEN_ALLOWED_HOSTS:-}}"
       LAKE_PASS_ALLOWED_ORIGINS: "${LAKE_PASS_ALLOWED_ORIGINS-${BUNTZEN_ALLOWED_ORIGINS:-}}"
       LAKE_PASS_PUBLIC_ORIGIN: "${LAKE_PASS_PUBLIC_ORIGIN-${BUNTZEN_PUBLIC_ORIGIN:-}}"
       LAKE_PASS_TRUSTED_PROXIES: "${LAKE_PASS_TRUSTED_PROXIES-${BUNTZEN_TRUSTED_PROXIES:-}}"
